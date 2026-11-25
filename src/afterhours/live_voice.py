@@ -31,7 +31,7 @@ class LiveVoice:
                     'maxSeconds':self.state.get('maxSeconds') or SECONDS,'voiceUSDPerMinute':VOICE_RATE_PER_MINUTE,
                     'maxDecisionRequests':self.state.get('maxDecisionRequests') or DECISION_REQUESTS,'recording':False}
 
-    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120):
+    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None):
         if approved is not True:raise ValueError('Turn on Talk before connecting.')
         # Older open pages approved only the original two-minute session.
         # A longer session must be explicitly requested by the new Talk control.
@@ -43,6 +43,9 @@ class LiveVoice:
         if not isinstance(request_id,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',request_id):
             raise ValueError('A connection request ID is required.')
         profile=getattr(self.agent,'profile_context',lambda:{})()
+        if voice is not None and voice not in ('gleam','meridian','marin'):
+            raise ValueError('Choose a supported live voice.')
+        selected_voice=voice or profile.get('voice') or ('meridian' if performer=='nova' else 'marin')
         if performer not in ('nova','rivet',profile.get('id')):raise ValueError('Select the assigned DJ for the voice session.')
         key=ai_mix.api_key()
         if not key:raise ValueError('OpenAI key is not configured.')
@@ -67,7 +70,10 @@ knowledgeable DJ voice. You are an AI persona, not the human operator and not th
 Listen naturally and accept interruptions. Delegate any musical direction, track request, change to
 the set, a visible gesture or movement for the live video performer, or a question about actual playback to the DJ backend. It owns the current truth and music
 decisions. Explicit requests such as "start playing", "play music" or "play CamelPhat" can
-prepare and start music through the backend. Delegate the request once; never promise playback
+prepare and start music through the backend. Acknowledge the request in one short spoken sentence
+as you delegate it, so the operator can hear that you are checking the crate. When the backend
+reports a change from searching to preparing or playing, describe that actual change once.
+Delegate the request once; never promise playback
 until its deck confirmation arrives. Selecting or discussing music alone does not start it.
 "Mix into the next track", "transition to the next track", and "just mix it in" are explicit
 operator commands too: delegate them once without asking for another Play confirmation.
@@ -95,7 +101,7 @@ No camera or direct music audio is supplied.'''
             'Application facts and operator-owned DJ preferences. Safety and execution constraints above take precedence. Past sets are reference only, not the current direction: '+json.dumps({'djProfile':profile,'direction':a['direction'],'music':context,'pastSets':self.agent.past_context()},ensure_ascii=True)}]}]
         history += [{'type':'message','role':m['role'],'content':[{'type':'input_text' if m['role']=='user' else 'output_text','text':m['text']}]} for m in a['messages'][-8:]]
         body={'session':{'model':MODEL,'instructions':instructions,'input':history,'store':False,
-                         'audio':{'output':{'voice':profile.get('voice') or ('meridian' if performer=='nova' else 'marin')}},
+                         'audio':{'output':{'voice':selected_voice}},
                          'delegation':{'type':'client'}},'transport':{'type':'webrtc','sdp':sdp}}
         try:
             with self.opener(Request('https://api.openai.com/v1/live/sessions',data=json.dumps(body).encode(),
@@ -113,7 +119,7 @@ No camera or direct music audio is supplied.'''
             if isinstance(exc,HTTPError):raise ValueError(ai_mix.provider_error(exc)) from None
             raise ValueError('Voice startup was not confirmed. No automatic retry. Check usage before another attempt.') from None
         with self.lock:
-            self.state.update(status='active',sessionId=sid,startedAt=time.time(),expiresAt=time.time()+max_seconds)
+            self.state.update(status='active',sessionId=sid,voice=selected_voice,startedAt=time.time(),expiresAt=time.time()+max_seconds)
             if self.cancel_connect:
                 self.end(sid)
                 raise ValueError('Voice connection was cancelled.')

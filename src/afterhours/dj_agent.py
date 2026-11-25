@@ -1235,7 +1235,7 @@ class DJAgent:
                 result.append(copy.deepcopy(item));size+=length
             return result
 
-    def fresh(self):
+    def fresh(self,preserve_voice=False):
         with self.lock:
             if self.worker and self.worker.is_alive():raise ValueError('Wait for the current decision before starting a fresh set.')
             self._use_allowance()
@@ -1245,7 +1245,7 @@ class DJAgent:
             self.settings.state['playedPins']=[]
             self.settings.state['plan']=None
             try:
-                default_name=self.reset_profile()
+                default_name=None if preserve_voice else self.reset_profile()
                 profile_note=f'{default_name} is at the decks.' if default_name else 'Tell the DJ what you want to hear.'
             except ValueError as exc:
                 profile_note='The default DJ could not take over: '+str(exc)
@@ -1255,7 +1255,8 @@ class DJAgent:
                 self.session.set_reorder_preference((previous.get('setlist') or {}).get('allowReorder',True))
             self.remember(self.state['direction'],previous.get('order') or previous.get('candidates',[]),
                           'previous set' if previous.get('order') else 'previous search')
-            self.generation+=1;self.deadline=0;self.remaining=0;self.seen_context=None
+            self.generation+=1;self.seen_context=None
+            if not preserve_voice:self.deadline=0;self.remaining=0
             self.background_allowance=False
             self.curation.end('revoked','A fresh set ended the previous run’s curation allowance.')
             self.catalog_curation=None
@@ -1403,11 +1404,11 @@ class DJAgent:
         if external and (queue_mode!='steer' or performance_context or native_context or recap_context or surface=='recap'):
             raise ValueError('External directions support the current music queue only.')
         if not isinstance(message_id,str) or not 1<=len(message_id)<=100:raise ValueError('A message ID is required.')
-        if queue_mode=='steer' and playback_requests.intent(text)=='fresh-start':
+        if source!='voice' and queue_mode=='steer' and playback_requests.intent(text)=='fresh-start':
             queue_mode='fresh-start'
         if queue_mode not in ('steer','replace','fresh-start'):
             raise ValueError('Choose Fresh queue, Start new queue, or Steer this queue.')
-        if queue_mode=='fresh-start' and (source!='typed' or approved is not True):
+        if queue_mode=='fresh-start' and (source not in ('typed','voice') or approved is not True):
             raise ValueError('Approve planning to start a new queue from Operator.')
         if surface not in (None,'catalog','settings','set','recap'):raise ValueError('Unknown conversation surface.')
         if surface=='recap':return self.recap_message(text,source,message_id,recap_context)
@@ -1424,6 +1425,13 @@ class DJAgent:
             if any(m['id']==message_id for m in self.state['messages']):return self.snapshot()
             voice_start=(source=='voice' and not self.text_turn and not self.background_allowance
                          and self.remaining>0 and self.clock()<self.deadline)
+            if source=='voice':
+                voice_fresh=(approved is True and voice_start and
+                             playback_requests.fresh_voice_request(text,self.session.snapshot()))
+                if queue_mode=='fresh-start' and not voice_fresh:
+                    raise ValueError('A fresh voice set requires an explicit play request while the decks are idle.')
+                if queue_mode=='steer' and voice_fresh:
+                    queue_mode='fresh-start'
             if external:external.check()
             character=self.roster_command(text) if queue_mode=='steer' else None
             if external and (character or native_settings.intent(text)):
@@ -1625,10 +1633,12 @@ class DJAgent:
                 self.playback_request['sessionId']==self.session.snapshot()['id'] and
                 self.clock()<self.playback_request['expiresAt'] and queue_mode=='steer')
             if queue_mode in ('replace','fresh-start'):
-                if source!='typed' or approved is not True:raise ValueError('Use Fresh queue in Operator to replace the stopped set.')
+                if (source!='typed' and not (source=='voice' and voice_fresh)) or approved is not True:
+                    raise ValueError('Use Fresh queue in Operator to replace the stopped set.')
                 if queue_mode=='fresh-start' and self.evaluator is evaluate and not ai_mix.api_key():
                     raise ValueError('Configure the optional planner before starting a fresh queue.')
-                self.fresh()
+                if source=='voice':self.fresh(preserve_voice=True)
+                else:self.fresh()
                 if queue_mode=='fresh-start':transport='fresh-start'
             elif not followup:
                 self.cancel_playback('A newer direction replaced the pending start.')
@@ -2497,6 +2507,15 @@ class DJAgent:
         if (not request or request['status'] != 'starting'
                 or request['sessionId'] != session.get('id')
                 or session.get('active') is not False):
+            return
+        opening=session.get('startup') or {}
+        if (opening.get('status')=='handoff-held' and
+                any(deck.get('playing') and deck.get('id')==opening.get('openingId')
+                    for deck in (session.get('telemetry') or {}).get('decks',[]))):
+            request.update(status='playing',message=session['message'])
+            if request['revision']==self.state['revision']:
+                self.state.update(status='playing',message=session['message'])
+            self.save()
             return
         error = execution_error(session)
         if error:

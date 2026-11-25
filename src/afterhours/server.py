@@ -356,7 +356,7 @@ class Handler(RuntimeStaticHandler):
                         text=data.get('text','Start a fresh queue.') if action=='start-new-queue' else data.get('text')
                         mode='fresh-start' if action=='start-new-queue' else data.get('queueMode','steer')
                         if source=='voice':LIVE_VOICE.require(data.get('sessionId'))
-                        if (mode in ('replace','fresh-start') or playback_requests.intent(text)=='fresh-start') and LIVE_VOICE.status()['status'] not in ('idle','closed','error'):
+                        if source!='voice' and (mode in ('replace','fresh-start') or playback_requests.intent(text)=='fresh-start') and LIVE_VOICE.status()['status'] not in ('idle','closed','error'):
                             raise ValueError('Stop Talk before starting a fresh queue. You can still steer this queue.')
                         DJ_AGENT.handoff_commit=self.commit_handoff
                         DJ_AGENT.reset_profile=self.reset_default_profile
@@ -381,7 +381,7 @@ class Handler(RuntimeStaticHandler):
                         result=DJ_AGENT.fresh()
                     else:raise ValueError('Unknown conversation action.')
                 elif action=='start':
-                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120))
+                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'))
                 elif action=='end':result=LIVE_VOICE.end(data.get('sessionId'))
                 elif action=='usage':result=LIVE_VOICE.receipt(data.get('sessionId'),data.get('seconds'),data.get('finalized') is True)
                 else:raise ValueError('Unknown voice action.')

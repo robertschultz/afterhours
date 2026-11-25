@@ -6,7 +6,7 @@ from unittest.mock import Mock,patch
 from afterhours import ai_mix
 from afterhours import cue_planner
 from afterhours.dj_bridge import BridgeError
-from afterhours.opening_playback import measured_plan,start_and_prepare
+from afterhours.opening_playback import OpeningHandoffHeld,measured_plan,start_and_prepare
 from test_cue_planner import fixture
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession,TrackMetadataChanged
@@ -69,6 +69,17 @@ class OpeningTests(unittest.TestCase):
         recovered=ai_mix.validate_plan({k:review.get(k) for k in ai_mix.PLAN_SCHEMA['properties']},s.state['analysis'],30)
         self.assertEqual(recovered['selections'],review['selections'])
         self.assertEqual(recovered['missingEvidence'],[])
+
+    def test_analysis_timeout_holds_handoff_without_replaying_or_stopping_opening(self):
+        s,_,trace,playing,_=self.setup_session()
+        job=Mock(done=True,error='Audio analysis did not settle in time.',analysis_timed_out=True,cache={})
+        with patch('afterhours.opening_playback.BackgroundAnalysis',return_value=job),patch('afterhours.opening_playback.TransitionMixer') as mixer:
+            mixer.return_value.baselines={}
+            with self.assertRaises(OpeningHandoffHeld):start_and_prepare(s,None,s.snapshot()['order'])
+        self.assertTrue(playing[0])
+        self.assertEqual(s.snapshot()['startup']['status'],'handoff-held')
+        self.assertEqual(trace.count('deck 1 play'),1)
+        self.assertNotIn('prepare-next',trace)
 
     def test_unknown_start_result_never_replays_play_or_starts_analysis(self):
         s,report,trace,playing,beat=self.setup_session()

@@ -76,6 +76,24 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(self.session.snapshot()['id'], session_id)
         agent.evaluator.assert_not_called()
 
+    def test_idle_voice_play_builds_new_queue_without_replenishing_talk_budget(self):
+        from afterhours import playback_requests
+        old=self.session.snapshot()['id']
+        self.session.start=Mock()
+        provider=Mock(return_value=({**decision(['c','d']), 'reply':'Opening pair selected.'}, {}))
+        agent=dj_agent.DJAgent(self.session, evaluator=provider)
+        agent.enable(True,seconds=120,requests=6)
+        deadline=agent.deadline
+        agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
+        settled(agent)
+        self.assertNotEqual(self.session.snapshot()['id'],old)
+        self.assertEqual(agent.state['messages'][0]['queueMode'],'fresh-start')
+        self.assertTrue(agent.playback_request['freshQueue'])
+        self.assertEqual(agent.deadline,deadline)
+        self.assertLessEqual(agent.remaining,6)
+        self.assertFalse(playback_requests.fresh_voice_request('Play the current queue',self.session.snapshot()))
+        self.assertFalse(playback_requests.fresh_voice_request('Play Daft Punk',{'telemetry':{'decks':[{'playing':True}]}}))
+
     def test_runway_uses_fresh_clock_and_verified_cues(self):
         state = self.session.snapshot()
         state.update(index=0, active=True, phase='playing', timing={'mixAtBeat':32},

@@ -14,7 +14,7 @@ class PreparationPool:
     def __init__(self,session,revision,tracks,cache=None):
         self.session=session;self.revision=revision;self.tracks=copy.deepcopy(tracks)
         self.cache=copy.deepcopy(cache or {});self.result=[];self.jobs=[];self.pending=[]
-        self.done=False;self.error=None;self.suspended=True;self.slice=0;self.closed=False
+        self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
@@ -38,7 +38,7 @@ class PreparationPool:
             job.close(client);job.pool_closed=True
             if unfinished:
                 job.done=True;self.pending[:0]=copy.deepcopy(job.tracks)
-            elif job.error:self.error=job.error;self.done=True
+            elif job.error:self.error=job.error;self.analysis_timed_out=job.analysis_timed_out;self.done=True
             else:self.result.extend(job.result)
 
     def invalidate_catalog(self):
@@ -59,7 +59,7 @@ class PreparationPool:
         for job in self.jobs:
             if job.done and not getattr(job,'pool_closed',False):
                 self.cache.update(job.cache);job.close(client);job.pool_closed=True
-                if job.error:self.error=job.error;self.done=True;return
+                if job.error:self.error=job.error;self.analysis_timed_out=job.analysis_timed_out;self.done=True;return
                 self.result.extend(job.result)
         active=[j for j in self.jobs if not j.done]
         # A loading child owns the shared catalog. Its measured scan can share

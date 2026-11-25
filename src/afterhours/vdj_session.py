@@ -23,6 +23,7 @@ from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlCh
 from afterhours.native_analysis import track_analysis
 from afterhours.audio_analysis import scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
+from afterhours.opening_playback import OpeningHandoffHeld
 from afterhours import cue_planner
 from afterhours import ai_mix
 from afterhours import tempo_planner
@@ -899,6 +900,13 @@ class DJSession:
                     state.update(mode='off',held=False,selectionEpoch=state.get('selectionEpoch',0)+1)
                     self.state.update(phase='takeover',message=message,lastError=None)
                 self.event(message,'takeover',reason=str(exc))
+        except OpeningHandoffHeld as exc:
+            message=('The opening is playing. Analysis for the next handoff timed out; the handoff is held.'
+                     if not cleanup_failed else 'The opening was confirmed playing. Check the preparation deck before mixing.')
+            with self.lock:
+                self.state['copilot'].update(mode='off',held=False)
+                self.state.update(phase='takeover',message=message,lastError=None)
+            self.event(message,'analysis',reason=str(exc))
         except (BridgeError, OSError, ValueError) as exc:
             self.update(phase='error', message=str(exc), lastError=str(exc))
             with self.lock:

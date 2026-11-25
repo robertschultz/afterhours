@@ -16,6 +16,11 @@ from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, ski
 from afterhours.recording_availability import PREVIEW_ONLY
 
 
+class OpeningHandoffHeld(BridgeError):
+    """The opening is confirmed playing, but its next handoff needs evidence."""
+    pass
+
+
 def measured_plan(snapshot, order, measured, current, lead_seconds=45):
     """Fit a future verified exit while leaving the already playing audio alone."""
     evidence={row['id']:copy.deepcopy(row) for row in measured}
@@ -146,6 +151,11 @@ def start_and_prepare(session,client,requested):
                 s.sleep(.04)
             s.analysis_cache.update(job.cache);job.close(client);s.background_job=None
             if not job.error:break
+            if job.analysis_timed_out:
+                t=s.telemetry(client)
+                if (t['decks'][0].get('id')==first['id'] and t['decks'][0].get('playing')
+                        and t['crossfader']<=.02 and not any(deck.get('playing') for deck in t['decks'][1:])):
+                    raise OpeningHandoffHeld(job.error)
             # Only this exact conclusive preparation failure can omit a pick.
             # A new preview restriction on the protected opening pair holds;
             # it cannot mask another uncertain Load or authorize a replay.
@@ -200,5 +210,7 @@ def start_and_prepare(session,client,requested):
             s.state['candidates']=[copy.deepcopy(checked.get(t['id'],t)) for t in s.state['candidates']]
         s.event('Opening handoff verified without stopping or seeking the playing deck.','queue-ready')
         return pair,plan,t,window
+    except OpeningHandoffHeld:
+        startup['status']='handoff-held';s.update(startup=copy.deepcopy(startup));raise
     except Exception:
         startup['status']='blocked';s.update(startup=copy.deepcopy(startup));raise

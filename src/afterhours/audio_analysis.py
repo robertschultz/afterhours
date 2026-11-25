@@ -22,6 +22,10 @@ REPORTS = analysis_reports()
 PLUGIN = 'Afterhours Analysis'
 
 
+class AudioAnalysisTimeout(BridgeError):
+    pass
+
+
 def bounded(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
 
@@ -131,7 +135,7 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
             from afterhours.background_analysis import guard_isolation
             guard_isolation(client,deck)
         if clock() >= deadline:
-            raise BridgeError('Audio analysis did not settle in time. Leave the track loaded and prepare again.')
+            raise AudioAnalysisTimeout('Audio analysis did not settle in time. Leave the track loaded and prepare again.')
         if any(as_bool(client.query(f'deck {d} play', 'bool')) for d in ((deck,) if isolated else (1,2))):
             raise BridgeError('A deck is playing. Audio analysis stopped without changing transport.')
         if identity(str(client.query(f'deck {deck} get_filepath', 'text'))) != sid:

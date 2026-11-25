@@ -37,7 +37,7 @@ def queue_intent(value):
     return None
 
 
-def intent(text):
+def normalized_intent(text):
     if not isinstance(text, str):return None
     value=' '.join(text.casefold().replace('’',"'").strip().split()).rstrip('.!?')
     value=re.sub(r'^(?:ok(?:ay)?[, ]+|yes[, ]+)', '', value)
@@ -48,6 +48,20 @@ def intent(text):
     # paid discovery. Keep the complete remainder: named music, timing and
     # negation still pass through the checks below.
     value=re.sub(r'^go (?:ahead and )?', '', value)
+    return value
+
+
+def fresh_voice_request(text, snapshot):
+    command=normalized_intent(text)
+    if not command or queue_intent(command):return False
+    if intent(text) not in ('start','select-and-start','fresh-start'):return False
+    return (not snapshot.get('active') and
+            not any(deck.get('playing') for deck in (snapshot.get('telemetry') or {}).get('decks', [])))
+
+
+def intent(text):
+    value=normalized_intent(text)
+    if not value:return None
     if value in {'status','what is playing',"what's playing",'what are you playing',
                  'are you playing','is music playing','are you ready','what are you doing',
                  "what's happening",'what is happening','why are you still analyzing',

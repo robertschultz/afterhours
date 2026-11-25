@@ -35,6 +35,12 @@ class VoiceTests(unittest.TestCase):
         self.assertFalse(body['session']['store']);self.assertEqual(body['session']['audio']['output']['voice'],'meridian')
         self.assertNotIn('sk-fixture',json.dumps(result));self.assertNotIn('sk-fixture',json.dumps(self.voice.status()))
         self.assertEqual(self.agent.snapshot()['allowance']['remaining'],6);self.assertEqual(self.voice.timer.interval,120)
+    def test_explicit_gleam_voice_reaches_the_provider(self):
+        self.voice.create('v=0','gleam-request','nova',True,voice='gleam')
+        body=json.loads(self.requests[0].data)
+        self.assertEqual(body['session']['audio']['output']['voice'],'gleam')
+        self.assertEqual(self.voice.status()['voice'],'gleam')
+
     def test_one_session_and_duplicate_attempt_guard(self):
         self.start()
         with self.assertRaises(ValueError):self.voice.create('v=0','request_456','rivet',True)

@@ -14,7 +14,7 @@ import time
 import uuid
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
-from afterhours.audio_analysis import scan_track, restore_effect, PLUGIN
+from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
 from afterhours.native_analysis import track_analysis
 
@@ -169,7 +169,7 @@ class BackgroundAnalysis:
         self.deck=deck
         self.session=session;self.revision=revision;self.tracks=copy.deepcopy(tracks)
         self.cache=copy.deepcopy(cache or {});self.pending=queue.Queue(maxsize=1)
-        self.cancelled=threading.Event();self.done=False;self.error=None;self.result=[]
+        self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -373,6 +373,7 @@ class BackgroundAnalysis:
             self.session.availability.record(track['id'],code,str(exc))
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         except Exception as exc:
+            self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True
     def close(self,client):

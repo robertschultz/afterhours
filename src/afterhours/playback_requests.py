@@ -2,6 +2,18 @@
 import re
 
 
+NAMED_PLAY = re.compile(r'^(?:play|start playing|start (?:a |the )?(?:new )?(?:dj )?(?:session|set|mix) (?:based on|inspired by|with|of|around|featuring))\s+(\S.*)$')
+
+
+def named_query(text):
+    """Use the named portion of an explicit play request for a catalog lookup."""
+    if intent(text) != 'select-and-start':return None
+    match=NAMED_PLAY.fullmatch(normalized_intent(text))
+    query=re.sub(r'^(?:some|something (?:by|from)|a track (?:by|from))\s+', '', match[1])
+    query=re.sub(r'(?:,? now|,? right now)$', '', query).strip()
+    return query if 2<=len(query)<=120 and ';' not in query else None
+
+
 def ready_opening(snapshot):
     """Go may start only the exact applied opening that has never run.
 
@@ -89,5 +101,5 @@ def intent(text):
                  'start djing now','just play','just play music','just start playing'}:return 'start'
     # A request naming music must first pass normal discovery/selection. Never
     # start the old queue just because the sentence begins with "play".
-    if re.match(r'^(?:play|start playing|start (?:a |the )?(?:new )?(?:dj )?(?:session|set|mix) (?:based on|inspired by|with|of|around|featuring))\s+\S',value):return 'select-and-start'
+    if NAMED_PLAY.fullmatch(value):return 'select-and-start'
     return None

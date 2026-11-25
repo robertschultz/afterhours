@@ -1684,6 +1684,18 @@ class DJAgent:
                     'decisionRequired':transport!='fresh-start' and source=='typed' and approved is True and approve_preparation is True,
                     'freshQueue':transport=='fresh-start','intent':text.strip()}
                 self.clarification=None
+                query=playback_requests.named_query(text) if source=='voice' and transport=='fresh-start' else None
+                if query and self.settings.state['discover'] and dj_settings.lead(self.session.snapshot())=='all':
+                    try:
+                        self.session.discover_more(query)
+                    except (ValueError,OSError,BridgeError) as exc:
+                        self.fail_planning('Catalog search could not start: '+str(exc))
+                        return self.snapshot()
+                    self.searches.add(query);self.search_rounds=1
+                    self.awaiting_catalog=True;self.search_from_turn=True
+                    summary='Searching the crate for '+query+'.'
+                    self.playback_request['message']=summary
+                    self.state.update(status='searching',message=summary)
             elif followup:
                 self.playback_request['revision']=self.state['revision']
             if (transport in (None,'select-and-start') and not followup and queue_mode=='steer' and surface in (None,'set')
@@ -1772,9 +1784,12 @@ class DJAgent:
             catalog_ready=self.awaiting_catalog and (catalog.get('status') in ('complete','error') or s.get('phase')=='catalog-ready')
             if catalog_ready and catalog.get('status')=='error':
                 self.awaiting_catalog=False;self.catalog_curation=None
+                message='Catalog search stopped. '+catalog.get('message','Try another artist or check the music connection.')
+                if (self.playback_request or {}).get('status')=='choosing':
+                    self.playback_request.update(status='failed',message=message)
                 if use_curation:self.curation.end('blocked','Catalog search stopped. '+catalog.get('message','Check the music connection.'))
                 else:self.remaining=0
-                self.state.update(status='error',message='Catalog search stopped. '+catalog.get('message','Try another artist or check the music connection.'))
+                self.state.update(status='error',message=message)
                 self.save();return
             queued=(s.get('queuedUpdate') or {}).get('tracks') or s.get('order',[])
             upcoming=max(0,len(queued)-max(0,s.get('index',-1))-1)
@@ -1920,6 +1935,8 @@ class DJAgent:
             for row in packet.get('requestCandidates',[]):self.guest_considered[row['requestId']]=row['asks']
             if len(self.guest_considered)>256:self.guest_considered=dict(list(self.guest_considered.items())[-256:])
             self.state.update(status='evaluating',message='Choosing the opening tracks.' if catalog_ready and not queued else 'The DJ is evaluating the upcoming queue.')
+            if catalog_ready and (self.playback_request or {}).get('status')=='choosing':
+                self.playback_request['message']=self.state['message']
             round_id=self.planner.begin(s,rev,packet['reason'])
             if self.guest_requests and packet['requestCandidates']:
                 self.guest_requests.submit('begin',s['id'],round_id,packet['requestCandidates'])

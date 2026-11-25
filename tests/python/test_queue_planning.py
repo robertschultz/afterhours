@@ -83,8 +83,15 @@ class QueuePlanningTests(unittest.TestCase):
         provider=Mock(return_value=({**decision(['c','d']), 'reply':'Opening pair selected.'}, {}))
         agent=dj_agent.DJAgent(self.session, evaluator=provider)
         agent.enable(True,seconds=120,requests=6)
+        self.session.discover_more=Mock(side_effect=lambda _: self.session.update(
+            phase='discovering',catalogSearch={'status':'searching'}))
         deadline=agent.deadline
-        agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
+        result=agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
+        self.session.discover_more.assert_called_once_with('daft punk')
+        self.assertEqual(result['status'],'searching')
+        provider.assert_not_called()
+        self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','matched':2})
+        agent.tick(force=True)
         settled(agent)
         self.assertNotEqual(self.session.snapshot()['id'],old)
         self.assertEqual(agent.state['messages'][0]['queueMode'],'fresh-start')

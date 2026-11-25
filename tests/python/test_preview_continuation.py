@@ -273,6 +273,7 @@ class PreviewContinuationTests(unittest.TestCase):
             class FailingPool:
                 def __init__(job,session,revision,tracks,cache):
                     pools.append([t['id'] for t in tracks]);job.done=False;job.cache={};job.error=None;job.result=[]
+                    job.analysis_timed_out=False
                 def step(job,client,remaining):
                     restrict(s.availability,target)
                     job.error='Load acknowledgement uncertain.' if uncertain else s.availability.blocked(target)['reason']

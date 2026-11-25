@@ -8,7 +8,8 @@ NAMED_PLAY = re.compile(r'^(?:play|start playing|start (?:a |the )?(?:new )?(?:d
 def named_query(text):
     """Use the named portion of an explicit play request for a catalog lookup."""
     if intent(text) != 'select-and-start':return None
-    match=NAMED_PLAY.fullmatch(normalized_intent(text))
+    match=re.fullmatch(r'(?:play|start playing)\s+(\S.*)',normalized_intent(text))
+    if not match:return None
     query=re.sub(r'^(?:some|something (?:by|from)|a track (?:by|from))\s+', '', match[1])
     query=re.sub(r'(?:,? now|,? right now)$', '', query).strip()
     return query if 2<=len(query)<=120 and ';' not in query else None
@@ -66,7 +67,9 @@ def normalized_intent(text):
 def fresh_voice_request(text, snapshot):
     command=normalized_intent(text)
     if not command or queue_intent(command):return False
-    if intent(text) not in ('start','select-and-start','fresh-start'):return False
+    meaning=intent(text)
+    if meaning not in ('start','select-and-start','fresh-start'):return False
+    if meaning=='select-and-start' and not named_query(text):return False
     return (not snapshot.get('active') and
             not any(deck.get('playing') for deck in (snapshot.get('telemetry') or {}).get('decks', [])))
 

@@ -1,0 +1,49 @@
+# Credentials and machine-local state.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.log
+*.jsonl
+.runtime/
+local-runtime.json
+backups/
+
+# Development and generated artifacts.
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+/build/
+/dist/
+.venv/
+.venv-ci/
+.venv-mcp/
+venv/
+node_modules/
+.test-results/
+.ci-evidence/
+artifacts/
+experiments/
+.impeccable/
+.agents/
+.codex/
+
+# Optional native and browser dependencies.
+**/native/analysis-bridge/build/
+**/native/analysis-bridge/sdk/
+**/web/vendor/
+
+# Local media and evidence, including data in older checkouts.
+**/web/agent-media/
+**/web/director-stage/
+**/web/media/character-loops/
+**/web/audio/
+**/characters/*/reference/
+setup-status.json
+OVERNIGHT.md

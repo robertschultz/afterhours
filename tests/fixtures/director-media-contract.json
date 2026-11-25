@@ -1,0 +1,20 @@
+{
+  "source": "https://fal.ai/models/minimax/h3-max/director/api",
+  "captured": "2026-10-25",
+  "note": "Media-direction excerpt from the published AsyncAPI contract. No session credentials or user media.",
+  "x-fal-media": {
+    "perspective": "client",
+    "send": [],
+    "receive": [
+      {
+        "settings": {
+          "frameRate": 24
+        },
+        "kind": "video"
+      },
+      {
+        "kind": "audio"
+      }
+    ]
+  }
+}

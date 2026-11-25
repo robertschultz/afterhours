@@ -1,0 +1,69 @@
+"""C/D isolation, queue priority and catalog ownership without live audio."""
+import threading
+import unittest
+from unittest.mock import patch
+from afterhours.preparation_pool import PreparationPool
+from afterhours.background_analysis import BackgroundAnalysis,allowed
+from afterhours.vdj_session import DJSession
+from test_background_analysis import Peer
+
+
+class PoolPeer(Peer):
+    def __init__(self):
+        super().__init__()
+        self.values.update({k.replace('deck 3','deck 4'):v for k,v in list(self.values.items()) if k.startswith('deck 3')})
+        self.values['deck 4 get_deck']=4
+    def send(self,script):
+        if 'deck 4' not in script:return super().send(script)
+        self.commands.append(script)
+        if 'deck 4 volume 0%' in script:self.values['deck 4 volume']=0
+        if 'deck 4 unload' in script:self.values['deck 4 loaded']=False
+        if 'deck 4 volume 100.' in script:self.values['deck 4 volume']=1
+
+
+class PoolTests(unittest.TestCase):
+    def test_deck_d_has_the_same_isolation_guards_and_cannot_address_another_deck(self):
+        peer=PoolPeer();s=DJSession(threading.Lock());job=BackgroundAnalysis(s,'rev',[],deck=4)
+        job.acquire(peer);job.close(peer)
+        self.assertTrue(all('deck 4' in cmd and 'deck 3' not in cmd for cmd in peer.commands))
+        self.assertTrue(allowed('deck 4 goto 30%',True,4))
+        for command in ('deck 3 goto 30%','deck 1 play','deck 4 play','crossfader 50%'):
+            self.assertFalse(allowed(command,True,4))
+
+    def test_loading_serializes_catalog_then_both_scans_share_one_owner(self):
+        s=DJSession(threading.Lock());peer=PoolPeer();calls=[]
+        tracks=[{'id':str(i),'title':str(i)} for i in range(3)]
+        class Job:
+            def __init__(j,s,rev,tracks,cache,deck):
+                j.tracks=tracks;j.deck=deck;j.loaded=None;j.done=False;j.error=None;j.cache={};j.result=[]
+                j.owned=True;j.serviced=0;j.status='analyzing';j.message='checking';j.cancelled=threading.Event()
+            def step(j,c,seconds):calls.append((j.tracks[0]['id'],j.deck));j.serviced+=1
+            def close(j,c):j.owned=False
+            def invalidate_catalog(j):pass
+        with patch('afterhours.preparation_pool.BackgroundAnalysis',Job):
+            pool=PreparationPool(s,'rev',tracks)
+            pool.step(peer,40);pool.step(peer,40)
+            self.assertEqual(calls,[('0',3),('0',3)]);self.assertEqual(len(pool.jobs),1)
+            pool.jobs[0].loaded='0';pool.step(peer,40)
+            self.assertEqual(calls[-1],('1',4));pool.jobs[1].loaded='1'
+            for _ in range(6):pool.step(peer,40)
+            self.assertEqual(calls[-6:].count(('0',3)),4);self.assertEqual(calls[-6:].count(('1',4)),2)
+            count=len(calls);pool.step(peer,11);self.assertEqual(len(calls),count)
+            self.assertEqual([r['deck'] for r in pool.snapshot()['decks']],[3,4])
+            pool.jobs[0].done=True;pool.jobs[0].result=[tracks[0]];pool.step(peer,40)
+            self.assertEqual(calls[-1],('2',3))
+            pool.close(peer);self.assertTrue(all(j.cancelled.is_set() for j in pool.jobs))
+
+    def test_owned_or_loaded_spares_are_never_replaced(self):
+        s=DJSession(threading.Lock());peer=PoolPeer()
+        peer.values.update({'deck 3 loaded':True,'deck 4 play':True})
+        pool=PreparationPool(s,'rev',[{'id':'x','title':'X'}]);pool.step(peer,40)
+        self.assertTrue(pool.done);self.assertIn('in use',pool.error);self.assertEqual(peer.commands,[])
+
+    def test_failure_stops_other_work_without_retrying_a_load(self):
+        s=DJSession(threading.Lock());pool=PreparationPool(s,'rev',[]);peer=PoolPeer()
+        job=BackgroundAnalysis(s,'rev',[],deck=4);job.done=True;job.error='Load unconfirmed'
+        pool.jobs=[job];pool.step(peer,40);pool.step(peer,40)
+        self.assertEqual(pool.error,'Load unconfirmed');self.assertTrue(pool.done);self.assertEqual(peer.commands,[])
+
+if __name__=='__main__':unittest.main()

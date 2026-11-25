@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+. ./scripts/python-runtime.sh
+exec "$DJ_PYTHON" -m afterhours.dj_bridge "$@"

@@ -1,0 +1,222 @@
+{
+  "basis": "Expected palettes, shapes and CSS evaluated directly from the supplied art.ts; ID seed is the existing desktop/native FNV-1a UTF-8 modulo 100000 convention.",
+  "referenceSHA256": "b610f3dcd41dc377ba91f6264e2f94544cd40bb703345ce0a1d4c8ca29224ca1",
+  "cases": [
+    {
+      "label": "Selected 2",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+      "seed": 59917,
+      "base": "#13293D",
+      "accent": "#86BBC2",
+      "shape": "rings",
+      "css": "radial-gradient(circle at 50% 50%, #86BBC2 0 6%, rgba(0,0,0,0) 6.5%), repeating-radial-gradient(circle at 50% 50%, #13293D 0 9%, #86BBC2 9% 11%)"
+    },
+    {
+      "label": "Selected 4",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+      "seed": 94203,
+      "base": "#22324A",
+      "accent": "#E9DCC4",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #E9DCC4 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#22324A, #22324A)"
+    },
+    {
+      "label": "Selected 5",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "seed": 71822,
+      "base": "#2E3B2C",
+      "accent": "#C9D6A3",
+      "shape": "rings",
+      "css": "radial-gradient(circle at 50% 50%, #C9D6A3 0 6%, rgba(0,0,0,0) 6.5%), repeating-radial-gradient(circle at 50% 50%, #2E3B2C 0 9%, #C9D6A3 9% 11%)"
+    },
+    {
+      "label": "Selected 0",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+      "seed": 4679,
+      "base": "#6E5A3E",
+      "accent": "#F3EBDD",
+      "shape": "split",
+      "css": "radial-gradient(circle at 30% 58%, #6E5A3E 0 12%, rgba(0,0,0,0) 12.6%), linear-gradient(180deg, #6E5A3E 0 58%, #F3EBDD 58% 100%)"
+    },
+    {
+      "label": "Selected 1",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+      "seed": 82298,
+      "base": "#1E4A43",
+      "accent": "#EFC35A",
+      "shape": "diagonal",
+      "css": "radial-gradient(circle at 72% 28%, #EFC35A 0 9%, rgba(0,0,0,0) 9.6%), linear-gradient(135deg, #1E4A43 0 50%, #EFC35A 50% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 131",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000001fb",
+      "seed": 131,
+      "base": "#28445C",
+      "accent": "#F2C2A8",
+      "shape": "stripes",
+      "css": "repeating-linear-gradient(90deg, #F2C2A8 0 8%, #28445C 8% 20%)"
+    },
+    {
+      "label": "DEMO_ART seed 113",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000002d8e",
+      "seed": 113,
+      "base": "#3B2B2D",
+      "accent": "#D7A675",
+      "shape": "rings",
+      "css": "radial-gradient(circle at 50% 50%, #D7A675 0 6%, rgba(0,0,0,0) 6.5%), repeating-radial-gradient(circle at 50% 50%, #3B2B2D 0 9%, #D7A675 9% 11%)"
+    },
+    {
+      "label": "DEMO_ART seed 83",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000005aa4",
+      "seed": 83,
+      "base": "#1E4A43",
+      "accent": "#EFC35A",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #EFC35A 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#1E4A43, #1E4A43)"
+    },
+    {
+      "label": "DEMO_ART seed 107",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000005af9",
+      "seed": 107,
+      "base": "#5E4467",
+      "accent": "#F1E2D6",
+      "shape": "rings",
+      "css": "radial-gradient(circle at 50% 50%, #F1E2D6 0 6%, rgba(0,0,0,0) 6.5%), repeating-radial-gradient(circle at 50% 50%, #5E4467 0 9%, #F1E2D6 9% 11%)"
+    },
+    {
+      "label": "DEMO_ART seed 149",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000005c21",
+      "seed": 149,
+      "base": "#2E3B2C",
+      "accent": "#C9D6A3",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #C9D6A3 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#2E3B2C, #2E3B2C)"
+    },
+    {
+      "label": "DEMO_ART seed 43",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000068ed",
+      "seed": 43,
+      "base": "#6E5A3E",
+      "accent": "#F3EBDD",
+      "shape": "stripes",
+      "css": "repeating-linear-gradient(90deg, #F3EBDD 0 8%, #6E5A3E 8% 20%)"
+    },
+    {
+      "label": "DEMO_ART seed 61",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000007e0c",
+      "seed": 61,
+      "base": "#1C1C24",
+      "accent": "#B9B4E8",
+      "shape": "diagonal",
+      "css": "radial-gradient(circle at 72% 28%, #B9B4E8 0 9%, rgba(0,0,0,0) 9.6%), linear-gradient(135deg, #1C1C24 0 50%, #B9B4E8 50% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 31",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000008953",
+      "seed": 31,
+      "base": "#3F3F46",
+      "accent": "#E4E4DD",
+      "shape": "split",
+      "css": "radial-gradient(circle at 30% 58%, #3F3F46 0 12%, rgba(0,0,0,0) 12.6%), linear-gradient(180deg, #3F3F46 0 58%, #E4E4DD 58% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 71",
+      "id": "virtualdj:000000000000000000000000000000000000000000000000000000000000cf60",
+      "seed": 71,
+      "base": "#22324A",
+      "accent": "#E9DCC4",
+      "shape": "stripes",
+      "css": "repeating-linear-gradient(90deg, #E9DCC4 0 8%, #22324A 8% 20%)"
+    },
+    {
+      "label": "DEMO_ART seed 127",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000112af",
+      "seed": 127,
+      "base": "#1F3A3D",
+      "accent": "#E6C8E0",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #E6C8E0 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#1F3A3D, #1F3A3D)"
+    },
+    {
+      "label": "DEMO_ART seed 109",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000013d6e",
+      "seed": 109,
+      "base": "#2E3B2C",
+      "accent": "#C9D6A3",
+      "shape": "diagonal",
+      "css": "radial-gradient(circle at 72% 28%, #C9D6A3 0 9%, rgba(0,0,0,0) 9.6%), linear-gradient(135deg, #2E3B2C 0 50%, #C9D6A3 50% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 19",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000164cc",
+      "seed": 19,
+      "base": "#5E4467",
+      "accent": "#F1E2D6",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #F1E2D6 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#5E4467, #5E4467)"
+    },
+    {
+      "label": "DEMO_ART seed 53",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000202be",
+      "seed": 53,
+      "base": "#28445C",
+      "accent": "#F2C2A8",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #F2C2A8 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#28445C, #28445C)"
+    },
+    {
+      "label": "DEMO_ART seed 101",
+      "id": "virtualdj:00000000000000000000000000000000000000000000000000000000000211a4",
+      "seed": 101,
+      "base": "#4A2F4D",
+      "accent": "#E7B4A8",
+      "shape": "split",
+      "css": "radial-gradient(circle at 30% 58%, #4A2F4D 0 12%, rgba(0,0,0,0) 12.6%), linear-gradient(180deg, #4A2F4D 0 58%, #E7B4A8 58% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 103",
+      "id": "virtualdj:000000000000000000000000000000000000000000000000000000000003c8ba",
+      "seed": 103,
+      "base": "#13293D",
+      "accent": "#86BBC2",
+      "shape": "stripes",
+      "css": "repeating-linear-gradient(90deg, #86BBC2 0 8%, #13293D 8% 20%)"
+    },
+    {
+      "label": "DEMO_ART seed 97",
+      "id": "virtualdj:000000000000000000000000000000000000000000000000000000000003e1b0",
+      "seed": 97,
+      "base": "#6E5A3E",
+      "accent": "#F3EBDD",
+      "shape": "circle",
+      "css": "radial-gradient(circle at 62% 58%, #F3EBDD 0 31%, rgba(0,0,0,0) 31.6%), linear-gradient(#6E5A3E, #6E5A3E)"
+    },
+    {
+      "label": "DEMO_ART seed 7",
+      "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000044f87",
+      "seed": 7,
+      "base": "#1F3A3D",
+      "accent": "#E6C8E0",
+      "shape": "diagonal",
+      "css": "radial-gradient(circle at 72% 28%, #E6C8E0 0 9%, rgba(0,0,0,0) 9.6%), linear-gradient(135deg, #1F3A3D 0 50%, #E6C8E0 50% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 139",
+      "id": "virtualdj:000000000000000000000000000000000000000000000000000000000005a67d",
+      "seed": 139,
+      "base": "#1E4A43",
+      "accent": "#EFC35A",
+      "shape": "diagonal",
+      "css": "radial-gradient(circle at 72% 28%, #EFC35A 0 9%, rgba(0,0,0,0) 9.6%), linear-gradient(135deg, #1E4A43 0 50%, #EFC35A 50% 100%)"
+    },
+    {
+      "label": "DEMO_ART seed 137",
+      "id": "virtualdj:000000000000000000000000000000000000000000000000000000000006c6cc",
+      "seed": 137,
+      "base": "#13293D",
+      "accent": "#86BBC2",
+      "shape": "split",
+      "css": "radial-gradient(circle at 30% 58%, #13293D 0 12%, rgba(0,0,0,0) 12.6%), linear-gradient(180deg, #13293D 0 58%, #86BBC2 58% 100%)"
+    }
+  ]
+}

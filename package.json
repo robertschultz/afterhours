@@ -1,0 +1,17 @@
+{
+  "name": "afterhours",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Afterhours agentic DJ engine and local performance services",
+  "dependencies": {
+    "@fal-ai/client": "1.11.0-alpha.5",
+    "esbuild": "0.25.12"
+  },
+  "engines": {"node": ">=24"},
+  "scripts": {
+    "build": "node build.mjs",
+    "test:video": "node scripts/test-node.mjs test-director.mjs test-performance.mjs",
+    "test": "node scripts/test-node.mjs"
+  }
+}

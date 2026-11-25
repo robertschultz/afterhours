@@ -1,0 +1,266 @@
+"""Owned spare-deck recovery with synthetic native replies, never live audio."""
+import copy
+import json
+from pathlib import Path
+import re
+import tempfile
+import threading
+import unittest
+from contextlib import nullcontext
+from unittest.mock import Mock,patch
+
+from afterhours.background_analysis import BackgroundAnalysis,cleanup_analysis_deck,merge_cleanup_pending
+from afterhours.preparation_pool import PreparationPool
+from afterhours.dj_bridge import BridgeError
+from afterhours.session_recovery import SessionRecovery
+from afterhours.vdj_catalog import identity
+from afterhours.vdj_mixing import NativeHandoff,TransitionMixer
+from afterhours.vdj_session import DJSession
+from test_background_analysis import Peer
+
+
+class CleanupPeer(Peer):
+    def __init__(self):
+        super().__init__()
+        self.values.update({k.replace('deck 3','deck 4'):v for k,v in list(self.values.items()) if k.startswith('deck 3')})
+        self.values.update({'deck 4 get_deck':4,'deck 1 play':False,'deck 2 play':False})
+        self.ignore_unload=set();self.fail_query=None;self.fail_after_restore=False;self.fail_ramp=False
+
+    def query(self,script,kind=None):
+        if self.fail_query==script:
+            self.fail_query=None
+            raise BridgeError('Injected cleanup read timeout')
+        return super().query(script,kind)
+
+    def send(self,script):
+        self.commands.append(script)
+        if script.startswith('repeat_stop'):
+            if self.fail_ramp:raise BridgeError('Injected ramp cancellation failure')
+            return
+        guard=re.match(r'deck ([34]) play \? nothing : ',script)
+        if guard and self.values[f'deck {guard[1]} play']:return
+        for deck in (1,2,3,4):
+            if f'deck {deck} pause' in script:self.values[f'deck {deck} play']=False
+            if f'deck {deck} unload' in script and deck not in self.ignore_unload:self.values[f'deck {deck} loaded']=False
+            found=re.search(rf'deck {deck} volume ([0-9.]+)%',script)
+            if found:
+                self.values[f'deck {deck} volume']=float(found[1])/100
+                if self.fail_after_restore and float(found[1])>0:
+                    self.fail_after_restore=False;self.fail_query='get_decks'
+            found=re.search(rf'deck {deck} pfl (on|off)',script)
+            if found:self.values[f'deck {deck} pfl']=found[1]=='on'
+            found=re.search(rf'deck {deck} effect_active 1 (on|off)',script)
+            if found:self.values[f'deck {deck} effect_active 1']=found[1]=='on'
+            found=re.search(rf'deck {deck} effect_select 1 "([^"]+)"',script)
+            if found:self.values[f'deck {deck} get_effect_name 1']=found[1]
+
+
+class AnalysisCleanupTests(unittest.TestCase):
+    def owned(self,deck=3,peer=None,session=None):
+        p=peer or CleanupPeer();s=session or DJSession(threading.Lock())
+        j=BackgroundAnalysis(s,'rev',[{'id':'test','title':'Test'}],deck=deck)
+        j.acquire(p);j.loaded=identity('test');p.values[f'deck {deck} loaded']=True
+        p.commands.clear()
+        return s,p,j
+
+    def latch(self,s,p,j):
+        p.fail_query='get_decks'
+        with self.assertRaises(BridgeError):j.close(p)
+        s.remember_cleanup_failure('background',j)
+
+    def test_failed_close_keeps_ownership_until_explicit_cleanup_verifies_it(self):
+        s,p,j=self.owned();self.latch(s,p,j)
+        self.assertTrue(j.owned);self.assertEqual(j.cleanup_descriptors()[0]['selectionId'],identity('test'))
+        with self.assertRaises(BridgeError):j.close(p)
+        self.assertEqual(p.commands,[])  # Ordinary teardown cannot retry it.
+        s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked']);self.assertIsNone(s.state['cleanupPending'])
+        self.assertFalse(p.values['deck 3 loaded']);self.assertEqual(p.values['deck 3 volume'],1)
+        self.assertTrue(all('deck 3' in c and 'deck 1' not in c and 'deck 2' not in c for c in p.commands))
+
+    def test_unconfirmed_unload_is_an_error_with_a_recoverable_descriptor(self):
+        s,p,j=self.owned();p.ignore_unload.add(3)
+        with self.assertRaisesRegex(BridgeError,'unload was not confirmed'):j.close(p)
+        self.assertTrue(j.owned);self.assertTrue(j.cleanup_descriptors()[0]['unloadRequested'])
+        self.assertTrue(p.values['deck 3 loaded']);self.assertEqual(p.values['deck 3 volume'],0)
+        s.remember_cleanup_failure('background',j);p.ignore_unload.clear();s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked']);self.assertFalse(p.values['deck 3 loaded'])
+
+    def test_missing_final_ack_verifies_completed_restore_without_repeating_writes(self):
+        s,p,j=self.owned();p.fail_after_restore=True
+        with self.assertRaises(BridgeError):j.close(p)
+        self.assertTrue(j.owned);self.assertTrue(j.cleanup_descriptors()[0]['restoreRequested'])
+        self.assertFalse(p.values['deck 3 loaded']);self.assertEqual(p.values['deck 3 volume'],1)
+        s.remember_cleanup_failure('background',j);p.commands.clear();s.retry_paused_cleanup(p)
+        self.assertEqual(p.commands,[]);self.assertFalse(s.state['resumeBlocked'])
+
+    def test_operator_changes_and_aliases_prevent_all_spare_deck_mutations(self):
+        for change in ({'deck 3 play':True},{'deck 3 volume':.7},{'deck 3 pfl':True},
+                       {'deck 3 get_filepath':'operator'},{'deck 3 get_effect_name 1':'Echo'},
+                       {'deck 3 get_deck':1}):
+            with self.subTest(change=change):
+                s,p,j=self.owned();self.latch(s,p,j);p.values.update(change)
+                with self.assertRaises(BridgeError):s.retry_paused_cleanup(p)
+                self.assertEqual(p.commands,[]);self.assertTrue(s.state['resumeBlocked'])
+                self.assertEqual(len(s.state['cleanupPending']['analysis']),1)
+
+    def test_known_cleanup_never_clears_an_independent_old_unknown_latch(self):
+        s,p,j=self.owned();s.update(resumeBlocked=True,cleanupPending={'ramps':[],'unknown':True})
+        self.latch(s,p,j);s.retry_paused_cleanup(p)
+        self.assertFalse(p.values['deck 3 loaded']);self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(s.state['cleanupPending'],{'ramps':[],'unknown':True})
+
+    def test_effect_change_during_restoration_is_not_followed_by_unload(self):
+        s,p,j=self.owned();from afterhours.audio_analysis import PLUGIN
+        p.values['deck 3 get_effect_name 1']=PLUGIN
+        def changed(*args):p.values['deck 3 get_effect_name 1']='Operator Echo'
+        with patch('afterhours.background_analysis.restore_effect',side_effect=changed):
+            with self.assertRaisesRegex(BridgeError,'effect cleanup'):j.close(p)
+        self.assertTrue(j.owned);self.assertEqual(p.commands,[]);self.assertTrue(p.values['deck 3 loaded'])
+
+    def test_cancelled_load_keeps_dispatched_exact_identity_without_replaying_load(self):
+        s,p,j=self.owned();j.loaded=None;j.requested_load=identity('test')
+        self.latch(s,p,j);s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked'])
+        self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
+
+    def test_empty_readback_cannot_release_an_unconfirmed_stream_load(self):
+        s,p,j=self.owned();j.loaded=None;j.requested_load=identity('test')
+        p.values['deck 3 loaded']=False
+        with self.assertRaisesRegex(BridgeError,'stream load is still unconfirmed'):j.close(p)
+        self.assertTrue(j.owned);self.assertTrue(j.cleanup_descriptors()[0]['loadPending'])
+        self.assertEqual(p.values['deck 3 volume'],0);self.assertEqual(p.commands,[])
+        s.remember_cleanup_failure('background',j)
+        with self.assertRaises(BridgeError):s.retry_paused_cleanup(p)
+        self.assertTrue(s.state['resumeBlocked']);self.assertEqual(p.commands,[])
+        # The original Load may finish later. Its exact identity can be cleaned
+        # by a subsequent explicit Stop, without ever issuing another Load.
+        p.values['deck 3 loaded']=True;s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked']);self.assertFalse(p.values['deck 3 loaded'])
+        self.assertEqual(p.values['deck 3 volume'],1)
+        self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
+
+    def test_pool_keeps_only_failed_children_and_reports_the_actual_deck(self):
+        s,p,c=self.owned();_,_,d=self.owned(4,p,s)
+        pool=PreparationPool(s,'rev',[]);pool.jobs=[c,d]
+        c.done=True;d.done=True
+        p.values['deck 4 play']=True
+        with self.assertRaisesRegex(BridgeError,'Deck 4'):pool.close(p)
+        self.assertFalse(c.owned);self.assertTrue(d.owned)
+        self.assertEqual([r['deck'] for r in pool.cleanup_descriptors()],[4])
+        self.assertEqual([r['deck'] for r in pool.snapshot()['decks']],[4])
+        self.assertFalse(any('deck 4' in cmd for cmd in p.commands))
+
+    def test_normal_completion_failure_latches_and_stops_future_scheduling(self):
+        s,p,j=self.owned();j.done=True;p.ignore_unload.add(3)
+        s.background_job=j
+        s.update(queuedUpdate={'id':'rev','status':'analyzing','tracks':[],'protectedIds':[],'reason':'fixture'})
+        with self.assertRaisesRegex(BridgeError,'unload was not confirmed'):s.service_background(p,20)
+        self.assertIsNone(s.background_job);self.assertTrue(s.state['resumeBlocked'])
+        self.assertFalse(s.state['cleanupPending']['unknown'])
+        self.assertEqual(s.state['cleanupPending']['analysis'][0]['deck'],3)
+        self.assertEqual(s.state['queuedUpdate']['status'],'blocked')
+
+    def test_cancelled_revision_failure_retains_ownership_before_worker_teardown(self):
+        s,p,j=self.owned();s.background_job=j;p.values['deck 3 play']=True
+        with self.assertRaises(BridgeError):s.service_background(p,20)
+        self.assertIs(s.background_job,j);self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(p.commands,[])
+
+    def test_worker_failure_retains_exact_ownership_and_the_native_error(self):
+        s,p,j=self.owned();p.values['deck 3 play']=True;s.background_job=j
+        s.factory=lambda *a,**kw:nullcontext(p);s.control_lock.acquire()
+        def fail(client):raise BridgeError('Fixture transition timeout')
+        s._work(fail)
+        self.assertIsNone(s.background_job);self.assertTrue(s.state['resumeBlocked'])
+        self.assertFalse(s.state['cleanupPending']['unknown'])
+        self.assertTrue(any('deck 3 is no longer paused and isolated' in event['text'] for event in s.state['events']))
+        self.assertEqual(p.commands,[])
+
+    def test_descriptors_survive_empty_and_nonempty_checkpoints_without_engine_calls(self):
+        from test_session_recovery import session
+        for queued in (False,True):
+            with self.subTest(queued=queued),tempfile.TemporaryDirectory() as directory:
+                source=session() if queued else DJSession(threading.Lock())
+                _,p,j=self.owned(session=source);self.latch(source,p,j)
+                store=SessionRecovery(Path(directory)/'queue.json');store.save(source)
+                recovered=DJSession(threading.Lock())
+                with patch.object(recovered,'factory') as native:store.restore(recovered)
+                native.assert_not_called();self.assertEqual(source.state['cleanupPending'],recovered.state['cleanupPending'])
+                recovered.retry_paused_cleanup(p)
+                self.assertFalse(recovered.state['resumeBlocked'])
+
+    def test_legacy_unknown_cleanup_survives_invalid_queue_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'queue.json'
+            path.write_text(json.dumps({'version':1,'session':{'order':'invalid',
+                'resumeBlocked':True,'cleanupPending':{'ramps':[],'unknown':True}}}))
+            recovered=DJSession(threading.Lock())
+            with patch.object(recovered,'factory') as native:
+                with self.assertRaises(ValueError):SessionRecovery(path).restore(recovered)
+            native.assert_not_called();self.assertTrue(recovered.state['resumeBlocked'])
+            self.assertEqual(recovered.state['cleanupPending'],{'ramps':[],'unknown':True})
+
+    def test_malformed_or_conflicting_recovered_descriptors_cannot_mutate_engine(self):
+        s,p,j=self.owned();valid=j.cleanup_descriptors()[0]
+        rows=[{**valid,'deck':1},{**valid,'selectionId':'untrusted'},
+              {**valid,'baseline':{**valid['baseline'],'effect':'Echo" & deck 1 play'}},
+              {**valid,'baseline':{**valid['baseline'],'volume':float('nan')}}]
+        for row in rows:
+            with self.subTest(row=row):
+                s.update(resumeBlocked=True,cleanupPending={'ramps':[],'analysis':[row],'unknown':False})
+                s.retry_paused_cleanup(p)
+                self.assertTrue(s.state['resumeBlocked']);self.assertEqual(p.commands,[])
+        conflict={**valid,'ownerId':'a'*32,'selectionId':identity('other')}
+        merged=merge_cleanup_pending({'analysis':[valid,conflict]})
+        self.assertTrue(merged['unknown']);self.assertNotIn('analysis',merged)
+
+    def test_final_main_deck_read_failure_retains_completed_cleanup_stage(self):
+        s,p,j=self.owned();self.latch(s,p,j);p.fail_query='deck 1 play'
+        with self.assertRaises(BridgeError):s.retry_paused_cleanup(p)
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertTrue(s.state['cleanupPending']['analysis'][0]['restoreRequested'])
+        p.commands.clear();s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked']);self.assertEqual(p.commands,[])
+
+    def test_crossfade_cancellation_failure_has_a_fixed_owned_stop_path(self):
+        s=DJSession(threading.Lock());p=CleanupPeer()
+        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps.add('crossfade');s.handoff=handoff
+        p.fail_ramp=True;s.factory=lambda *a,**kw:nullcontext(p);s.control_lock.acquire()
+        s._work(lambda client:None)
+        self.assertEqual(s.state['cleanupPending'],{'ramps':['afterhours_crossfade'],'unknown':False})
+        self.assertIsNone(s.handoff)
+        p.fail_ramp=False;s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked'])
+        self.assertEqual(p.commands,["repeat_stop 'afterhours_crossfade'"]*2)
+
+    def test_owned_audible_ramps_are_stopped_before_slow_analysis_cleanup(self):
+        s,p,j=self.owned();s.background_job=j
+        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps.add('crossfade');s.handoff=handoff
+        mixer=TransitionMixer(Mock(),Mock());mixer.ramps.add('out_low');s.mixer=mixer
+        close=j.close
+        def cleanup(client):
+            self.assertEqual(handoff.ramps,set());self.assertEqual(mixer.ramps,set())
+            self.assertEqual(p.commands,["repeat_stop 'afterhours_crossfade'","repeat_stop 'afterhours_out_low'"])
+            close(client)
+        j.close=cleanup;s.factory=lambda *a,**kw:nullcontext(p);s.control_lock.acquire()
+        s._work(lambda client:None)
+        self.assertFalse(s.state.get('resumeBlocked'));self.assertFalse(j.owned)
+
+    def test_explicit_stop_does_not_pause_a_spare_that_started_outside_its_worker(self):
+        s,p,j=self.owned();self.latch(s,p,j);p.values['deck 3 play']=True
+        s.factory=lambda *a,**kw:nullcontext(p)
+        class InlineThread:
+            def __init__(self,target,args,**kw):self.target,self.args=target,args
+            def start(self):self.target(*self.args)
+            def is_alive(self):return False
+        with patch('afterhours.vdj_session.threading.Thread',InlineThread):s.stop(pause=True)
+        self.assertEqual(p.commands,['deck 1 pause & deck 2 pause'])
+        self.assertTrue(p.values['deck 3 play']);self.assertTrue(s.state['resumeBlocked'])
+        p.values['deck 3 play']=False;p.commands.clear()
+        with patch('afterhours.vdj_session.threading.Thread',InlineThread):s.stop(pause=True)
+        self.assertFalse(s.state['resumeBlocked']);self.assertFalse(p.values['deck 3 loaded'])
+        self.assertFalse(any('deck 3 pause' in cmd for cmd in p.commands))
+
+
+if __name__=='__main__':unittest.main()

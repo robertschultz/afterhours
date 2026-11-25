@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+. ./scripts/python-runtime.sh
+"$DJ_PYTHON" -c 'import sys; sys.exit("Python 3.11 or newer is required. Install it from python.org, then run ./setup again.") if sys.version_info < (3,11) else None'
+if [ ! -x .venv/bin/python ]; then
+  "$DJ_PYTHON" -m venv .venv
+fi
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m afterhours.run_afterhours --check
+printf '%s\n' 'Afterhours setup complete. From the repository root, run ./start-afterhours.'

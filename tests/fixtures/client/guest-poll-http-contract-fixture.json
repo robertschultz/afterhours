@@ -1,0 +1,872 @@
+{
+  "version": 1,
+  "basis": "Actual disposable loopback HTTP; real DJAgent/DJSession queue validation with synthetic measured tracks, fake evaluator and clock. Constructor recovery tested on the same disposable ledger. Zero native/provider calls.",
+  "invitationURL": "http://127.0.0.1:63245/r/pyb_ccdLkACMm1fJYC4gyeQltsccaLrt",
+  "scope": {
+    "origin": "http://127.0.0.1:63245",
+    "roomId": "room-9dd787c3e3fc463780340519761104ad",
+    "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+    "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+  },
+  "actions": {
+    "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+    "incumbentTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+    "firstChoiceTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+    "movedChoiceTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+  },
+  "bootstrap": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 0,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-cadcae17a3df70f731cb83abc9a6db4d",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": true,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {},
+    "performer": {
+      "id": "dj",
+      "name": "The DJ"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Selected 0",
+        "artist": "Fixture"
+      },
+      "playing": true,
+      "sampledAt": 1000.0,
+      "positionSeconds": 20.0,
+      "durationSeconds": 300.0
+    },
+    "next": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Selected 1",
+        "artist": "Fixture"
+      }
+    },
+    "requests": [],
+    "guestToken": "OVNVg829kHPgIjyLsHmp10dPqg6tHK_YGGB6FaJ34As"
+  },
+  "open": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 1,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-cadcae17a3df70f731cb83abc9a6db4d",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": true,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {},
+    "performer": {
+      "id": "dj",
+      "name": "The DJ"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Selected 0",
+        "artist": "Fixture"
+      },
+      "playing": true,
+      "sampledAt": 1000.0,
+      "positionSeconds": 20.0,
+      "durationSeconds": 300.0
+    },
+    "next": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Selected 1",
+        "artist": "Fixture"
+      }
+    },
+    "requests": [],
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 1,
+      "status": "open",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 0
+        }
+      ],
+      "totalVotes": 0
+    }
+  },
+  "voteBody": {
+    "requestId": "vote-http-01",
+    "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+    "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+  },
+  "accepted": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 2,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+      },
+      "duplicate": false,
+      "id": "vote-http-01",
+      "pollRevision": 2,
+      "revision": 2,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 2,
+      "status": "open",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 1
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 0
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+    }
+  },
+  "movedBody": {
+    "requestId": "vote-http-02",
+    "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+    "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+  },
+  "moved": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 3,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+      },
+      "duplicate": false,
+      "id": "vote-http-02",
+      "pollRevision": 3,
+      "revision": 3,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 3,
+      "status": "open",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  "oldReceipt": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 3,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+      },
+      "duplicate": false,
+      "id": "vote-http-01",
+      "pollRevision": 2,
+      "revision": 2,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 3,
+      "status": "open",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  "replayed": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 3,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+      },
+      "duplicate": false,
+      "id": "vote-http-01",
+      "pollRevision": 2,
+      "revision": 2,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 3,
+      "status": "open",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  "conflictError": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "code": "command-conflict",
+    "message": "This vote identity was already used for a different choice."
+  },
+  "nonOptionError": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "code": "option-unavailable",
+    "message": "Choose one of this vote’s recordings."
+  },
+  "unknownReceipt": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "code": "receipt-not-found",
+    "message": "No accepted vote was found with this identity."
+  },
+  "finalState": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 5,
+    "serverAt": 1060.0,
+    "guest": {
+      "id": "guest-cadcae17a3df70f731cb83abc9a6db4d",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": true,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {},
+    "performer": {
+      "id": "dj",
+      "name": "The DJ"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Selected 0",
+        "artist": "Fixture"
+      },
+      "playing": true,
+      "sampledAt": 1060.0,
+      "positionSeconds": 20.0,
+      "durationSeconds": 300.0
+    },
+    "next": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Selected 1",
+        "artist": "Fixture"
+      }
+    },
+    "requests": [],
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 5,
+      "status": "applied",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "chosenTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "reason": "The crowd choice is in the upcoming queue."
+    }
+  },
+  "finalReceipt": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 5,
+    "serverAt": 1060.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006"
+      },
+      "duplicate": false,
+      "id": "vote-http-02",
+      "pollRevision": 3,
+      "revision": 3,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 5,
+      "status": "applied",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "chosenTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "reason": "The crowd choice is in the upcoming queue."
+    }
+  },
+  "closedError": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "code": "poll-closed",
+    "message": "This vote has closed."
+  },
+  "replayedAfterDeadline": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 5,
+    "serverAt": 1060.0,
+    "receipt": {
+      "change": {
+        "pollId": "poll-11a30ecbe8969fcec3b2a03501481fca",
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005"
+      },
+      "duplicate": false,
+      "id": "vote-http-01",
+      "pollRevision": 2,
+      "revision": 2,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:63245",
+        "roomId": "room-9dd787c3e3fc463780340519761104ad",
+        "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+        "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+      }
+    },
+    "poll": {
+      "id": "poll-11a30ecbe8969fcec3b2a03501481fca",
+      "revision": 5,
+      "status": "applied",
+      "openedAt": 1000.0,
+      "closesAt": 1060.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 1
+        }
+      ],
+      "totalVotes": 1,
+      "myChoiceId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "chosenTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+      "reason": "The crowd choice is in the upcoming queue."
+    }
+  },
+  "secondOpen": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 6,
+    "serverAt": 1060.0,
+    "guest": {
+      "id": "guest-cadcae17a3df70f731cb83abc9a6db4d",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": true,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {},
+    "performer": {
+      "id": "dj",
+      "name": "The DJ"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Selected 0",
+        "artist": "Fixture"
+      },
+      "playing": true,
+      "sampledAt": 1060.0,
+      "positionSeconds": 20.0,
+      "durationSeconds": 300.0
+    },
+    "next": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Selected 1",
+        "artist": "Fixture"
+      }
+    },
+    "requests": [],
+    "poll": {
+      "id": "poll-159a84c26e77c72c8b7f27ee9c14aca0",
+      "revision": 6,
+      "status": "open",
+      "openedAt": 1060.0,
+      "closesAt": 1120.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        }
+      ],
+      "totalVotes": 0
+    }
+  },
+  "interruptedState": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:63245",
+      "roomId": "room-9dd787c3e3fc463780340519761104ad",
+      "nightId": "cba25a61da2e480e8fa48760ecb3885c",
+      "generation": "73aa087488a8ac9bd2d11e58cbdfaea1"
+    },
+    "revision": 7,
+    "serverAt": 1060.0,
+    "guest": {
+      "id": "guest-cadcae17a3df70f731cb83abc9a6db4d",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": true,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {},
+    "performer": {
+      "id": "dj",
+      "name": "The DJ"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Selected 0",
+        "artist": "Fixture"
+      },
+      "playing": true,
+      "sampledAt": 1060.0,
+      "positionSeconds": 20.0,
+      "durationSeconds": 300.0
+    },
+    "next": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Selected 1",
+        "artist": "Fixture"
+      }
+    },
+    "requests": [],
+    "poll": {
+      "id": "poll-159a84c26e77c72c8b7f27ee9c14aca0",
+      "revision": 7,
+      "status": "interrupted",
+      "openedAt": 1060.0,
+      "closesAt": 1120.0,
+      "options": [
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000006",
+            "title": "Selected 5"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+            "title": "Selected 4"
+          },
+          "votes": 0
+        },
+        {
+          "track": {
+            "artist": "Fixture",
+            "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+            "title": "Selected 2"
+          },
+          "votes": 0
+        }
+      ],
+      "totalVotes": 0,
+      "reason": "This vote ended when the DJ service restarted."
+    }
+  },
+  "provenance": {
+    "generatedAt": 1794154351.093128,
+    "generator": "synthetic guest poll contract fixture",
+    "nativeCalls": 0,
+    "providerCalls": 0,
+    "installedServiceActions": 0,
+    "sourceSHA256": {
+      "guest_requests.py": "e335c1a83163229bca1cd8f76e8d104a35ddd457587480350cc3d9445fb449f2",
+      "guest_polls.py": "34cd371e68428ffaa5359992ac7177ee540a7365b8c19f4d6d6009669eb99876",
+      "guest_protocol.py": "3c9b018d097647f5d5a2ead8561bf461229cf1f17f47bf0edd745509f74af9a2",
+      "guest_poll_coordinator.py": "3c6b51c05218f5bc7e65ac250e866415de291f5a7ab446b9a8ea12b01596ea4d",
+      "guest_coordinator.py": "5bb39795f6cbe74c89ef4b750b92266db5db77fbd156ea42dc08d6e9777412ce",
+      "crowd_choice.py": "dcadc15d18410ce989557246c0587dab7c4172035f2feea8225e9dfe1ddc8929",
+      "dj_agent.py": "1ac82129d4763b603482f8326841f0c0ee1576438f1e02d83ae04eabec2cc1da",
+      "test_guest_poll_http.py": "6458ff6ec30701c3f10c59705134038a4b18cb2cd1076feb8c2c49520f28fd3f",
+      "test_crowd_choice.py": "f07554b40d65b07bb1bdcbbc8efddcb5a3949cc376bff163c87a9dc3ef30a8a2"
+    }
+  }
+}

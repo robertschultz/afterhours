@@ -1,0 +1,825 @@
+{
+  "basis": "Actual disposable loopback HTTP; fake crate/clock and explicitly injected planner/deck stages; no native/provider/installed-service actions.",
+  "version": 1,
+  "invitationURL": "http://127.0.0.1:50527/r/xuG88R4gZ1LQfl0eXmT864z6YKusFHHs",
+  "scope": {
+    "origin": "http://127.0.0.1:50527",
+    "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+    "nightId": "night-fixture",
+    "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+  },
+  "actions": {
+    "acceptedTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+    "declinedTrackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "bootstrap": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 0,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 0,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": null,
+    "requests": [],
+    "guestToken": "0uN_IWDd7KfETqe6WGP-yyKa6bS8qmEoda2vLLCZfhk"
+  },
+  "search": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 0,
+    "serverAt": 1000.0,
+    "query": "Fixture",
+    "searchId": "search-8f41ba8344e4f055ca10cca9602335ad",
+    "expiresAt": 1120.0,
+    "scopeLabel": "known-crate",
+    "records": [
+      {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+        "title": "Fixture record 1",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+        "title": "Fixture record 2",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000004",
+        "title": "Fixture record 3",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000005",
+        "title": "Fixture record 4",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      }
+    ]
+  },
+  "sendBody": {
+    "requestId": "send-fixture-01",
+    "searchId": "search-8f41ba8344e4f055ca10cca9602335ad",
+    "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+    "follow": true
+  },
+  "accepted": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 1,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "follow": true,
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "duplicate": false,
+      "id": "send-fixture-01",
+      "requestId": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:50527",
+        "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+        "nightId": "night-fixture",
+        "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+      }
+    },
+    "request": {
+      "id": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "track": {
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png",
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0"
+      },
+      "asks": 1,
+      "firstAt": 1000.0,
+      "stage": "sent",
+      "followed": true,
+      "playingNow": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    }
+  },
+  "lookup": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 1,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "follow": true,
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "duplicate": false,
+      "id": "send-fixture-01",
+      "requestId": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:50527",
+        "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+        "nightId": "night-fixture",
+        "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+      }
+    },
+    "request": {
+      "id": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "track": {
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png",
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0"
+      },
+      "asks": 1,
+      "firstAt": 1000.0,
+      "stage": "sent",
+      "followed": true,
+      "playingNow": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    }
+  },
+  "duplicate": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 1,
+    "serverAt": 1000.0,
+    "receipt": {
+      "change": {
+        "follow": true,
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "duplicate": false,
+      "id": "send-fixture-01",
+      "requestId": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:50527",
+        "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+        "nightId": "night-fixture",
+        "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+      }
+    },
+    "request": {
+      "id": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "track": {
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png",
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0"
+      },
+      "asks": 1,
+      "firstAt": 1000.0,
+      "stage": "sent",
+      "followed": true,
+      "playingNow": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    }
+  },
+  "resumed": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 1,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 1,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": null,
+    "requests": [
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 1,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      }
+    ]
+  },
+  "sent": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 3,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 3,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": null,
+    "requests": [
+      {
+        "id": "request-1850fb87c6bb7d99dba4603bfc9df853",
+        "revision": 3,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+          "title": "Fixture record 2"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-3aa6e0aedc313f8d763cfc9240f98189",
+        "revision": 2,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+          "title": "Fixture record 1"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 1,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      }
+    ]
+  },
+  "listening": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 4,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 3,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": null,
+    "requests": [
+      {
+        "id": "request-1850fb87c6bb7d99dba4603bfc9df853",
+        "revision": 3,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+          "title": "Fixture record 2"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-3aa6e0aedc313f8d763cfc9240f98189",
+        "revision": 2,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+          "title": "Fixture record 1"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 4,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "listening",
+        "followed": true,
+        "playingNow": false
+      }
+    ]
+  },
+  "coming": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 5,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 3,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": null,
+    "requests": [
+      {
+        "id": "request-1850fb87c6bb7d99dba4603bfc9df853",
+        "revision": 3,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+          "title": "Fixture record 2"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-3aa6e0aedc313f8d763cfc9240f98189",
+        "revision": 2,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+          "title": "Fixture record 1"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 5,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "coming",
+        "followed": true,
+        "playingNow": false
+      }
+    ]
+  },
+  "playing": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 6,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 2,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      "playing": true,
+      "sampledAt": 1000.0,
+      "positionSeconds": 20,
+      "durationSeconds": 300
+    },
+    "requests": [
+      {
+        "id": "request-1850fb87c6bb7d99dba4603bfc9df853",
+        "revision": 3,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+          "title": "Fixture record 2"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-3aa6e0aedc313f8d763cfc9240f98189",
+        "revision": 2,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+          "title": "Fixture record 1"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 6,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "playing",
+        "followed": true,
+        "playingNow": true,
+        "playedAt": 1000.0,
+        "closedAt": 1000.0
+      }
+    ]
+  },
+  "declined": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 7,
+    "serverAt": 1000.0,
+    "guest": {
+      "id": "guest-d48888cfbbb0888f0991507cf720c899",
+      "expiresAt": 87400.0,
+      "openCount": 1,
+      "openLimit": 3
+    },
+    "capabilities": {
+      "search": true,
+      "ask": true,
+      "status": true,
+      "poll": false,
+      "liveActivity": false
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    },
+    "night": {
+      "title": "Fixture night"
+    },
+    "performer": {
+      "id": "nova",
+      "name": "Nova"
+    },
+    "program": {
+      "track": {
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0",
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png"
+      },
+      "playing": true,
+      "sampledAt": 1000.0,
+      "positionSeconds": 20,
+      "durationSeconds": 300
+    },
+    "requests": [
+      {
+        "id": "request-1850fb87c6bb7d99dba4603bfc9df853",
+        "revision": 3,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000003",
+          "title": "Fixture record 2"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "sent",
+        "followed": true,
+        "playingNow": false
+      },
+      {
+        "id": "request-3aa6e0aedc313f8d763cfc9240f98189",
+        "revision": 7,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000002",
+          "title": "Fixture record 1"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "declined",
+        "followed": true,
+        "playingNow": false,
+        "closedAt": 1000.0,
+        "reason": "This recording does not fit tonight\u2019s set."
+      },
+      {
+        "id": "request-55c68228360c9103ffe555ac6b592e66",
+        "revision": 6,
+        "track": {
+          "artist": "Fixture artist",
+          "artworkUrl": "https://art.example.test/record.png",
+          "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+          "title": "Fixture record 0"
+        },
+        "asks": 1,
+        "firstAt": 1000.0,
+        "stage": "playing",
+        "followed": true,
+        "playingNow": true,
+        "playedAt": 1000.0,
+        "closedAt": 1000.0
+      }
+    ]
+  },
+  "quotaError": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "code": "open-limit",
+    "message": "You already have three open requests."
+  },
+  "unknownReceipt": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "code": "receipt-not-found",
+    "message": "No accepted request was found with this identity."
+  },
+  "expiredSelection": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "code": "selection-expired",
+    "message": "This selection expired. Refresh the same recording before sending."
+  },
+  "replayedAfterExpiry": {
+    "version": 1,
+    "scope": {
+      "origin": "http://127.0.0.1:50527",
+      "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+      "nightId": "night-fixture",
+      "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+    },
+    "revision": 7,
+    "serverAt": 1121.0,
+    "receipt": {
+      "change": {
+        "follow": true,
+        "trackId": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "duplicate": false,
+      "id": "send-fixture-01",
+      "requestId": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 1,
+      "status": "accepted",
+      "scope": {
+        "origin": "http://127.0.0.1:50527",
+        "roomId": "room-7985914b395f1074b31bac6e0c0949ca",
+        "nightId": "night-fixture",
+        "generation": "0dc9ab9f189d2f01c2330a57f553d642"
+      }
+    },
+    "request": {
+      "id": "request-55c68228360c9103ffe555ac6b592e66",
+      "revision": 6,
+      "track": {
+        "artist": "Fixture artist",
+        "artworkUrl": "https://art.example.test/record.png",
+        "id": "virtualdj:0000000000000000000000000000000000000000000000000000000000000001",
+        "title": "Fixture record 0"
+      },
+      "asks": 1,
+      "firstAt": 1000.0,
+      "stage": "playing",
+      "followed": true,
+      "playingNow": false,
+      "playedAt": 1000.0,
+      "closedAt": 1000.0
+    },
+    "follow": {
+      "status": "configuration-required",
+      "foregroundStatus": true
+    }
+  }
+}

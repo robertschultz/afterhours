@@ -1,0 +1,31 @@
+#!/bin/zsh
+set -eu
+cd "${0:A:h}"
+if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
+  print -u2 'This installer currently supports Apple Silicon Macs only.'
+  exit 1
+fi
+if pgrep -x VirtualDJ >/dev/null; then
+  print -u2 'Quit VirtualDJ normally before installing the analysis bridge, then run this command again.'
+  exit 1
+fi
+if ! xcrun --find clang++ >/dev/null 2>&1; then
+  print -u2 'Install Apple Command Line Tools with xcode-select --install, then run this command again.'
+  exit 1
+fi
+. ./scripts/python-runtime.sh
+"$DJ_PYTHON" native/analysis-bridge/build.py "$@"
+bridge_source="$PWD/native/analysis-bridge/build/Afterhours Analysis.bundle"
+bridge_target="$HOME/Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle"
+codesign --verify --strict "$bridge_source"
+if [[ -e "$bridge_target" ]]; then
+  bridge_backup="$PWD/backups/bridge-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$bridge_backup"
+  mv "$bridge_target" "$bridge_backup/Afterhours Analysis.bundle"
+  print "Previous bridge saved to: $bridge_backup"
+fi
+mkdir -p "${bridge_target:h}"
+ditto "$bridge_source" "$bridge_target"
+codesign --verify --strict "$bridge_target"
+print 'Analysis bridge installed. Open VirtualDJ and select a four-deck skin for background analysis.'
+print 'Rebuild this bridge if you change the analysis report directory. Its path is compiled in.'

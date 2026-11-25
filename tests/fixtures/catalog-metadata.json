@@ -1,0 +1,434 @@
+{
+  "purpose": "Synthetic test only. No real catalog read, audio or provider connection.",
+  "tracks": [
+    {
+      "schema": "afterhours.track.v1",
+      "id": "virtualdj:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "engine": {
+        "name": "virtualdj",
+        "selection_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "folder_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "catalog": {
+        "provider": null,
+        "track_id": null
+      },
+      "observed_at": "2026-10-25T11:59:00Z",
+      "title": "Fixture: a long midnight track title with extended mix and collaboration credits",
+      "artist": "Synthetic artist \u00b7 no streamed audio",
+      "album": null,
+      "genre": "House",
+      "remix": "Original Mix",
+      "label": "Fixture label",
+      "year": null,
+      "bpm": 120.0,
+      "key": "A minor",
+      "camelot": "8A",
+      "duration": 372.125,
+      "energy": null,
+      "playback_verified": false,
+      "provenance": {
+        "title": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "artist": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "album": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "genre": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "remix": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "label": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "year": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "bpm": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "key": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "camelot": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "duration": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "milliseconds-to-seconds"
+        },
+        "energy": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        }
+      },
+      "missing_fields": [
+        "album",
+        "year",
+        "energy"
+      ]
+    },
+    {
+      "schema": "afterhours.track.v1",
+      "id": "virtualdj:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "engine": {
+        "name": "virtualdj",
+        "selection_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "folder_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "catalog": {
+        "provider": null,
+        "track_id": null
+      },
+      "observed_at": "2026-10-25T11:59:00Z",
+      "title": "Fixture: \u591c\u306e\u97f3\u697d \u00b7 \u0645\u0648\u0633\u064a\u0642\u0649 \u0627\u0644\u0644\u064a\u0644",
+      "artist": "Synthetic artist \u00b7 no streamed audio",
+      "album": null,
+      "genre": "House",
+      "remix": "Extended Mix",
+      "label": "Fixture label",
+      "year": null,
+      "bpm": 122.0,
+      "key": "E minor",
+      "camelot": "9A",
+      "duration": 372.125,
+      "energy": null,
+      "playback_verified": false,
+      "provenance": {
+        "title": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "artist": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "album": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "genre": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "remix": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "label": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "year": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "bpm": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "key": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "camelot": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "duration": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "milliseconds-to-seconds"
+        },
+        "energy": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        }
+      },
+      "missing_fields": [
+        "album",
+        "year",
+        "energy"
+      ]
+    },
+    {
+      "schema": "afterhours.track.v1",
+      "id": "virtualdj:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "engine": {
+        "name": "virtualdj",
+        "selection_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "folder_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "catalog": {
+        "provider": null,
+        "track_id": null
+      },
+      "observed_at": "2026-10-25T11:59:00Z",
+      "title": "Fixture: \u591c\u306e\u97f3\u697d \u00b7 \u0645\u0648\u0633\u064a\u0642\u0649 \u0627\u0644\u0644\u064a\u0644",
+      "artist": "Synthetic artist \u00b7 no streamed audio",
+      "album": null,
+      "genre": "House",
+      "remix": "Radio Edit",
+      "label": "Fixture label",
+      "year": null,
+      "bpm": 126.0,
+      "key": "B minor",
+      "camelot": "10A",
+      "duration": 372.125,
+      "energy": null,
+      "playback_verified": false,
+      "provenance": {
+        "title": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "artist": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "album": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "genre": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "remix": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "label": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "year": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "bpm": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "key": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "camelot": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "key-notation"
+        },
+        "duration": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": "milliseconds-to-seconds"
+        },
+        "energy": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        }
+      },
+      "missing_fields": [
+        "album",
+        "year",
+        "energy"
+      ]
+    },
+    {
+      "schema": "afterhours.track.v1",
+      "id": "virtualdj:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "engine": {
+        "name": "virtualdj",
+        "selection_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "folder_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "catalog": {
+        "provider": null,
+        "track_id": null
+      },
+      "observed_at": "2026-10-25T11:59:00Z",
+      "title": "Fixture: <script> unknown analysis",
+      "artist": "Synthetic artist \u00b7 no streamed audio",
+      "album": null,
+      "genre": "House",
+      "remix": null,
+      "label": "Fixture label",
+      "year": null,
+      "bpm": null,
+      "key": null,
+      "camelot": null,
+      "duration": null,
+      "energy": null,
+      "playback_verified": false,
+      "provenance": {
+        "title": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "artist": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "album": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "genre": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "remix": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "label": {
+          "source": "virtualdj.browser",
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "year": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "bpm": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "key": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "camelot": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "duration": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        },
+        "energy": {
+          "source": null,
+          "confidence": null,
+          "estimated": null,
+          "transform": null
+        }
+      },
+      "missing_fields": [
+        "album",
+        "remix",
+        "year",
+        "bpm",
+        "key",
+        "camelot",
+        "duration",
+        "energy"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Testing
+
+From the repository root:
+
+```sh
+./setup
+.venv/bin/python scripts/test-python.py
+npm test
+```
+
+Use Node.js 24 or later for the client fixtures. The test runner starts only disposable loopback processes and isolates state from installed services. Python tests cover the bridge, set planning, transitions, session state, and the HTTP surface. JavaScript tests cover the client contracts and browser helpers.
+
+Pass a module name to the Python runner to run a focused suite, for example `.venv/bin/python scripts/test-python.py test_vdj_session`. Use `--list` to see available modules. For JavaScript, use `npm test -- test-music.mjs`. Tests live in `tests/python/`, `tests/js/`, and `tests/mcp/`, with shared contract data in `tests/fixtures/`.
+
+To check the optional MCP transport in a separate virtual environment, use a Python interpreter supported by the MCP dependencies.
+
+```sh
+python3 -m venv .venv-mcp
+.venv-mcp/bin/python -m pip install -e .
+.venv-mcp/bin/python -m pip install --require-hashes -r requirements/requirements-mcp.txt
+.venv-mcp/bin/python scripts/test-mcp.py
+```
+
+Synthetic tests establish software behavior. Native playback, hardware, provider access, and listening acceptance are separate.

@@ -1,0 +1,3 @@
+# Optional stdio adapter only. Core engine/tests have no SDK dependency.
+# Official stable release: https://github.com/modelcontextprotocol/python-sdk/releases/tag/v2.3.0
+mcp==2.3.0

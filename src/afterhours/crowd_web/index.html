@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0B0B0D">
+  <title>Tonight · Afterhours</title>
+  <link rel="stylesheet" href="__CROWD_ROOT__/assets/crowd.css">
+  <script type="module" src="__CROWD_ROOT__/assets/app.mjs"></script>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"></div>
+  <main id="main">
+    <header class="heading">
+      <div><h1 id="night-title">Tonight</h1><p id="night-subtitle">Joining the room…</p></div>
+      <div class="toolbar glass" role="group" aria-label="Page options">
+        <button id="refresh" class="icon-button" aria-label="Refresh room status" title="Refresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2 6M20 4v7h-7"/></svg>
+        </button>
+        <button id="theme" class="icon-button" aria-label="Use light appearance" title="Appearance">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <section id="connection" class="notice" aria-live="polite" hidden>
+      <p id="connection-copy"></p><div class="actions" id="connection-actions"></div>
+    </section>
+    <section id="program" class="program glass" aria-label="Now playing">
+      <div class="record-line"><div id="now-art" class="record-art" aria-hidden="true"></div>
+        <div class="record-copy"><p id="now-status" class="caption">Room status</p>
+          <h2 id="now-title">Waiting for the music</h2><p id="now-artist" class="secondary">The current record will appear here.</p></div></div>
+      <div id="progress-row" class="progress-row" hidden><progress id="progress" value="0" max="1" aria-label="Record progress"></progress><span id="time-left"></span></div>
+    </section>
+    <section class="performer" aria-label="Your DJ">
+      <div id="performer-art" class="avatar" aria-hidden="true"></div>
+      <div><p id="performer-name">Your DJ</p><p id="performer-status" class="secondary small">Requests stay with this room.</p></div>
+    </section>
+    <section id="pending" class="notice" aria-live="polite" hidden>
+      <h2>Checking your request</h2><p id="pending-copy"></p><div class="actions"><button id="check-request">Check status</button><button id="retry-request" hidden>Retry same request</button></div>
+    </section>
+    <section id="your-requests" hidden>
+      <div class="section-heading"><h2>Your requests</h2><p id="request-count" class="secondary small"></p></div>
+      <div id="request-list" class="request-list glass"></div>
+    </section>
+    <section id="poll" aria-labelledby="poll-title" hidden>
+      <div class="section-heading"><h2 id="poll-title">Pick a future record</h2><p id="poll-count" class="secondary small"></p></div>
+      <div id="poll-options" class="poll-grid" role="group" aria-label="Record choices"></div>
+      <p id="poll-context" class="secondary small"></p>
+      <p id="poll-status" class="secondary small"></p>
+      <div id="vote-recovery" class="vote-recovery" aria-live="polite">
+        <p id="vote-message" class="secondary small"></p>
+        <button id="check-vote" class="small" hidden>Check vote status</button>
+      </div>
+    </section>
+    <section id="next-up" class="next-up" hidden><p id="next-copy"></p></section>
+    <footer><p id="room-note">The DJ plays what fits the night. Not every request makes it.</p>
+      <p class="small">Keep this page open for updates. Lock Screen notifications are not available here.</p></footer>
+  </main>
+
+  <section id="search-panel" class="search-panel glass" aria-labelledby="search-title" hidden>
+    <h2 id="search-title">In the DJ’s crate</h2><p class="secondary small">Search the records available in this room.</p>
+    <p id="search-message" class="secondary" role="status">Enter a track or artist to find a record.</p>
+    <div id="search-results"></div>
+  </section>
+  <div class="search-dock">
+    <form id="search-form" class="search-field glass" role="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+      <input id="search" type="search" maxlength="160" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" enterkeyhint="search" aria-label="Search for a track or artist" placeholder="Ask the DJ for a song" disabled>
+      <button class="sr-only" type="submit">Search</button>
+    </form>
+    <button id="close-search" class="icon-button glass" aria-label="Close search" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <dialog id="request-sheet" aria-labelledby="sheet-heading">
+    <div class="sheet-content">
+      <div class="sheet-header"><button id="close-sheet" class="icon-button" aria-label="Close request">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button><h2 id="sheet-heading">Ask the DJ</h2><span></span></div>
+      <div id="sheet-art" class="record-art large" aria-hidden="true"></div>
+      <h3 id="sheet-title"></h3><p id="sheet-artist" class="secondary"></p>
+      <div class="follow-row"><div><p>Follow on Lock Screen</p><p class="secondary small">Not available in this browser. See the request here while this page is open.</p></div>
+        <input type="checkbox" role="switch" aria-label="Follow on Lock Screen, unavailable in this browser" disabled></div>
+      <p id="sheet-message" role="status" class="secondary"></p>
+      <button id="refresh-selection" hidden>Refresh this recording</button>
+      <button id="send-request" class="primary">Send request</button>
+    </div>
+  </dialog>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript><div class="notice">This request page needs JavaScript to confirm exact recordings and keep your request status. Enable JavaScript, then reload.</div></noscript>
+</body>
+</html>

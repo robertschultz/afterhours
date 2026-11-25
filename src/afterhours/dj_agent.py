@@ -1810,7 +1810,7 @@ class DJAgent:
                      not s.get('queuedUpdate') and self.seen_context is not None and key!=self.seen_context)
             if not pending and not catalog_ready and (self.playback_request or {}).get('scope')=='finite':return
             if not pending and not catalog_ready and not refill and not recheck and not guest_work:return
-            if not pending and not self.state['direction']:return
+            if not pending and not catalog_ready and not self.state['direction']:return
             if use_curation and (s.get('copilot') or {}).get('held'):return
             if not force and not catalog_ready and self.clock()-self.last_request<8:return
             if refill and not pending and not catalog_ready:

@@ -93,6 +93,8 @@ class QueuePlanningTests(unittest.TestCase):
         self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','matched':2})
         agent.tick(force=True)
         settled(agent)
+        provider.assert_called_once()
+        self.assertEqual(provider.call_args.args[0]['reason'],'choose from catalog results')
         self.assertNotEqual(self.session.snapshot()['id'],old)
         self.assertEqual(agent.state['messages'][0]['queueMode'],'fresh-start')
         self.assertTrue(agent.playback_request['freshQueue'])

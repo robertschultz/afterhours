@@ -94,3 +94,17 @@ def adopt(state,archive,lesson,keep,at):
 
 def rules(state):
     return [{k:copy.deepcopy(row[k]) for k in ('id','title','detail','on','changedAt')}|{'group':'learned'} for row in state['learned']]
+
+
+def track_feedback(value):
+    """Validate persisted, operator-authored recording preferences."""
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for row in value[-64:]:
+        if (isinstance(row, dict) and set(row) == {'trackId', 'profileId', 'preference', 'reason'}
+                and all(isinstance(row[key], str) for key in row)
+                and 0 < len(row['trackId']) <= 100 and len(row['profileId']) <= 64
+                and row['preference'] in ('prefer', 'avoid') and len(row['reason']) <= 180):
+            rows.append(row)
+    return rows

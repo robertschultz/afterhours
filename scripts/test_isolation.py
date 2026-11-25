@@ -32,7 +32,8 @@ def test_environment():
         home.mkdir()
         env = {key: value for key, value in os.environ.items()
                if not key.upper().endswith(('_KEY', '_TOKEN', '_SECRET', '_PASSWORD', '_PROXY'))
-               and key != 'AFTERHOURS_RECAP_FIXTURE'}
+               and key not in {'AFTERHOURS_RECAP_FIXTURE', 'AFTERHOURS_TRACK_SECONDS', 'AFTERHOURS_CURATION_MINUTES'}
+               and not key.startswith('AFTERHOURS_PLANNER_')}
         env.update(AFTERHOURS_DATA_ROOT=str(root),
                    AFTERHOURS_ANALYSIS_REPORTS_DIR=str(root / '.runtime/audio-analysis'),
                    PYTHONDONTWRITEBYTECODE='1')

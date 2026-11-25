@@ -62,6 +62,8 @@ def intent(text):
         return None
     existing=queue_intent(value)
     if existing:return existing
+    if re.fullmatch(r'(?:start|play) (?:a )?(?:new|fresh) (?:queue|set)(?: now)?',value):
+        return 'fresh-start'
     if value in {'play', 'play music', 'play the music', 'play now', 'play it', 'play the set',
                  'play the queue', 'start', 'start playing', 'start playing music', 'start music',
                  'start the music', 'start the set', 'start set', 'start the queue', 'start djing',

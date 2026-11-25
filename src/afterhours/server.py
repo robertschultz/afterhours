@@ -11,7 +11,8 @@ import time
 import os
 import signal
 import sqlite3
-from afterhours import ai_mix
+from afterhours import ai_mix, playback_requests, queue_planning
+from afterhours.planner_policy import track_seconds
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_api import request as vdj_request
 from afterhours.vdj_session import DJSession
@@ -350,16 +351,20 @@ class Handler(RuntimeStaticHandler):
             try:
                 action=data.get('action')
                 if self.path=='/api/dj-agent':
-                    if action=='message':
-                        source=data.get('source','typed')
+                    if action in ('message','start-new-queue'):
+                        source='typed' if action=='start-new-queue' else data.get('source','typed')
+                        text=data.get('text','Start a fresh queue.') if action=='start-new-queue' else data.get('text')
+                        mode='fresh-start' if action=='start-new-queue' else data.get('queueMode','steer')
                         if source=='voice':LIVE_VOICE.require(data.get('sessionId'))
-                        if data.get('queueMode')=='replace' and LIVE_VOICE.status()['status'] not in ('idle','closed','error'):
+                        if (mode in ('replace','fresh-start') or playback_requests.intent(text)=='fresh-start') and LIVE_VOICE.status()['status'] not in ('idle','closed','error'):
                             raise ValueError('Stop Talk before starting a fresh queue. You can still steer this queue.')
                         DJ_AGENT.handoff_commit=self.commit_handoff
                         DJ_AGENT.reset_profile=self.reset_default_profile
-                        result=DJ_AGENT.message(data.get('text'),source,data.get('messageId'),data.get('approveRequest') is True,data.get('queueMode','steer'),data.get('performanceContext'),data.get('approvePreparation') is True,data.get('surface'),data.get('nativeSettingsContext'),data.get('recapContext'),data.get('approveSessionCuration') is True)
+                        result=DJ_AGENT.message(text,source,data.get('messageId'),data.get('approveRequest') is True,mode,data.get('performanceContext'),data.get('approvePreparation') is True,data.get('surface'),data.get('nativeSettingsContext'),data.get('recapContext'),data.get('approveSessionCuration') is True)
                     elif action in ('catalog-play-next','catalog-put-back'):
                         result=DJ_AGENT.catalog_action(action,data.get('requestId'),data.get('trackId'),data.get('expected'),data.get('searchId'))
+                    elif action=='track-feedback':
+                        result=DJ_AGENT.record_track_feedback(data.get('trackId'),data.get('preference'),data.get('reason',''))
                     elif action=='settings':
                         result=DJ_AGENT.settings_action(data.get('requestId'),data.get('change'),data.get('expected'))
                     elif action=='performance-delivery':
@@ -411,9 +416,26 @@ class Handler(RuntimeStaticHandler):
                 if action == 'discover':
                     result = DJ_SESSION.discover(data.get('query'), data.get('artist',''),data.get('genre',''),data.get('bpmMin',40),data.get('bpmMax',300))
                 elif action == 'plan':
-                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',30), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'))
+                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'))
                 elif action == 'start':
                     result = DJ_SESSION.start()
+                elif action in ('insert-track','preview-insertion'):
+                    track_id=data.get('trackId')
+                    if not isinstance(track_id,str) or not track_id:raise ValueError('Choose an exact recording to insert.')
+                    with DJ_SESSION.lock:
+                        DJ_SESSION.require_available([track_id])
+                        snapshot=DJ_SESSION.snapshot()
+                        if not any(track['id']==track_id for track in snapshot['candidates']):
+                            stored=DJ_SESSION.crate.get(track_id)
+                            if stored:snapshot['candidates'].append(stored)
+                        placement=queue_planning.placement(snapshot,track_id)
+                        receipt={key:placement[key] for key in ('slot','afterId','beforeId','options')}
+                        if action=='preview-insertion':
+                            return self.reply({'sessionId':snapshot['id'],'trackId':track_id,'insertion':receipt})
+                        DJ_SESSION.hydrate_records([track_id],keep=placement['ids'])
+                        result=DJ_SESSION.revise_queue(placement['ids'],reason='Operator requested a fitted queue insertion.',
+                                                       tempo_targets=placement['tempoTargets'])
+                        result={**result,'insertion':receipt}
                 elif action == 'prepare':
                     result = DJ_SESSION.prepare()
                 elif action == 'prepare-analysis':

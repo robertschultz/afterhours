@@ -29,6 +29,15 @@ export class MusicConnection {
     }
     return value;
   }
+  startNewQueue({messageId, text, approveRequest = false, approvePreparation = false, approveSessionCuration = false}) {
+    return this.request('/api/dj-agent', {action:'start-new-queue', messageId, text, approveRequest, approvePreparation, approveSessionCuration});
+  }
+  previewInsertion(trackId) {
+    return this.request('/api/set-session', {action:'preview-insertion', trackId});
+  }
+  insertTrack(trackId) {
+    return this.request('/api/set-session', {action:'insert-track', trackId});
+  }
   async refresh({includeCatalog = true, background = false} = {}) {
     if (this.busy) throw new Error('A request is still in progress.');
     this.busy = true;

@@ -31,7 +31,7 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(self.requests,[])
     def test_configuration_and_response_hide_project_key(self):
         result=self.start();body=json.loads(self.requests[0].data)
-        self.assertEqual(body['session']['model'],'gpt-live-1');self.assertEqual(body['session']['delegation'],{'type':'client'})
+        self.assertEqual(body['session']['model'],'gpt-live-1.1');self.assertEqual(body['session']['delegation'],{'type':'client'})
         self.assertFalse(body['session']['store']);self.assertEqual(body['session']['audio']['output']['voice'],'meridian')
         self.assertNotIn('sk-fixture',json.dumps(result));self.assertNotIn('sk-fixture',json.dumps(self.voice.status()))
         self.assertEqual(self.agent.snapshot()['allowance']['remaining'],6);self.assertEqual(self.voice.timer.interval,120)

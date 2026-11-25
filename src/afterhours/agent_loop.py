@@ -44,7 +44,7 @@ TOOL_DEFS = [
          {'text':{**OPTIONAL_STR,'description':'Title, artist, remix or genre words. Moods are not catalogued.'},
           'genre':OPTIONAL_STR,'bpmMin':OPTIONAL_NUMBER,'bpmMax':OPTIONAL_NUMBER,
           'limit':{'type':'integer','description':'1 to 8.'}}),
-    tool('suggest_next','Which recordings can follow this one: compatible key first, then smallest tempo change.',
+    tool('suggest_next','Which recordings can follow this one: key fit, verified cue readiness and tempo change.',
          {'afterId':STR,'limit':{'type':'integer','description':'1 to 8.'}}),
     tool('compare_tracks','Tempo, key, genre, queue position and preparation of 2 to 4 recordings.',
          {'trackIds':{'type':'array','items':STR}}),
@@ -78,7 +78,7 @@ def explore_request(packet, lookups, transcript, remaining, max_bytes):
                'djProfile': json.dumps(packet.get('djProfile') or {}, ensure_ascii=False)[:600],
                'lookups': [{k: row[k] for k in ('tool', 'arguments', 'result')} for row in transcript],
                'lookupsRemaining': max(0, remaining)}
-    body = {'model': ai_mix.MODEL, 'store': False, 'service_tier': 'default', 'reasoning': {'effort': 'low'},
+    body = {'model': ai_mix.model_policy()[0], 'store': False, 'service_tier': 'default', 'reasoning': {'effort': 'low'},
             'max_output_tokens': 900, 'instructions': EXPLORE_INSTRUCTIONS, 'tools': TOOL_DEFS}
 
     def encode():
@@ -107,9 +107,10 @@ def number(value):
 class Lookups:
     """The crate as the planner may read it for one evaluation."""
 
-    def __init__(self, session, rows, analysis=None):
+    def __init__(self, session, rows, analysis=None, retrieve=None):
         self.session = session
         self.rows = {row['id']: row for row in rows}
+        self.retrieve = retrieve
         queued = (session.get('queuedUpdate') or {}).get('tracks') or session.get('order', [])
         self.positions = {track['id']: index for index, track in enumerate(queued)}
         plan = session.get('executionPlan') or {}
@@ -213,6 +214,10 @@ class Lookups:
         if (arguments.get('text') or '').strip() and not words:
             raise ValueError('The search text has no words to match. Use a name, or genre and BPM.')
 
+        if self.retrieve and (words or genre):
+            for row in self.retrieve(' '.join(sorted(words | genre)), list(self.rows.values())):
+                self.rows.setdefault(row['id'], row)
+
         def named(row):
             return set(catalog_browser.query_words(
                 ' '.join(str(row.get(k) or '') for k in ('title', 'artist', 'remix', 'genre'))))
@@ -242,11 +247,13 @@ class Lookups:
         shown = found[:limit]
         self.surface([row['id'] for row in shown])
         result = {'total': len(found), 'crateSize': len(self.rows), 'matches': [self.brief(row) for row in shown]}
+        if self.retrieve:
+            result['scope'] = 'Working queue and locally retrieved candidates.'
         if ignored:
             result['wordsNotInCrate'] = ignored[:6]
         return result
 
-    def suggest(self, arguments):
+    def suggest(self, arguments, *, prefer_prepared=True):
         source, limit = arguments.get('afterId'), arguments.get('limit')
         if not self.known(source):
             raise ValueError('Unknown recording.')
@@ -264,13 +271,14 @@ class Lookups:
                 continue
             key = self.compatible(outgoing, row)
             # Known compatible keys first, then unknown keys, then clashes.
-            ranked.append(({True: 0, None: 1, False: 2}[key], abs(change), row['id'], change, key))
-        ranked.sort(key=lambda item: item[:2])
+            ready=self.cues.get(row['id'],{}).get('replayVerified') is True
+            ranked.append(({True: 0, None: 1, False: 2}[key], not ready, abs(change), row['id'], change, key))
+        ranked.sort(key=lambda item: (item[0], item[1] if prefer_prepared else False, item[2]))
         shown = ranked[:limit]
-        self.surface([source] + [item[2] for item in shown])
-        return {'afterId': source, 'playable': len(ranked), 'compatibleKey': sum(1 for item in ranked if item[4] is True),
-                'matches': [{**self.brief(self.rows[item[2]]), 'tempoChangePercent': item[3], 'harmonicCompatible': item[4],
-                             'queuePosition': self.positions.get(item[2])} for item in shown]}
+        self.surface([source] + [item[3] for item in shown])
+        return {'afterId': source, 'playable': len(ranked), 'compatibleKey': sum(1 for item in ranked if item[5] is True),
+                'matches': [{**self.brief(self.rows[item[3]]), 'tempoChangePercent': item[4], 'harmonicCompatible': item[5],
+                             'preparedCue': not item[1], 'queuePosition': self.positions.get(item[3])} for item in shown]}
 
     def compare(self, arguments):
         ids = arguments.get('trackIds')
@@ -310,6 +318,15 @@ class Lookups:
                   if i in self.cues and number(self.cues[i].get('maxBlendBeats'))]
         if limits:
             result['maxBlendBeats'] = min(limits)
+        outgoing_cue, incoming_cue = (self.cues.get(track_id, {}) for track_id in (source, target))
+        if outgoing_cue.get('replayVerified') is True and incoming_cue.get('replayVerified') is True:
+            exit_facts = outgoing_cue.get('exit') or {}
+            entry_facts = incoming_cue.get('entry') or {}
+            changes = {field:round(entry_facts[field]-exit_facts[field], 1) for field in ('rmsDb','bassDb')
+                       if number(entry_facts.get(field)) and number(exit_facts.get(field))}
+            if changes:
+                result['measuredEntryMinusExitDb'] = changes
+                result['activityEvidence'] = 'Decoded signal levels at verified cue windows. Lead and vocal activity are unknown.'
         self.surface((source, target))
         return result
 

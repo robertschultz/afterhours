@@ -7,7 +7,7 @@ The Python runtime lives in [`src/afterhours/`](../src/afterhours). Both HTTP se
 | Layer | Modules in `src/afterhours/` |
 | --- | --- |
 | Brief and set interpretation | `prompt_plan.py`, `dj_settings.py`, `set_plan.py` |
-| Agent decisions and queue curation | `dj_agent.py`, `agent_loop.py`, `session_curation.py` |
+| Agent decisions and queue curation | `dj_agent.py`, `agent_loop.py`, `session_curation.py`, `queue_planning.py` |
 | Cue and transition planning | `cue_planner.py`, `tempo_planner.py`, `vdj_mixing.py` |
 | Native observation and execution | `vdj_session.py`, `dj_bridge.py`, `vdj_controls.py` |
 | Session recovery and recaps | `session_recovery.py`, `run_archive.py` |
@@ -16,3 +16,5 @@ The Python runtime lives in [`src/afterhours/`](../src/afterhours). Both HTTP se
 A model proposes decisions at musical boundaries. The execution loop checks that the observation and recording identity are still valid, bounds permitted actions, and verifies native readback. Model responses do not drive the beat clock.
 
 Starting a process leaves playback idle. Operator approval and session budgets govern actions that affect playback or incur provider costs. Status distinguishes a proposal, dispatch, verified result, and uncertain outcome. An uncertain native command is never replayed automatically.
+
+For a request to add one supplied recording, the planner delegates placement to the engine. The engine ranks viable slots and applies the result through the same queue and native preparation guards. Automatic lookup and decision work uses the remaining measured queue runway when a fresh deck clock is available.

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import math
 import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,10 +14,33 @@ from urllib.request import Request, urlopen
 from afterhours.paths import data_root
 
 ROOT = data_root()
-MODEL='gpt-5.6-luna'
+DEFAULT_MODEL='gpt-5.6-luna'
+MODEL=DEFAULT_MODEL
 MAX_OUTPUT=6000
 MAX_BODY=50000
 PRICE_CEILING=.02  # Standard text rates verified 2026-10-25; bounded request size.
+
+
+def model_policy():
+    """Require explicit cost bounds before using a substitute planning model."""
+    configured = os.environ.get('AFTERHOURS_PLANNER_MODEL')
+    model = configured or MODEL
+    if model == DEFAULT_MODEL and not configured:
+        return model, .25, 1.2
+    try:
+        input_rate = float(os.environ['AFTERHOURS_PLANNER_INPUT_USD_PER_MILLION'])
+        output_rate = float(os.environ['AFTERHOURS_PLANNER_OUTPUT_USD_PER_MILLION'])
+        if (not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}', model)
+                or not all(math.isfinite(rate) and rate > 0 for rate in (input_rate, output_rate))):
+            raise ValueError
+    except (KeyError, ValueError):
+        raise ValueError('Text planning pricing needs verification before this request can run.') from None
+    return model, input_rate, output_rate
+
+
+def request_cost(byte_count, output_tokens):
+    _, input_rate, output_rate = model_policy()
+    return ((byte_count + 2048) * input_rate + output_tokens * output_rate) / 1_000_000
 
 
 def provider_error(exc):
@@ -71,7 +95,9 @@ def api_key():
 
 
 def status():
-    return {'configured':bool(api_key()),'model':MODEL,'requestCeilingUSD':PRICE_CEILING,
+    try:model, _, _ = model_policy()
+    except ValueError:model = None
+    return {'configured':bool(model and api_key()),'model':model,'requestCeilingUSD':PRICE_CEILING,
             'automaticRequests':False,'audioUploaded':False}
 
 
@@ -123,11 +149,13 @@ def review(report,seconds,approved=False,opener=urlopen):
     key=api_key()
     if not key:raise ValueError('The AI planner key is not configured.')
     packet={'secondsBetweenEntries':seconds,'audioIncluded':False,'tracks':report['tracks']}
-    body={'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':MAX_OUTPUT,
+    body={'model':model_policy()[0],'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':MAX_OUTPUT,
           'instructions':INSTRUCTIONS,'input':json.dumps(packet,ensure_ascii=True),
           'text':{'format':{'type':'json_schema','name':'afterhours_mix_review','strict':True,'schema':SCHEMA}}}
     encoded=json.dumps(body,ensure_ascii=True).encode()
     if len(encoded)>MAX_BODY:raise ValueError('The measured evidence exceeds the bounded AI request size. No AI request was sent; the queue is unchanged.')
+    if request_cost(len(encoded),MAX_OUTPUT)>PRICE_CEILING:
+        raise ValueError('The mix planner request exceeds its approved cost ceiling.')
     req=Request('https://api.openai.com/v1/responses',data=encoded,
                 headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
     try:
@@ -146,7 +174,7 @@ def review(report,seconds,approved=False,opener=urlopen):
                  for c in item.get('content',[]) if c.get('type')=='output_text')
     try:result=validate(json.loads(text),report)
     except (json.JSONDecodeError,TypeError):raise ValueError('AI review could not be validated.') from None
-    return {**result,'model':MODEL,'analysisFingerprint':report['fingerprint'],
+    return {**result,'model':model_policy()[0],'analysisFingerprint':report['fingerprint'],
             'secondsBetweenEntries':seconds,'status':'reviewed','appliedToPlayback':False,
             'usage':{k:data.get('usage',{}).get(k) for k in ('input_tokens','output_tokens','total_tokens')},
             'responseId':data.get('id'),'requestDigest':hashlib.sha256(encoded).hexdigest()}
@@ -236,7 +264,7 @@ def validate_plan(result,report,seconds):
         for row in rows:
             if not isinstance(row,dict) or set(row)!=keys or not isinstance(row['reason'],str) or not 1<=len(row['reason'])<=1000:
                 raise ValueError('AI plan has an invalid cue or transition.')
-    enriched={**result,'analysisFingerprint':report['fingerprint'],'secondsBetweenEntries':seconds,'model':MODEL}
+    enriched={**result,'analysisFingerprint':report['fingerprint'],'secondsBetweenEntries':seconds,'model':model_policy()[0]}
     if result['decision']=='hold':
         if result['selections'] or result['transitions'] or not missing:
             raise ValueError('A held AI plan must explain its missing evidence and contain no executable cues.')
@@ -254,12 +282,14 @@ def plan(report,seconds,approved=False,opener=urlopen,direction=None,standing_st
         preferences={'standingStyle':style_context(standing_style)}
     key=api_key()
     if not key:raise ValueError('The AI planner key is not configured.')
-    body={'model':MODEL,'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':MAX_OUTPUT,
+    body={'model':model_policy()[0],'store':False,'service_tier':'default','reasoning':{'effort':'medium'},'max_output_tokens':MAX_OUTPUT,
           'instructions':PLAN_INSTRUCTIONS,'input':json.dumps({**plan_packet(report,seconds),
               **({'operatorDirection':str(direction)[:1600]} if direction else {}),**preferences},ensure_ascii=True,separators=(',',':')),
           'text':{'format':{'type':'json_schema','name':'afterhours_cue_plan','strict':True,'schema':schema}}}
     encoded=json.dumps(body,ensure_ascii=True,separators=(',',':')).encode()
     if len(encoded)>MAX_BODY:raise ValueError('The measured evidence exceeds the bounded AI request size. No AI request was sent; the queue is unchanged.')
+    if request_cost(len(encoded),MAX_OUTPUT)>PRICE_CEILING:
+        raise ValueError('The mix planner request exceeds its approved cost ceiling.')
     req=Request('https://api.openai.com/v1/responses',data=encoded,
                 headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
     try:

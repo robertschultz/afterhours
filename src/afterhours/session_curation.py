@@ -3,8 +3,9 @@ import copy
 import math
 import uuid
 
+from afterhours.planner_policy import curation_seconds
+
 DECISIONS = 60
-SECONDS = 30 * 60
 MAX_SECONDS = 6 * 60 * 60
 # 60 decisions, each at most five bounded planner requests since the planner
 # may look things up before it decides (issue #73, approved 11 November 2026).
@@ -95,9 +96,10 @@ class RunCuration:
     def expiry(self, until=None):
         """Use the approved night's end without increasing decisions or cost."""
         now = self.clock()
+        duration = curation_seconds()
         if type(until) in (int, float) and math.isfinite(until):
-            return max(now + SECONDS, min(until, now + MAX_SECONDS))
-        return now + SECONDS
+            return max(now + duration, min(until, now + MAX_SECONDS))
+        return now + duration
 
     def end(self, status, message):
         if self.grant and self.grant['status'] in ('preparing', 'active', 'exhausted'):

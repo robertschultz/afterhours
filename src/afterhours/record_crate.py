@@ -109,6 +109,8 @@ class RecordCrate:
                 first_seen REAL NOT NULL, last_seen REAL NOT NULL,
                 analysis_status TEXT NOT NULL, analyzed_at REAL
             );
+            CREATE INDEX IF NOT EXISTS records_by_tempo ON records (json_extract(metadata, '$.bpm'));
+            CREATE INDEX IF NOT EXISTS records_by_recency ON records (last_seen DESC, slot DESC);
             CREATE TABLE IF NOT EXISTS dig_terms (
                 term TEXT PRIMARY KEY, dug_at REAL NOT NULL, examined INTEGER NOT NULL, added INTEGER NOT NULL
             );
@@ -176,6 +178,20 @@ class RecordCrate:
         with self.lock:
             return [json.loads(row['metadata']) for row in
                     self.db.execute('SELECT metadata FROM records ORDER BY slot LIMIT ?', (int(limit),))]
+
+    def planner_facts(self, text, anchor, shift):
+        # Bound JSON decoding while retrieving named, tempo-fit and recent tracks.
+        named = self.search(text[:1600], limit=24) if text.strip() else []
+        with self.lock:
+            matching = []
+            if type(anchor) in (int, float) and math.isfinite(anchor) and 40 <= anchor <= 300:
+                adjustment = min(8, max(0, shift)) / 100
+                matching = self.db.execute(
+                    "SELECT metadata FROM records WHERE json_extract(metadata, '$.bpm') BETWEEN ? AND ? "
+                    "ORDER BY analysis_status='analyzed' DESC, ABS(json_extract(metadata, '$.bpm')-?), last_seen DESC LIMIT 128",
+                    (anchor / (1 + adjustment), anchor / (1 - adjustment), anchor)).fetchall()
+            recent = self.db.execute('SELECT metadata FROM records ORDER BY last_seen DESC, slot DESC LIMIT 64').fetchall()
+        return named + [json.loads(row['metadata']) for row in matching + recent]
 
     def mark_dug(self, term, examined, added):
         with self.lock, self.db:

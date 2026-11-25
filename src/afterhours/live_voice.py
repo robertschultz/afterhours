@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from afterhours import ai_mix
 from afterhours.dj_agent import music_context
 
-MODEL='gpt-live-1'
+MODEL='gpt-live-1.1'
 SECONDS=1800
 DECISION_REQUESTS=60
 VOICE_RATE_PER_MINUTE=.05

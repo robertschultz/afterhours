@@ -158,3 +158,20 @@ test('queue request uses a bounded five second client timeout',async()=>{
   const original=AbortSignal.timeout;AbortSignal.timeout=ms=>{timeout=ms;return original(ms);};
   try {await client.readQueue();assert.equal(timeout,5000);} finally {AbortSignal.timeout=original;client.fetcher=old;}
 });
+
+test('fresh starts and fitted insertions use the authenticated engine contracts', async () => {
+  const calls = [];
+  const client = new MusicConnection(async (path, options) => {
+    calls.push([path, options.body ? JSON.parse(options.body) : null, options.headers]);
+    return {ok: true, json: async () => path === '/api/config' ? {token:'fixture-token'} : {status:'ok'}};
+  });
+  await client.startNewQueue({messageId:'fresh-fixture', approveRequest:true});
+  await client.previewInsertion('virtualdj:fixture');
+  await client.insertTrack('virtualdj:fixture');
+  assert.deepEqual(calls.slice(1).map(([path, data]) => [path, data.action]), [
+    ['/api/dj-agent', 'start-new-queue'],
+    ['/api/set-session', 'preview-insertion'],
+    ['/api/set-session', 'insert-track'],
+  ]);
+  assert.ok(calls.slice(1).every(([, , headers]) => headers['X-DJ-Token'] === 'fixture-token'));
+});

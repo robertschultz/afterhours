@@ -9,6 +9,7 @@ import os
 import math
 import re
 import threading
+from afterhours.planner_policy import track_seconds
 from afterhours.program_timeline import set_timeline
 import time
 import uuid
@@ -209,7 +210,7 @@ class DJSession:
         self.state = {'id': uuid.uuid4().hex, 'phase': 'idle', 'active': False,
                       'message': 'Discover music to build a live set.', 'candidates': [],
                       'order': [], 'events': [], 'transitions': [], 'telemetry': None,
-                      'index': -1, 'secondsPerTrack': 30, 'excerptBars': 16,
+                      'index': -1, 'secondsPerTrack': track_seconds(), 'excerptBars': 16,
                       'mixStyle': 'phrase', 'phraseBeats': 64, 'fadeBeats': 64,
                       'analysis': None, 'aiReview': None, 'executionPlan': None, 'preparationSelection': None,
                       'queuedUpdate': None, 'lastQueueApplication': None, 'lastQueueRepair': None, 'catalogSearch': None,

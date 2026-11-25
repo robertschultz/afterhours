@@ -9,10 +9,17 @@ See the [project README](../README.md) for setup. The music service owns the cat
 | `AFTERHOURS_DATA_ROOT` | Local data and runtime workspace. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/afterhours`. |
 | `AFTERHOURS_PYTHON` | Interpreter override for setup and the launchers. An override used to launch must have Afterhours installed. |
 | `AFTERHOURS_ANALYSIS_REPORTS_DIR` | Optional directory for native feature reports. Defaults to `.runtime/audio-analysis` under the data root. |
+| `AFTERHOURS_TRACK_SECONDS` | Default seconds between track entries for new queues. Accepts 15–300 and defaults to 30. |
+| `AFTERHOURS_CURATION_MINUTES` | Default ongoing curation allowance. Accepts 1–360 and defaults to 30. The decision and cost ceilings still apply. |
+| `AFTERHOURS_PLANNER_MODEL` | Optional OpenAI text planner model override. The model must support the existing structured output and tool contracts. |
+| `AFTERHOURS_PLANNER_INPUT_USD_PER_MILLION` | Required with a model override. Set the highest applicable input rate, including cache writes. |
+| `AFTERHOURS_PLANNER_OUTPUT_USD_PER_MILLION` | Required with a model override. Set the applicable output rate, including reasoning tokens. |
 | `OPENAI_API_KEY` | Optional planning and voice credential. Live use requires an explicit session allowance. |
 | `FAL_KEY` | Optional provider credential for performance media. Submission limits default to zero. |
 
 Create a dedicated data directory for a new workspace. Configure provider credentials in the local process environment. The planning service also reads its OpenAI key from `.env.local` in the data directory. Keep secrets and runtime outputs outside the source repository.
+
+An override must fit the existing approved request and run budgets. Verify the model’s rates before configuring them.
 
 ## Upgrading from Crategent
 

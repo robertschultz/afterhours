@@ -22,3 +22,12 @@ python3 -m venv .venv-mcp
 ```
 
 Synthetic tests establish software behavior. Native playback, hardware, provider access, and listening acceptance are separate.
+
+To compare the tempo-and-key ranker with the readiness-aware ranker, save a disposable `/api/set-session` snapshot and run the offline preview. The recording IDs must come from that snapshot.
+
+```sh
+.venv/bin/python scripts/preview-queue.py /path/to/snapshot.json \
+  --after outgoing-recording-id --insert candidate-recording-id
+```
+
+The preview reports both shortlists, verified queue runway when the snapshot contains enough evidence, and possible insertion slots. It reads the saved snapshot without contacting VirtualDJ or a provider.

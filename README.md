@@ -1,4 +1,8 @@
-![afterhours — An agentic DJ engine for live mixing](docs/assets/afterhours-readme-cover.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/afterhours-cover-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/afterhours-cover-light.png">
+  <img alt="afterhours — An agentic DJ engine for live mixing" src="docs/assets/afterhours-cover-light.png">
+</picture>
 
 # Afterhours
 

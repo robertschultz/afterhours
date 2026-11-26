@@ -20,10 +20,15 @@ class MixerControlChanged(BridgeError):
     """An operator changed the owned mixer before a blend was dispatched."""
 
 
-def transition_recipe(outgoing, incoming, style='phrase', seconds=None, bpm=None):
+def transition_recipe(outgoing, incoming, style='phrase', seconds=None, bpm=None, *, quick_blend_seconds=None):
     if style == 'quick':
-        return {'technique':'crossfade', 'label':'Quick crossfade',
-                'reason':'Short listening preview; no EQ choreography.', 'fadeBeats':8,'phraseBeats':4}
+        fade=8
+        reason='Short listening preview using the native crossfader.'
+        if quick_blend_seconds is not None:
+            fade=4*round(quick_blend_seconds*bpm/240)
+            reason='Native crossfader blend aligned to four-beat bars.'
+        return {'technique':'crossfade','label':'Quick crossfade','reason':reason,
+                'fadeBeats':fade,'phraseBeats':4}
     a = re.fullmatch(r'(1[0-2]|[1-9])([AB])', outgoing.get('camelot') or '')
     b = re.fullmatch(r'(1[0-2]|[1-9])([AB])', incoming.get('camelot') or '')
     compatible = False

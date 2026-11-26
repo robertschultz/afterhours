@@ -10,6 +10,12 @@ def track(genre='Drum & Bass',key='2A'):
 
 
 class MixerTests(unittest.TestCase):
+    def test_requested_quick_blends_round_to_full_bars_within_one_second(self):
+        for seconds in (15,20,30):
+            recipe=transition_recipe({}, {},'quick',60,124,quick_blend_seconds=seconds)
+            self.assertEqual(recipe['fadeBeats']%4,0)
+            self.assertLessEqual(abs(recipe['fadeBeats']*60/124-seconds),1)
+
     def test_short_trial_caps_overlap_but_preserves_genre_technique(self):
         for genre in ('Drum & Bass','House','Techno','Hip-Hop',''):
             p=transition_recipe(track(genre),track(genre),seconds=30,bpm=155)

@@ -416,9 +416,14 @@ class Handler(RuntimeStaticHandler):
                 if action == 'discover':
                     result = DJ_SESSION.discover(data.get('query'), data.get('artist',''),data.get('genre',''),data.get('bpmMin',40),data.get('bpmMax',300))
                 elif action == 'plan':
-                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'))
+                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'))
                 elif action == 'start':
-                    result = DJ_SESSION.start()
+                    if data.get('prepareWhilePlaying') is True:
+                        if DJ_SESSION.snapshot().get('mixStyle') != 'phrase':
+                            raise ValueError('Preparing while playing requires a phrase-mixing set.')
+                        result = DJ_SESSION.start(immediate=True,initialize_mixer=True)
+                    else:
+                        result = DJ_SESSION.start()
                 elif action in ('insert-track','preview-insertion'):
                     track_id=data.get('trackId')
                     if not isinstance(track_id,str) or not track_id:raise ValueError('Choose an exact recording to insert.')

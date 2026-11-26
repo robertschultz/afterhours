@@ -423,7 +423,8 @@ class DJSession:
                 current, _ = copilot_commands.playing_pair(s)
                 if s['index']+1 >= len(s['order']):
                     raise ValueError('There is no next recording to steer.')
-                if not (s.get('executionPlan') or {}).get('applied'):
+                quick_go=action=='go' and s.get('mixStyle')=='quick' and (s.get('timing') or {}).get('basis')=='native-beat-grid'
+                if not (s.get('executionPlan') or {}).get('applied') and not quick_go:
                     raise ValueError('This control needs an applied measured mix plan.')
                 if action == 'hold' and not state['held']:
                     copilot_commands.retime(s, current, s.get('fadeBeats', 0))
@@ -502,12 +503,21 @@ class DJSession:
             if active['deck'] != current['deck'] or cued['deck'] != incoming:
                 raise ValueError('The playing pair changed before the control could run.')
             if command['action'] in ('go','resume'):
-                cue_planner.verify_receipts(s['analysis'])
-                changed = copilot_commands.retime(s, active, window['fadeBeats'])
+                if s.get('mixStyle')=='quick' and window.get('basis')=='native-beat-grid':
+                    block=window['phraseBeats']
+                    next_bar=window['entryBeat']+math.ceil((active['beatPosition']+2-window['entryBeat'])/block)*block
+                    begin=min(window['mixAtBeat'],next_bar)
+                    end=begin+window['fadeBeats']
+                    changed={**window,'mixAtBeat':begin,'endBeat':end,'segmentBeats':end-window['entryBeat']}
+                    message='The next recording enters at the next available grid bar.'
+                else:
+                    cue_planner.verify_receipts(s['analysis'])
+                    changed=copilot_commands.retime(s, active, window['fadeBeats'])
+                    message='The next recording enters at the next verified cue.'
                 with self.lock:
                     self.state['copilot']['held'] = False
                     self.check()
-                    self._copilot_result('confirmed', 'The next recording enters at the next verified cue.', command['id'])
+                    self._copilot_result('confirmed',message,command['id'])
                 return {'window': changed}
             order, prepared = copilot_commands.skip_plan(s)
             plan = prepared['executionPlan']
@@ -637,6 +647,7 @@ class DJSession:
                     self.plan([t.get('id') for t in order], saved.get('secondsPerTrack',30),
                               saved.get('excerptBars',16), saved.get('maxTempoShift',8),
                               saved.get('mixStyle','quick'),source='operator',tempo_targets=saved.get('tempoTargets'),_tempo_route=recovered_route,
+                              quick_blend_seconds=saved.get('quickBlendSeconds'),
                               _archive_boundary=False)
                 else:
                     # A conversation can finish a catalog search before choosing
@@ -1062,7 +1073,8 @@ class DJSession:
         self._launch(work, 'discovering')
         return self.snapshot()
 
-    def plan(self, ids, seconds=30, excerpt_bars=16, max_tempo_shift=8, mix_style='phrase', source='planner', tempo_targets=None, _tempo_route=None, _archive_boundary=True):
+    def plan(self, ids, seconds=30, excerpt_bars=16, max_tempo_shift=8, mix_style='phrase',
+             source='planner', tempo_targets=None, _tempo_route=None, _archive_boundary=True, quick_blend_seconds=None):
         with self.lock:
             if self.state['active']:
                 raise ValueError('Wait for the current session operation to finish.')
@@ -1074,6 +1086,10 @@ class DJSession:
                 raise ValueError('Choose a tempo adjustment limit from 0 to 8%.')
             if not isinstance(mix_style, str) or mix_style not in MIX_STYLES:
                 raise ValueError('Choose phrase or quick mixing.')
+            if quick_blend_seconds is not None:
+                if (mix_style!='quick' or type(quick_blend_seconds) is not int or quick_blend_seconds not in (15,20,30)
+                        or seconds<quick_blend_seconds+16):
+                    raise ValueError('Choose a 15, 20 or 30 second quick blend with time to prepare the next deck.')
             if mix_style == 'phrase' and excerpt_bars % 16:
                 raise ValueError('Phrase mixing needs an excerpt at 0, 16 or 32 bars.')
             order = validate_order(ids, self.state['candidates'], max_tempo_shift, seconds, tempo_targets,
@@ -1094,7 +1110,8 @@ class DJSession:
             if _archive_boundary:self.archive_call('boundary')
             self.state.update(order=order, recoveryRemainder=[], secondsPerTrack=seconds, excerptBars=excerpt_bars,
                               setlist={**policy,'sourceById':sources},
-                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, **MIX_STYLES[mix_style],
+                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds,
+                              **MIX_STYLES[mix_style],
                               phase='ready', index=-1, segmentProgress=0,
                               message=('Order ready. Analyze the set and apply a measured mix plan before starting.' if mix_style=='phrase' else 'Quick preview ready. Start when you want to listen.'), transitions=[], transitionControl=None,
                               analysis=None, aiReview=None, executionPlan=None, preparationSelection=None, queuedUpdate=None, lastQueueApplication=None, lastQueueRepair=None, startedAt=None, endedAt=None, startup=None,lastError=None,
@@ -1240,7 +1257,7 @@ class DJSession:
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
-                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],tempo_targets=tempo_targets)
+                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
             if audible and s['phase'] not in ('playing','mixing','loading'):
                 raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
             if not old_plan.get('applied'):
@@ -1451,7 +1468,7 @@ class DJSession:
             elif operation=='reorder':
                 if not isinstance(ids,list) or len(ids)!=len(current) or any(not isinstance(i,str) for i in ids) or set(ids)!=set(current):
                     raise ValueError('Manual reordering must preserve every track exactly once.')
-                result=self.plan(ids,self.state['secondsPerTrack'],self.state['excerptBars'],self.state.get('maxTempoShift',8),self.state['mixStyle'],source='operator')
+                result=self.plan(ids,self.state['secondsPerTrack'],self.state['excerptBars'],self.state.get('maxTempoShift',8),self.state['mixStyle'],source='operator',quick_blend_seconds=self.state.get('quickBlendSeconds'))
                 self.update(message='Setlist reordered. Analyze this order again before planning the mix.')
                 return self.snapshot()
             else:raise ValueError('Unknown setlist edit.')
@@ -2275,7 +2292,8 @@ class DJSession:
                         self.tempo_ramp.arm(track,active,tempo_row,planned['selections'][index]['entryBeat'])
                 if not final:
                     expected = order[index+1]
-                    recipe = copy.deepcopy(planned['transitions'][index]) if planned else transition_recipe(track,expected,snapshot['mixStyle'],snapshot['secondsPerTrack'],target)
+                    recipe = copy.deepcopy(planned['transitions'][index]) if planned else transition_recipe(track,expected,snapshot['mixStyle'],snapshot['secondsPerTrack'],target,
+                        quick_blend_seconds=snapshot.get('quickBlendSeconds'))
                     if t['decks'][incoming-1].get('id') != expected['id'] or t['decks'][incoming-1]['playing']:
                         raise BridgeError('Incoming deck changed. No transition was sent.')
                     incoming_target=target if tempo_row else t['decks'][active-1]['bpm']
@@ -2549,7 +2567,8 @@ class DJSession:
         exit_beat=cue['exitBeat'] if cue else None
         scheduled=(s.get('timing') or {}).get('mixAtBeat')
         if (s.get('active') and s['phase'] in ('playing','mixing') and current_index==index and
-                (s.get('executionPlan') or {}).get('applied') and
+                ((s.get('executionPlan') or {}).get('applied') or
+                 (s.get('mixStyle')=='quick' and (s.get('timing') or {}).get('basis')=='native-beat-grid')) and
                 type(scheduled) in (int,float) and math.isfinite(scheduled)):
             exit_beat=scheduled  # Go can advance the verified exit independently of the saved plan.
         remaining=(exit_beat-deck['beatPosition'])*60/deck['bpm'] if exit_beat is not None and deck.get('bpm') and deck.get('beatPosition') is not None else None

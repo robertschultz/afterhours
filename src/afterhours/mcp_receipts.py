@@ -27,7 +27,7 @@ MAX_REQUESTS = 10000  # Never evict identities and accidentally authorize replay
 REASONS = {'accepted','engine-confirmed','engine-guard','newer-direction','outcome-unconfirmed',
            'control-failed','control-blocked','control-cancelled','client-revoked','grant-expired',
            'grant-inactive','allowance-exhausted','preparation-held','selection-held','discovery-failed',
-           'openai-key-missing','openai-authorization','openai-quota','playback-start-failed','native-tempo-unsettled'}
+           'openai-key-missing','openai-authorization','openai-quota','playback-start-failed','native-tempo-unsettled','manual-playback'}
 
 
 def canonical(value):

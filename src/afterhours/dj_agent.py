@@ -2223,7 +2223,12 @@ class DJAgent:
                         self.apply(rev)
                         if result['search']:self.catalog_curation=curation_token
                     except (ValueError,OSError,BridgeError) as exc:
-                        if external:external.finish('blocked','The selection could not be applied.')
+                        if external:
+                            reason=('manual-playback' if str(exc).startswith('Manual playback keeps control.') else 'selection-held')
+                            request=self.playback_request or {}
+                            if request.get('id')==external.id and self.playback_pending():
+                                request.update(status='failed',message=str(exc))
+                            external.finish('blocked','The selection could not be applied.',reason)
                         self.planner.close(round_id,'held',str(exc))
                         if curation_token:self.curation.end('blocked','Selection held: '+str(exc))
                         self.state.update(message='Selection held: '+str(exc));self.save()

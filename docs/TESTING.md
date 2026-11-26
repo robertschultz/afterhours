@@ -31,3 +31,12 @@ To compare the tempo-and-key ranker with the readiness-aware ranker, save a disp
 ```
 
 The preview reports both shortlists, verified queue runway when the snapshot contains enough evidence, and possible insertion slots. It reads the saved snapshot without contacting VirtualDJ or a provider.
+
+### Continuous process monitoring
+
+Use `scripts/observe-live-stack.py` during live trials. Pass process names with
+`--process LABEL=EXECUTABLE`, launcher PID files with `--pidfile LABEL=FILE`
+and loopback health endpoints with `--url LABEL=URL`. The default records one
+sample every five seconds for three hours. Output is JSON lines with process
+restarts, memory, CPU, endpoint status, deck telemetry age and relay status.
+It records measurements only and leaves the running apps in place.

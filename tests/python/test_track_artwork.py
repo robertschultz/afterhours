@@ -126,6 +126,20 @@ class TrackArtworkTests(unittest.TestCase):
                 self.assertNotEqual(thread_ids,[threading.get_ident()]);self.assertEqual(len(thread_ids),1)
             finally:release.set();self.art.close()
         self.assertFalse(self.art.worker.is_alive())
+    def test_live_snapshot_omits_buffered_transition_evidence(self):
+        from afterhours.vdj_session import DJSession
+        session = DJSession(threading.Lock())
+        session.update(order=[{'id':recording_id(123)}], analysis={'tracks':['full-report']},
+                       transitions=[{'samples':['native-readback']}],
+                       executionPlan={'applied':True,'id':'fixture','selections':['private-plan']})
+        full = session.snapshot()
+        live = session.snapshot(compact=True)
+        self.assertEqual(live['order'], full['order'])
+        self.assertEqual(live['executionPlan'], {'applied':True,'id':'fixture'})
+        self.assertNotIn('transitions', live)
+        self.assertNotIn('analysis', live)
+        self.assertEqual(full['transitions'][0]['samples'], ['native-readback'])
+
     def test_http_read_supplies_art_without_playback_calls(self):
         from afterhours import server
         self.xml([('netsearch://bp123',XML_COVER)]);self.art.refresh()

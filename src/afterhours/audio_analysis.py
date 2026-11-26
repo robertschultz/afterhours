@@ -20,6 +20,7 @@ from afterhours.paths import analysis_reports
 # or treating copied receipts as new analysis. Default installs are unchanged.
 REPORTS = analysis_reports()
 PLUGIN = 'Afterhours Analysis'
+MAX_SCAN_SECONDS = 1200
 
 
 class AudioAnalysisTimeout(BridgeError):
@@ -28,6 +29,11 @@ class AudioAnalysisTimeout(BridgeError):
 
 def bounded(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def exceeds_scan_duration(track):
+    duration=track.get('duration')
+    return type(duration) in (int,float) and math.isfinite(duration) and duration>MAX_SCAN_SECONDS
 
 
 def read_scan(recording_id, root=REPORTS):
@@ -54,7 +60,7 @@ def validate_scan(data, sound_end):
     rate, duration = data.get('sampleRate'), data.get('duration')
     frames = data.get('totalFrames')
     if (type(rate) is not int or not 8000 <= rate <= 192000 or
-            not bounded(duration, .001, 1200) or type(frames) is not int or
+            not bounded(duration, .001, MAX_SCAN_SECONDS) or type(frames) is not int or
             abs(frames-duration*rate) > 1.01 or data.get('coveredFrames') != frames or
             type(data.get('coveredFrames')) is not int or
             not bounded(data.get('scanStartedAtMs'), 1, 1e16)):
@@ -242,7 +248,7 @@ def verified_energy(recording_id, duration, root=REPORTS):
                 receipt.get('method') != 'two-stable-scans-and-native-sound-end' or
                 type(receipt.get('passes')) is not int or receipt['passes'] < 2 or
                 not bounded(receipt.get('stableForSeconds'), 1, 40) or
-                not bounded(duration, .001, 1200) or abs(duration-data['duration']) > .05):
+                not bounded(duration, .001, MAX_SCAN_SECONDS) or abs(duration-data['duration']) > .05):
             return None
         details = validate_scan(data, receipt['soundEndSeconds'])
         if details['featureDigest'] != receipt['featureDigest']:

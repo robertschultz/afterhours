@@ -130,7 +130,14 @@ def cleanup_analysis_deck(client, descriptor):
         if loaded:
             row['loadPending']=False;descriptor['loadPending']=False
         elif row['loadPending']:
-            raise BridgeError(f'Analysis deck {deck} stream load is still unconfirmed; isolation and ownership were retained.')
+            # Empty alone can still mean a download is in flight. A native
+            # load error on our stopped, isolated deck settles that attempt.
+            if not as_bool(client.query(f'deck {deck} deck_has_error','bool')):
+                raise BridgeError(f'Analysis deck {deck} stream load is still unconfirmed; isolation and ownership were retained.')
+            guard_isolation(client,deck)
+            if as_bool(client.query(f'deck {deck} loaded','bool')):
+                raise BridgeError(f'Analysis deck {deck} changed during cleanup; ownership was retained.')
+            row['loadPending']=False;descriptor['loadPending']=False
         return loaded
     def owned_empty():
         guard_deck(client, deck)

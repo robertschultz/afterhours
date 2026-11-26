@@ -772,6 +772,12 @@ class SessionTests(unittest.TestCase):
                 validate_order(ids,tracks())
         self.assertEqual([t['id'] for t in validate_order(['b','a'],tracks())],['b','a'])
 
+    def test_measured_queue_rejects_tracks_beyond_native_scan_limit(self):
+        catalog=tracks()
+        catalog[0]['duration']=3374.95
+        with self.assertRaisesRegex(ValueError,'measured-mix scan limit'):
+            validate_order(['a','b'],catalog)
+
     def test_plan_does_not_send_engine_commands_and_preserves_catalog(self):
         s=DJSession(threading.Lock());s.update(candidates=tracks(),phase='catalog-ready')
         result=s.plan(['a','b'],20,16)

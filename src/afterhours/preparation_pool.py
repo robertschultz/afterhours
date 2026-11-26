@@ -16,12 +16,15 @@ class PreparationPool:
         self.cache=copy.deepcopy(cache or {});self.result=[];self.jobs=[];self.pending=[]
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
+        state = session.snapshot()
+        timed = bool(state.get('entryCadence'))
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
-            if cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==session.snapshot()['secondsPerTrack']:
+            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
+                    and bool(cached.get('timedPreparation')) == timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
             self.pending.append(track)

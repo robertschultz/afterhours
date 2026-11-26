@@ -163,7 +163,8 @@ class CopilotControlTests(unittest.TestCase):
         candidates = s.state['analysis']['tracks'][0]['cueCandidates']
         for beat in (140, 220, 280):
             candidates.append({**original, 'id': f'candidate-{beat}', 'exitBeat': beat,
-                               'exitSeconds': beat*60/155, 'replayVerified': beat != 280})
+                               'exitSeconds': beat*60/155, 'endBeat': beat+16,
+                               'endSeconds': (beat+16)*60/155, 'replayVerified': beat != 280})
         first = cc.retime(s.snapshot(), current, 16, entry_interval=30)
         second = cc.retime(s.snapshot(), current, 16, entry_interval=60)
         self.assertEqual(first['mixAtBeat'], 140)
@@ -173,7 +174,15 @@ class CopilotControlTests(unittest.TestCase):
         opening = cc.retime(s.snapshot(), current, 16, entry_interval=60,
                            actual_entry={'entryBeat':0, 'entrySeconds':0})
         self.assertEqual(opening['entryBeat'], 0)
-        self.assertEqual(opening['mixAtBeat'], 140)
+        self.assertEqual(opening['mixAtBeat'], 144)
+
+    def test_timed_exit_moves_one_bar_inside_a_verified_outro_after_late_preload(self):
+        s = running()
+        current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}
+        window = cc.retime(s.snapshot(), current, 16, entry_interval=25)
+        self.assertEqual(window['mixAtBeat'], 132)
+        self.assertEqual(window['endBeat'], 148)
+        self.assertLessEqual(window['endBeat'], s.state['executionPlan']['selections'][0]['endBeat'])
 
     def test_go_failure_keeps_hold_and_does_not_seek_or_mix(self):
         s=running(); self.command(s,'hold')

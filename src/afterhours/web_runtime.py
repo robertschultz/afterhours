@@ -1,12 +1,21 @@
 """Resolve shared engine assets and approved local media."""
-from http.server import SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
+from socketserver import TCPServer
 from urllib.parse import unquote, urlsplit
 
 from afterhours.paths import SHARED_WEB
 MEDIA_DIRECTORIES = {'assets', 'media', 'audio', 'agent-media'}
 MEDIA_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.svg', '.mp4', '.mov', '.webm', '.wav', '.json'}
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The numeric loopback address is already known. HTTPServer normally
+        # resolves a hostname here, which can delay the listener's startup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def web_file(url, data_web):

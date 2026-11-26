@@ -86,6 +86,26 @@ class VoiceTests(unittest.TestCase):
         self.start();self.voice.opener=Mock(side_effect=URLError('Synthetic failure'))
         state=self.voice.end();self.assertEqual(state['status'],'close-unconfirmed');self.assertFalse(state['finalized'])
         with self.assertRaises(ValueError):self.voice.create('v=0','request_456','nova',True)
+
+    def test_final_receipt_during_failed_hangup_is_preserved(self):
+        self.start()
+        def interrupted_hangup(request,**kwargs):
+            self.voice.receipt('voice_fixture',12,True)
+            raise URLError('Connection lost after remote close')
+        self.voice.opener=interrupted_hangup
+        state=self.voice.end()
+        self.assertEqual(state['status'],'closed')
+        self.assertTrue(state['finalized'])
+        self.assertEqual(state['usageSeconds'],12)
+
+    def test_next_explicit_connection_retries_unconfirmed_hangup(self):
+        self.start();provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Temporary connection loss'))
+        self.assertEqual(self.voice.end()['status'],'close-unconfirmed')
+        self.voice.opener=provider
+        self.voice.create('v=0','request_456','nova',True)
+        self.assertTrue(self.requests[-2].full_url.endswith('/hangup'))
+        self.assertEqual(self.voice.status()['status'],'active')
     def test_expired_sessions_cannot_delegate_even_if_timer_is_delayed(self):
         self.start();self.voice.state['expiresAt']=0
         with self.assertRaises(ValueError):self.voice.require('voice_fixture')

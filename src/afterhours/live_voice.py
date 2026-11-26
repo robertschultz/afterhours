@@ -51,6 +51,12 @@ class LiveVoice:
         if not key:raise ValueError('OpenAI key is not configured.')
         with self.lock:
             if request_id in self.attempts:raise ValueError('This connection was already attempted. Check its outcome before starting another.')
+            previous=self.state['sessionId'] if self.state['status']=='close-unconfirmed' else None
+        if previous:self.end(previous, retry_unconfirmed=True)
+        with self.lock:
+            if request_id in self.attempts:raise ValueError('This connection was already attempted. Check its outcome before starting another.')
+            if self.state['status']=='close-unconfirmed':
+                raise ValueError('Afterhours could not confirm that the previous Talk session ended. Try Talk again to retry closing it.')
             if self.state['status'] not in ('idle','closed','error'):raise ValueError('A voice conversation is already active or closing.')
             agent_state=self.agent.snapshot()
             if getattr(self.agent,'external_work_active',lambda:False)():
@@ -134,25 +140,29 @@ No camera or direct music audio is supplied.'''
                     or time.time()>=self.state['expiresAt']):
                 raise ValueError('This voice conversation is no longer active.')
 
-    def end(self,sid=None):
+    def end(self,sid=None,*,retry_unconfirmed=False):
         with self.lock:
+            if retry_unconfirmed and (sid!=self.state['sessionId'] or self.state['status']!='close-unconfirmed'):
+                return self.status()
             if sid and sid!=self.state['sessionId']:raise ValueError('Unknown voice session.')
-            if self.state['status'] in ('idle','closed'):return self.status()
+            if self.state['status'] in ('idle','closing','closed'):return self.status()
             if self.state['status']=='connecting':
                 self.cancel_connect=True
                 return self.status()
             sid=self.state['sessionId'];self.state['status']='closing'
             if self.timer:self.timer.cancel()
             self.agent.disable(preserve_playback=True)
+        status='closed'
         if sid:
             try:
                 with self.opener(Request('https://api.openai.com/v1/live/sessions/'+sid+'/hangup',data=b'',
                     headers={'Authorization':'Bearer '+ai_mix.api_key()}),timeout=10) as r:r.read(1024)
             except (HTTPError,OSError,URLError):
-                with self.lock:self.state.update(status='close-unconfirmed')
-                return self.status()
-        with self.lock:self.state['status']='closed'
-        return self.status()
+                status='close-unconfirmed'
+        with self.lock:
+            if self.state['sessionId']==sid and self.state['status']=='closing':
+                self.state['status']=status
+            return self.status()
 
     def receipt(self,sid,seconds,finalized):
         with self.lock:

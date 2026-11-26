@@ -16,7 +16,8 @@ from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.native_analysis import track_analysis
+from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
+from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
@@ -72,7 +73,7 @@ def cleanup_descriptor(value):
 
 def merge_cleanup_pending(*sources):
     """Keep known cleanup and any independent unknown latch through recovery."""
-    names=[];decks={};conflicts=set();unknown=False
+    names=[];decks={};loops={};conflicts=set();loop_conflicts=set();unknown=False
     for source in sources:
         if not isinstance(source,dict):unknown=True;continue
         ramps=source.get('ramps',[])
@@ -91,10 +92,27 @@ def merge_cleanup_pending(*sources):
                     for field in ('unloadRequested','restoreRequested'):row[field]=row[field] or before[field]
                     row['loadPending']=row['loadPending'] and before['loadPending']
                 decks[deck]=row
+        retained_loops = source.get('loops', [])
+        if not isinstance(retained_loops, list):
+            unknown = True
+            retained_loops = []
+        for value in retained_loops:
+            try:row = loop_cleanup_descriptor(value)
+            except BridgeError:
+                unknown = True
+                continue
+            deck = row['deck']
+            if deck in loops and row != loops[deck]:
+                loop_conflicts.add(deck)
+                unknown = True
+            else:
+                loops[deck] = row
         unknown=unknown or bool(source.get('unknown'))
     analysis=[row for deck,row in sorted(decks.items()) if deck not in conflicts]
-    result={'ramps':sorted(set(names)),'unknown':unknown or not (names or analysis)}
+    retained_loops = [row for deck, row in sorted(loops.items()) if deck not in loop_conflicts]
+    result={'ramps':sorted(set(names)),'unknown':unknown or not (names or analysis or retained_loops)}
     if analysis:result['analysis']=analysis
+    if retained_loops:result['loops']=retained_loops
     return result
 
 def cleanup_analysis_deck(client, descriptor):
@@ -112,34 +130,52 @@ def cleanup_analysis_deck(client, descriptor):
         if loaded:
             row['loadPending']=False;descriptor['loadPending']=False
         elif row['loadPending']:
-            raise BridgeError(f'Analysis deck {deck} stream load is still unconfirmed; isolation and ownership were retained.')
+            # Empty alone can still mean a download is in flight. A native
+            # load error on our stopped, isolated deck settles that attempt.
+            if not as_bool(client.query(f'deck {deck} deck_has_error','bool')):
+                raise BridgeError(f'Analysis deck {deck} stream load is still unconfirmed; isolation and ownership were retained.')
+            guard_isolation(client,deck)
+            if as_bool(client.query(f'deck {deck} loaded','bool')):
+                raise BridgeError(f'Analysis deck {deck} changed during cleanup; ownership was retained.')
+            row['loadPending']=False;descriptor['loadPending']=False
         return loaded
-    # A lost final readback may follow a successful restoration. Verify that
-    # exact final state before requiring the earlier muted-isolation state.
-    if row['restoreRequested']:
-        guard_deck(client,deck)
-        if (not as_bool(client.query(f'deck {deck} play','bool')) and
-                not as_bool(client.query(f'deck {deck} loaded','bool')) and effect_is_restored() and
-                abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])<.00001 and
-                as_bool(client.query(f'deck {deck} pfl','bool'))==baseline['pfl']):return
-    loaded=isolated_identity()
-    current=client.query(f'deck {deck} get_effect_name 1','text')
-    if current not in (PLUGIN,baseline['effect']):
-        raise BridgeError(f'Analysis deck {deck} effect changed; cleanup will not overwrite it.')
-    if current==PLUGIN:restore_effect(client,deck,expected_effect)
-    if not effect_is_restored():
-        raise BridgeError(f'Analysis deck {deck} effect cleanup was not confirmed.')
-    # Effect restoration can take time. Recheck isolation and exact recording
-    # immediately before the guarded, idempotent unload.
-    loaded=isolated_identity()
-    if loaded:
-        descriptor['unloadRequested']=True
-        client.send(f'deck {deck} play ? nothing : deck {deck} unload')
-        if as_bool(client.query(f'deck {deck} loaded','bool')):
-            raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
-    if isolated_identity():raise BridgeError(f'Analysis deck {deck} changed during cleanup.')
+    def owned_empty():
+        guard_deck(client, deck)
+        if as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')):
+            return None
+        if not effect_is_restored():
+            return None
+        volume = float(client.query(f'deck {deck} volume'))
+        if min(abs(volume), abs(volume-baseline['volume'])) >= .00001:
+            raise BridgeError(f'Analysis deck {deck} channel level changed after unload.')
+        return volume, as_bool(client.query(f'deck {deck} pfl','bool'))
+
+    # VirtualDJ may toggle auto headphone cue during an owned unload. Once
+    # the same deck is empty, stopped, and has its baseline effect, restore
+    # its controls without treating a harmless cue toggle as audible playback.
+    empty = owned_empty() if row['unloadRequested'] or row['restoreRequested'] else None
+    if empty is None:
+        loaded = isolated_identity()
+        current = client.query(f'deck {deck} get_effect_name 1','text')
+        if current not in (PLUGIN, baseline['effect']):
+            raise BridgeError(f'Analysis deck {deck} effect changed; cleanup will not overwrite it.')
+        if current == PLUGIN:
+            restore_effect(client, deck, expected_effect)
+        if not effect_is_restored():
+            raise BridgeError(f'Analysis deck {deck} effect cleanup was not confirmed.')
+        loaded = isolated_identity()
+        if loaded:
+            descriptor['unloadRequested'] = True
+            client.send(f'deck {deck} play ? nothing : deck {deck} unload')
+        empty = owned_empty()
+    if empty is None:
+        raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
+    if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
+        return
     descriptor['restoreRequested']=True
-    client.send(f'deck {deck} play ? nothing : deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl '+('on' if baseline['pfl'] else 'off'))
+    cue = 'on' if baseline['pfl'] else 'off'
+    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
     guard_deck(client,deck)
     if (as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')) or
             not effect_is_restored() or abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])>=.00001 or
@@ -171,6 +207,7 @@ class BackgroundAnalysis:
         self.cache=copy.deepcopy(cache or {});self.pending=queue.Queue(maxsize=1)
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.catalog_miss=None
+        self.analysis_miss=None
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -313,6 +350,7 @@ class BackgroundAnalysis:
                         or epoch==self.browser_epoch or attempt==2):raise
                 self.check()
         deadline=self.clock()+20
+        sid = None
         while self.clock()<deadline:
             self.wait(.15)
             try:
@@ -328,6 +366,9 @@ class BackgroundAnalysis:
                 self.loaded=sid
                 self.request('isolate-loaded','',sid)
                 return
+        if sid is not None:
+            raise BridgeError('VirtualDJ loaded a different recording identity on the muted analysis deck. '
+                              'No repeat load or handoff was sent.')
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
@@ -345,7 +386,9 @@ class BackgroundAnalysis:
                 self.session.availability.require_track(track)
                 self.check();self.status='analyzing';self.message='Analyzing upcoming track · '+track['title']
                 cached=self.cache.get(track['id'])
-                if cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']:
+                timed = bool(s.get('entryCadence'))
+                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']
+                        and bool(cached.get('timedPreparation')) == timed):
                     try:
                         from afterhours import cue_planner
                         cue_planner.measured_rows(cached);self.result.append(cached);continue
@@ -362,8 +405,11 @@ class BackgroundAnalysis:
                     self.message='Preparing waveform · '+track['title']
                     scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
-                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],deck=self.deck,isolated=True)
+                timed_option = {'timed': True} if timed else {}
+                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],
+                                                              deck=self.deck,isolated=True,**timed_option)
                 evidence['preparationSeconds']=s['secondsPerTrack']
+                if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
                 self.session.availability.verified(track['id'])
             self.status='complete';self.message='Upcoming recordings analyzed; validating their handoffs.'
@@ -377,6 +423,9 @@ class BackgroundAnalysis:
         except Exception as exc:
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
+            if (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+                    and self.owned and self.loaded==track['engine']['selection_id']):
+                self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True
     def close(self,client):

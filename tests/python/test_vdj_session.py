@@ -113,6 +113,38 @@ class SessionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Stop'):s.edit_setlist('allow-reorder',value=True)
             engine.assert_not_called()
 
+    def test_remove_future_track_keeps_live_and_cued_decks_and_other_staged_edits(self):
+        s=DJSession(threading.Lock())
+        s.update(candidates=[{'id':str(i),'title':str(i),'bpm':124} for i in range(5)])
+        s.plan(['0','1','2','3'],mix_style='quick')
+        s.set_reorder_preference(False)
+        s.update(active=True,index=0,phase='playing')
+        with patch.object(s,'factory') as engine:
+            s.revise_queue(['0','1','2','3','4'],source='operator')
+            for protected in ('0','1'):
+                with self.assertRaisesRegex(ValueError,'protected'):
+                    s.edit_setlist('remove',protected)
+            result=s.edit_setlist('remove','2')
+            self.assertEqual([t['id'] for t in result['order']],['0','1','2','3'])
+            self.assertEqual([t['id'] for t in result['queuedUpdate']['tracks']],['0','1','3','4'])
+            self.assertEqual(result['queuedUpdate']['sourceById']['4'],'operator')
+            order,_=s.adopt_queue(1)
+            self.assertEqual([t['id'] for t in order],['0','1','3','4'])
+            self.assertFalse(s.snapshot()['setlist']['allowReorder'])
+            engine.assert_not_called()
+
+    def test_remove_while_paused_preserves_locks_and_requires_a_complete_set(self):
+        s=DJSession(threading.Lock())
+        s.update(candidates=[{'id':str(i),'title':str(i),'bpm':124} for i in range(3)])
+        s.plan(['0','1','2'])
+        s.edit_setlist('lock','1',True)
+        with self.assertRaisesRegex(ValueError,'Unlock'):
+            s.edit_setlist('remove','1')
+        result=s.edit_setlist('remove','2')
+        self.assertEqual([t['id'] for t in result['order']],['0','1'])
+        with self.assertRaisesRegex(ValueError,'at least two'):
+            s.edit_setlist('remove','0')
+
     def test_phrase_window_includes_blend_and_anchors_to_cue(self):
         w=segment_window(63.9999,64.5,60,155)
         self.assertEqual((w['mixAtBeat'],w['endBeat'],w['fadeBeats']),(192,256,64))
@@ -331,6 +363,19 @@ class SessionTests(unittest.TestCase):
     def test_quick_playback_adopts_an_insertion_during_a_fade_and_extends_its_final_track(self):
         self.simulate_run(15,8,104,quick_insert=True)
 
+    def test_final_record_keeps_runway_when_native_duration_is_temporarily_missing(self):
+        s=DJSession(threading.Lock())
+        track={'id':'current'}
+        s.update(queuedUpdate={'status':'analyzing','tracks':[track,{'id':'next'}]},
+                 analysis={'tracks':[{'id':'previous','duration':400},{'id':'current','duration':336.149}]})
+        s.state['copilot']['mode']='leading'
+        for controls in ({},{'durationMs':0},{'durationMs':None}):
+            with self.subTest(controls=controls):
+                self.assertGreater(s.final_preparation_runway(track,0,{'position':99.584,'controls':controls}),200)
+        self.assertLess(s.final_preparation_runway(track,0,{'position':330,'controls':{}}),16)
+        self.assertEqual(s.final_preparation_runway(track,0,{'position':100,'controls':{'durationMs':98000}}),0)
+        self.assertEqual(s.final_preparation_runway({'id':'previous'},0,{'position':100,'controls':{}}),0)
+
     def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
         self.simulate_run(30,8,128,background=True,late_background=True)
 
@@ -410,7 +455,9 @@ class SessionTests(unittest.TestCase):
         def telemetry(c,**kwargs):
             if late_background:
                 for deck in decks:
-                    deck.update(position=deck['beatPosition']*60/155,controls={'durationMs':180_000})
+                    # Optional native controls timed out on the final playing
+                    # deck while the next waveform was still being measured.
+                    deck.update(position=deck['beatPosition']*60/155,controls={})
             t={'decks':copy.deepcopy(decks[:4 if four else 2]),'crossfader':cross[0],'sampledAt':now[0]}
             s.update(telemetry=t);reads.append(now[0])
             if control in ('hold-go','skip') and s.state['phase']=='playing' and s.state['index']==0:
@@ -724,6 +771,12 @@ class SessionTests(unittest.TestCase):
             with self.subTest(ids=ids),self.assertRaises(ValueError):
                 validate_order(ids,tracks())
         self.assertEqual([t['id'] for t in validate_order(['b','a'],tracks())],['b','a'])
+
+    def test_measured_queue_rejects_tracks_beyond_native_scan_limit(self):
+        catalog=tracks()
+        catalog[0]['duration']=3374.95
+        with self.assertRaisesRegex(ValueError,'measured-mix scan limit'):
+            validate_order(['a','b'],catalog)
 
     def test_plan_does_not_send_engine_commands_and_preserves_catalog(self):
         s=DJSession(threading.Lock());s.update(candidates=tracks(),phase='catalog-ready')

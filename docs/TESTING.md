@@ -31,3 +31,23 @@ To compare the tempo-and-key ranker with the readiness-aware ranker, save a disp
 ```
 
 The preview reports both shortlists, verified queue runway when the snapshot contains enough evidence, and possible insertion slots. It reads the saved snapshot without contacting VirtualDJ or a provider.
+
+### Continuous process monitoring
+
+Use `scripts/observe-live-stack.py` during live trials. Pass process names with
+`--process LABEL=EXECUTABLE`, launcher PID files with `--pidfile LABEL=FILE`
+and loopback health endpoints with `--url LABEL=URL`. The default records one
+sample every five seconds for three hours. Output is JSON lines with process
+restarts, memory, CPU, endpoint status, deck telemetry age and relay status.
+It records measurements only and leaves the running apps in place.
+
+
+For a native 60/30-second entry-cadence rehearsal, open the desired catalog
+in VirtualDJ and prepare a compatible queue. Use `scripts/verify-timed-set.py`
+to observe an active set, or pass `--start --prepare` to start the selected queue.
+It records confirmed transitions, beat phase, loop release and mixer readbacks.
+
+Supply `--provider apple-music` to require Apple Music for every heard recording
+or `--provider-sequence beatport,apple-music,beatport,beatport,apple-music`
+to validate a mixed opening. Provider checks use the exact recordings confirmed
+by the handoffs. The verifier leaves the set playing after observation.

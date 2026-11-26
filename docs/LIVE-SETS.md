@@ -34,3 +34,41 @@ Clients can preview or request the same placement through `POST /api/set-session
 The DJ agent status exposes `queueRunwaySeconds` for measured, committed playback and `curationSecondsRemaining` for the active curation allowance. Runway can be unavailable while preparing, mixing, or waiting for fresh deck data. The allowance controls queue planning. The last prepared track follows its planned ending.
 
 Use `POST /api/dj-agent` with `action: "track-feedback"`, `trackId`, and `preference: "prefer"` or `"avoid"` to save an operator preference for the current DJ profile. An optional `reason` is included as planning evidence. Use `"clear"` to remove it.
+
+## Timed entries and loop handoffs
+
+For a measured phrase-mixing set, clients can send this start request to
+`POST /api/set-session` using the local token:
+
+```json
+{
+  "action": "start",
+  "prepareWhilePlaying": true,
+  "rollingQueue": true,
+  "entryCadence": [60, 30],
+  "loopHandoffs": true
+}
+```
+
+`entryCadence` repeats the requested number of seconds between track entries.
+Afterhours chooses the nearest replay-verified exit the decks can still reach
+safely. The actual interval depends on cue spacing and preparation time. It
+selects blend length separately from the entry interval, using verified cue
+capacity, key compatibility and measured band levels. Rolling playback
+keeps room for a later verified exit if preparation misses the target.
+
+With `loopHandoffs` enabled, Afterhours verifies the outgoing beat loop before
+starting the synced incoming deck. The incoming deck supplies the clock for
+the blend while the outgoing playhead wraps. Afterhours reads back its bass,
+lead and high-band controls, then pauses the outgoing deck and verifies release
+of the loop it owns.
+
+After choosing at least two recordings in Afterhours, run
+`python3 scripts/verify-timed-set.py --start --seconds 3600` from the checkout.
+It starts native playback and reports entry spacing, tempo and phase agreement,
+loop wraps and release, and mixer readbacks in JSON lines. Run it without
+`--start` to observe a set from its beginning that has already been started
+through the API. Add `--prepare` to verify and cue the initial buffer while
+paused before the clock starts. This validates longer runs with an opening
+queue ready while new records are being found and measured. The script leaves
+playback running and records no audio.

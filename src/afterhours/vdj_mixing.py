@@ -9,6 +9,7 @@ import math
 import re
 import time
 from afterhours.dj_bridge import BridgeError, as_bool
+from afterhours.vdj_catalog import identity
 
 
 CONTROLS = ('eq_low_freq', 'eq_mid_freq', 'eq_high_freq', 'level')
@@ -81,6 +82,18 @@ def value(raw):
     return result
 
 
+def loop_cleanup_descriptor(value):
+    """Only an exact native recording and supported loop size may be recovered."""
+    if (not isinstance(value, dict) or type(value.get('deck')) is not int
+            or value['deck'] not in deck_rotation.FOUR or type(value.get('beats')) is not int
+            or value['beats'] not in (4, 8) or not re.fullmatch(r'[a-f0-9]{64}', str(value.get('recording')))):
+        raise BridgeError('Invalid retained loop ownership.')
+    start = value.get('startMs')
+    if start is not None and (type(start) not in (int, float) or not math.isfinite(start) or not 0 <= start <= 86_400_000):
+        raise BridgeError('Invalid retained loop marker.')
+    return {key: value.get(key) for key in ('deck', 'recording', 'beats', 'startMs')}
+
+
 class NativeHandoff:
     """One explicitly addressed start and one owned native crossfade.
 
@@ -98,8 +111,9 @@ class NativeHandoff:
         self.q, self.send, self.sleep = query, send, sleep
         self.ramps = {}
         self.dispatched = False
+        self.loop = None
 
-    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO):
+    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *, loop_recording=None):
         if self.dispatched:
             raise BridgeError('This transition was already dispatched. No repeat was sent.')
         if (decks not in (deck_rotation.TWO,deck_rotation.FOUR) or not deck_rotation.pair(outgoing,incoming,decks)
@@ -122,6 +136,8 @@ class NativeHandoff:
         self.send(client,f'deck {outgoing} masterdeck on')
         if not as_bool(self.q(client,f'deck {outgoing} masterdeck','bool')):
             raise BridgeError('The outgoing sync reference was not confirmed. Playback was not started.')
+        if loop_recording is not None:
+            self.engage_loop(client, outgoing, loop_recording, 8 if beats >= 16 else 4)
         self.dispatched=True
         self.send(client,f'deck {incoming} play_sync')
         for attempt in range(4):
@@ -135,8 +151,46 @@ class NativeHandoff:
                 not as_bool(self.q(client,f'deck {outgoing} masterdeck','bool')) or
                 abs(value(self.q(client,'crossfader'))-start)>.02):
             raise MixerControlChanged('The playing pair changed after start. No crossfade was sent.')
-        self.ramps['crossfade']=outgoing
-        self.send(client,f"deck {outgoing} repeat_start_fade 'afterhours_crossfade' {start:.6f} {end:.6f} {beats}bt & crossfader")
+        clock = incoming if self.loop else outgoing
+        self.ramps['crossfade']=clock
+        self.send(client,f"deck {clock} repeat_start_fade 'afterhours_crossfade' {start:.6f} {end:.6f} {beats}bt & crossfader")
+
+    def engage_loop(self, client, deck, recording, beats):
+        prefix = f'deck {deck} '
+        if identity(str(self.q(client, prefix+'get_filepath', 'text'))) != recording:
+            raise MixerControlChanged('The outgoing recording changed before loop entry.')
+        if as_bool(self.q(client, prefix+'loop', 'bool')):
+            raise MixerControlChanged('The outgoing deck already has a loop. No loop or Play was sent.')
+        self.loop = {'deck': deck, 'recording': recording, 'beats': beats, 'startMs': None}
+        self.send(client, prefix+f'loop {beats}')
+        if (not as_bool(self.q(client, prefix+'loop', 'bool'))
+                or float(self.q(client, prefix+'get_active_loop')) != beats):
+            raise BridgeError('The outgoing beat loop was not confirmed. Incoming playback was not started.')
+        start = float(self.q(client, prefix+'get_loop_in_time'))
+        if not math.isfinite(start) or not 0 <= start <= 86_400_000:
+            raise BridgeError('The outgoing loop marker was not confirmed.')
+        self.loop['startMs'] = start
+
+    def release_loop(self, client):
+        if self.loop is None:
+            return None
+        loop = self.loop
+        prefix = f"deck {loop['deck']} "
+        if (identity(str(client.query(prefix+'get_filepath', 'text'))) != loop['recording']
+                or not as_bool(client.query(prefix+'loop', 'bool'))):
+            self.loop = None
+            return 'already-inactive'
+        if loop['startMs'] is None:
+            raise BridgeError('Outgoing loop ownership is unconfirmed. Inspect the deck.')
+        if (float(client.query(prefix+'get_active_loop')) != loop['beats']
+                or abs(float(client.query(prefix+'get_loop_in_time'))-loop['startMs']) > 3):
+            self.loop = None
+            return 'ownership-changed'
+        client.send(prefix+'loop_exit')
+        if as_bool(client.query(prefix+'loop', 'bool')):
+            raise BridgeError('Outgoing loop release was not confirmed.')
+        self.loop = None
+        return 'released'
 
     def cancel_ramps(self, client):
         if self.ramps:

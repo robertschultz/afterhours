@@ -55,9 +55,12 @@ class CatalogSongEligibilityTests(unittest.TestCase):
         self.assertEqual(schema['$defs']['selectableId']['enum'],['a','b','c'])
         self.assertEqual(schema['$defs']['recordingId']['enum'],[t['id'] for t in sent['music']['catalog']])
         self.assertEqual(schema['properties']['trackIds']['items'],{'$ref':'#/$defs/selectableId'})
-        for field in ('deferredTracks','requestVerdicts'):
-            node=schema['properties'][field]['anyOf'][1]['items']['properties']['trackId']
-            self.assertEqual(node,{'$ref':'#/$defs/recordingId'})
+        self.assertEqual(schema['properties']['requestVerdicts'],{'type':'null'})
+        self.assertEqual(schema['properties']['deferredTracks']['anyOf'][1]['items']['properties']['trackId'],
+                         {'$ref':'#/$defs/recordingId'})
+        encoded,_=planning_request({'music':music,'requestCandidates':[{'requestId':'guest-1','trackId':'held-b','asks':1}]})
+        with_guest=json.loads(encoded)['text']['format']['schema']['properties']['requestVerdicts']
+        self.assertEqual(with_guest['anyOf'][1]['items']['properties']['trackId'],{'$ref':'#/$defs/recordingId'})
         self.assertEqual(schema['properties']['selectionReview']['anyOf'][1]['properties']['options']['items']['properties']['trackId'],
                          {'$ref':'#/$defs/selectableId'})
         result=validate_decision({**decision(['a','b','c']),

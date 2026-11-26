@@ -62,8 +62,8 @@ def musical_key(value):
 def vdj_track(raw, *, observed_at=None):
     """Normalize a guarded browser selection; origin within VDJ remains unknown.
 
-    VDJ tags may come from a provider, local analysis or user edits. Do not label
-    them Beatport-authoritative or infer playability from a populated row.
+    VDJ tags may come from a provider, local analysis or user edits. A provider
+    reference identifies a catalog row; playability still requires native proof.
     """
     if (not isinstance(raw, dict) or not isinstance(raw.get("id"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", raw["id"])):
@@ -79,7 +79,7 @@ def vdj_track(raw, *, observed_at=None):
     track = {
         "schema": SCHEMA, "id": "virtualdj:" + raw["id"],
         "engine": {"name": "virtualdj", "selection_id": raw["id"], "folder_id": folder["id"]},
-        "catalog": {"provider": None, "track_id": None},
+        "catalog": raw.get("catalog") or {"provider": None, "track_id": None},
         "observed_at": observed_at,
         **{field: clean_text(raw.get(field)) for field in TEXT_FIELDS},
         "year": int(year) if year is not None and year.is_integer() else None,

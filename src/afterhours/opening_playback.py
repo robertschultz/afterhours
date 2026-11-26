@@ -35,7 +35,15 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=28):
     usable=[c for c in first['cueCandidates'] if c['maxBlendBeats']>=8]
     if not usable:
         raise ValueError('The opening track is playing, but no verified exit supports a handoff.')
-    opening=min(usable,key=lambda c:c['exitBeat'])
+    cadence = snapshot.get('entryCadence')
+    entry = snapshot.get('startup') or {}
+    if cadence and 'entryBeat' in entry:
+        target = entry['entryBeat'] + cadence[0] * current['bpm'] / 60
+        opening = min(usable, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
+        reason = 'Verified exit closest to the requested first entry interval, with time to prepare the incoming deck.'
+    else:
+        opening = min(usable,key=lambda c:c['exitBeat'])
+        reason = 'Earliest verified exit with time to prepare the incoming deck.'
     tracks=[evidence[t['id']] for t in order]
     report=cue_planner.attach_candidates({'tracks':tracks},
         {t['id']:t['cueCandidates'] for t in tracks},snapshot['secondsPerTrack'],current['bpm'],
@@ -47,7 +55,7 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=28):
           'executionPlan':{'applied':True,'orderIds':[order[0]['id']],'targetBpm':current['bpm'],'tempoSchedule':[fixed]},
           'aiReview':{'decision':'propose','secondsBetweenEntries':snapshot['secondsPerTrack'],
                       'selections':[{'trackId':order[0]['id'],'candidateId':opening['id'],
-                                     'reason':'Earliest verified exit with time to prepare the incoming deck.'}],
+                                     'reason':reason}],
                       'transitions':[]}}
     prepared=cue_planner.complete_background_queue(seed,order,tracks,
         'Opening music started first; the upcoming handoff uses verified spare-deck measurements.',1,
@@ -197,7 +205,7 @@ def start_and_prepare(session,client,requested):
         if abs(current['bpm']-target)>.15:raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
         targets=snapshot.get('tempoTargets')
         subset={**snapshot,'tempoTargets':[r for r in targets if r['trackId'] in {t['id'] for t in pair}] if targets else targets}
-        prepared=measured_plan(subset,pair,job.result,current)
+        prepared=measured_plan({**subset,'startup':startup},pair,job.result,current)
         cue_planner.verify_receipts(prepared['analysis'])
         plan=prepared['executionPlan']
         try:s.prepare_deck(client,pair[1],2,plan['tempoSchedule'][1]['fromBpm'],cue=plan['selections'][1])
@@ -215,16 +223,21 @@ def start_and_prepare(session,client,requested):
                       segmentBeats=window['endBeat']-startup['entryBeat'])
         plan['applied']=True;startup.update(status='ready',preparedAt=time.time(),skipped=copy.deepcopy(skipped))
         future=None
+        deferred=[]
         if len(order)>len(pair):
             checked={t['id']:t for t in pair};order=[copy.deepcopy(checked.get(t['id'],t)) for t in order]
-            future={'id':uuid.uuid4().hex,'tracks':order,'protectedIds':[t['id'] for t in pair],
+            next_tracks = order
+            if snapshot.get('entryCadence') and snapshot.get('rollingQueue') and can_omit and not targets:
+                next_tracks = order[:len(pair)+1]
+                deferred = order[len(pair)+1:]
+            future={'id':uuid.uuid4().hex,'tracks':next_tracks,'protectedIds':[t['id'] for t in pair],
                     'status':'needs-analysis','reason':'Continue the selected session after the opening pair.',
                     'prepared':None,'mixTransitions':None,'tempoTargets':targets,
                     'startId':startup['id'],'skipped':copy.deepcopy(skipped),
                     'sourceById':copy.deepcopy(policy.get('sourceById',{}))}
         current_ids={t['id'] for t in pair}
         policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in current_ids}}
-        s.update(order=pair,**prepared,queuedUpdate=future,setlist=policy,startup=copy.deepcopy(startup),
+        s.update(order=pair,**prepared,queuedUpdate=future,timedContinuation=deferred,setlist=policy,startup=copy.deepcopy(startup),
                  tempoTargets=subset['tempoTargets'],mixPlans=plan['transitions'],
                  backgroundAnalysis={**job.snapshot(),'status':'ready','message':'Opening handoff verified. Music has continued playing.'})
         with s.lock:

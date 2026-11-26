@@ -1,7 +1,7 @@
 """Append compatible recordings within the running set's native worker."""
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
-from afterhours.dj_discovery import normalized
+from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import song_identity
 
@@ -10,6 +10,8 @@ class RollingQueue:
     def __init__(self):
         self.searched = set()
         self.missed = set()
+        self.live_matches = set()
+        self.missed_titles = set()
 
     def tick(self, session, slack):
         with session.lock:
@@ -20,12 +22,20 @@ class RollingQueue:
             if slack < 4 or session.cancel.is_set():
                 return
             pending = state.get('queuedUpdate') or {}
-            miss=pending.get('catalogMissId')
-            if (miss and pending.get('status')=='blocked' and pending.get('rollingTrackId')==miss
+            timed_set = bool(state.get('entryCadence'))
+            miss = pending.get('catalogMissId')
+            if timed_set:
+                miss = miss or pending.get('analysisMissId') or pending.get('measuredFitMissId')
+            attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
+            if (miss and pending.get('status')=='blocked' and miss in attempted
                     and not state.get('resumeBlocked') and not session.background_job):
                 self.missed.add(miss)
+                if timed_set:
+                    rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
+                    if rejected:
+                        self.missed_titles.add(song_identity(rejected)[0])
                 session.update(queuedUpdate=None,rollingQueue={'status':'searching'})
-                session.event('The next candidate was not found. Searching for another recording.', 'queue')
+                session.event('The next candidate did not prepare. Looking for another recording.', 'queue')
                 pending={}
             if pending.get('status') == 'blocked' and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
@@ -33,13 +43,13 @@ class RollingQueue:
                 return
 
             order = state['order']
-            if not order or len(order) - state['index'] > 3:
+            if not order or len(order) - state['index'] > (5 if timed_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
                 return
             ids = [track['id'] for track in order]
-            titles = {song_identity(track)[0] for track in order}
+            titles = {song_identity(track)[0] for track in order} | self.missed_titles
             unavailable = {row['trackId'] for row in state.get('recordingAvailability', [])}
             tail = order[-1]
             artists = [normalized(track.get('artist')) for track in order[-2:]]
@@ -53,39 +63,100 @@ class RollingQueue:
                 return (transition_cost(tail, candidate, {}) + relationship + repetition
                         + (0 if same_genre else 2.5), candidate['id'])
 
+            folder = (state.get('catalogFolder') or {}).get('id')
             candidates = [track for track in state['candidates']
-                          if track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
+                          if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
+                              or track['engine']['folder_id'] == folder)
+                          and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
-            for track in sorted(candidates, key=score):
+            catalog = session.catalog_job
+            if timed_set and catalog and getattr(catalog, 'rolling', False):
+                self.live_matches.update(catalog.seen)
+            style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
+            if timed_set and not any(t['id'] in self.live_matches for t in candidates):
+                if (slack >= 26 and len(order)-state['index'] >= 2
+                        and (not catalog or catalog.done) and self.search(session, state, order, style, timed_set)):
+                    return
+                if catalog and not catalog.done and slack >= 22:
+                    return
+            if timed_set:
+                candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
+                    0 if track['id'] in self.live_matches else 1,
+                    transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)),
+                    set_slot=set_slot(str(state.get('agentDirection') or '')))
+            else:
+                candidates = sorted(candidates, key=score)
+            deferred = state.get('timedContinuation') or []
+            if deferred:
+                ranked = {t['id']: t for t in candidates}
+                requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
+                candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
+            picked = []
+            # A second isolated deck can work ahead while the immediate
+            # incoming recording is being verified. With less runway, start
+            # just one transport preparation.
+            batch = 2 if timed_set and slack >= 23 and len(order) > state['index']+1 else 1
+            for track in candidates:
                 if session.cancel.is_set():
                     return
                 try:
-                    session.revise_queue(ids + [track['id']], reason=f"Continuing the set with {track['title']}.",
+                    session.revise_queue(ids + [t['id'] for t in picked] + [track['id']],
+                                         reason=f"Continuing the set with {', '.join(t['title'] for t in picked+[track])}.",
                                          source='planner')
                 except (ValueError, BridgeError):
                     continue
-                session.state['queuedUpdate']['rollingTrackId']=track['id']
-                session.update(rollingQueue={'status': 'preparing', 'next': track['title']})
+                picked.append(track)
+                if len(picked) >= batch:
+                    break
+            if picked:
+                selected = [t['id'] for t in picked]
+                queued = session.state['queuedUpdate']
+                queued['rollingTrackId'] = selected[0]
+                if len(selected) > 1:
+                    queued['rollingTrackIds'] = selected
+                if deferred:
+                    session.update(timedContinuation=[t for t in deferred if t['id'] not in selected])
+                if timed_set:
+                    for track in picked:
+                        session.event(f"Selected {track['title']} for a measured queue slot.", 'queue',
+                                      trackId=track['id'], currentCatalogMatch=track['id'] in self.live_matches,
+                                      musicEvidence=facts[track['id']])
+                session.update(rollingQueue={'status': 'preparing', 'next': picked[0]['title']})
                 return
 
             if session.catalog_job and not session.catalog_job.done:
                 return
             if slack < (9 if quick else 18):
                 return
-            for track in reversed(order[-3:]):
-                term = str(track.get('artist') or '').strip()
-                key = normalized(term)
-                if not key or key in self.searched or len(term) > 95 or ';' in term:
-                    continue
-                self.searched.add(key)
-                target = state.get('quickTargetBpm') or tail['bpm']
-                try:
-                    session.discover_more(term, bpm_min=max(40, target * .90), bpm_max=min(300, target * 1.11))
-                except (ValueError, BridgeError):
-                    continue
-                session.catalog_job.rolling = True
-                session.update(rollingQueue={'status': 'searching', 'term': term})
-                return
-            if state['rollingQueue'].get('status') != 'held':
+            if not self.search(session, state, order, style, timed_set) and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
+
+    def search(self, session, state, order, style, timed_set):
+        tail = order[-1]
+        terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        if timed_set:
+            suggestions = DISCOVERY.hints(style, order)
+            terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
+            terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
+            terms += [str(tail.get('genre') or style).strip(), style]
+        for term in terms:
+            key = normalized(term)
+            if not key or key in self.searched or len(term) > 95 or ';' in term:
+                continue
+            self.searched.add(key)
+            target = state.get('quickTargetBpm') or tail['bpm']
+            try:
+                session.discover_more(term, bpm_min=max(40, target * .90), bpm_max=min(300, target * 1.11))
+            except (ValueError, BridgeError):
+                continue
+            job = session.catalog_job
+            job.rolling = True
+            if timed_set:
+                job.reuse_matches = True
+                job.target = job.quota = 4
+                job.max_rows = 12
+                job.seconds = 18
+            session.update(rollingQueue={'status': 'searching', 'term': term})
+            return True
+        return False

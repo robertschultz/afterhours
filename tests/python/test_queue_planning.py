@@ -127,6 +127,76 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(replacement['protectedIds'],['a','b'])
         self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
 
+    def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.tick(self.session, 20)
+        pending = self.session.state['queuedUpdate']
+        miss = pending['rollingTrackId']
+        pending.update(status='blocked', error='Native load remains unconfirmed.')
+        roller.tick(self.session, 20)
+        self.assertEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
+        pending['measuredFitMissId'] = miss
+        roller.tick(self.session, 20)
+        self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
+        self.assertEqual(self.session.state['queuedUpdate']['protectedIds'], ['a','b'])
+
+    def test_timed_queue_replaces_exact_failed_scan_in_parallel_batch(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+        roller=RollingQueue()
+        roller.live_matches.update(t['id'] for t in self.tracks)
+        roller.tick(self.session,35)
+        pending=self.session.state['queuedUpdate']
+        good,miss=pending['rollingTrackIds']
+        pending.update(status='blocked',analysisMissId=miss,error='Exact recording grid did not settle')
+        roller.tick(self.session,35)
+        replacement=self.session.state['queuedUpdate']
+        ids=[track['id'] for track in replacement['tracks']]
+        self.assertEqual(ids[:2],['a','b'])
+        self.assertIn(good,ids)
+        self.assertNotIn(miss,ids)
+        self.assertNotIn('analysisMissId',replacement)
+
+    def test_timed_queue_prepares_explicit_opening_tail_in_order(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            timedContinuation=[self.tracks[-1], self.tracks[-2]],
+                            entryCadence=[60,30], executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session, 20)
+        state = self.session.snapshot()
+        self.assertEqual([row['id'] for row in state['queuedUpdate']['tracks']], ['a','b','x'])
+        self.assertEqual([row['id'] for row in state['timedContinuation']], ['d'])
+
+    def test_timed_queue_commits_the_measured_prefix_and_keeps_its_preparation_owner(self):
+        self.session.plan(['a','b'])
+        original = self.session.snapshot()['order']
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.update(t['id'] for t in self.tracks)
+        roller.tick(self.session, 30)
+        queued = self.session.state['queuedUpdate']
+        first, second = queued['tracks'][-2:]
+        queued['status'] = 'analyzing'
+        job = Mock(revision=queued['id'], result=[first])
+        self.session.background_job = job
+        prepared = {'analysis': {}, 'executionPlan': {'id':'verified-plan','transitions':[]}}
+        with patch.object(self.session, 'fit_background_tracks', return_value=(original+[first], prepared)), \
+                patch('afterhours.cue_planner.verify_receipts'):
+            self.session.publish_prepared_prefix(job)
+            order, plan = self.session.adopt_queue(0)
+        self.assertEqual([t['id'] for t in order], ['a','b',first['id']])
+        self.assertTrue(plan['applied'])
+        self.assertIs(self.session.background_job, job)
+        pending = self.session.state['queuedUpdate']
+        self.assertEqual(pending['id'], queued['id'])
+        self.assertEqual(pending['status'], 'analyzing')
+        self.assertEqual(pending['tracks'][-1]['id'], second['id'])
+
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})

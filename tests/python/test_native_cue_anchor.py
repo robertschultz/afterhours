@@ -13,8 +13,9 @@ class PausedGridPeer:
     """A fixed native grid can begin before the first playable sample."""
     locator = '/fixture/negative-grid-anchor.flac'
 
-    def __init__(self, anchor=-.002, negative_at=None):
+    def __init__(self, anchor=-.002, negative_at=None, duration=400):
         self.anchor = anchor
+        self.duration = duration
         self.position = anchor
         self.beat = 0
         self.commands = []
@@ -55,7 +56,7 @@ class PausedGridPeer:
             self.position = self.anchor + self.beat * 60 / 155
             self.stage = 'candidate'
         elif amount.endswith('%'):
-            self.position = float(amount[:-1]) * 400 / 100
+            self.position = float(amount[:-1]) * self.duration / 100
             self.beat = (self.position - self.anchor) * 155 / 60
             self.stage = 'replay'
         else:
@@ -63,12 +64,13 @@ class PausedGridPeer:
 
 
 class NativeCueAnchorTests(unittest.TestCase):
-    def measure(self, peer):
+    def measure(self, peer, seconds=30):
         rows, report, _ = fixture(count=1)
+        report['tracks'][0]['duration'] = peer.duration
         track = {**report['tracks'][0], 'engine': {'selection_id': identity(peer.locator)}}
         session = DJSession(threading.Lock())
         with patch('afterhours.cue_planner.measured_rows', return_value=rows), patch.object(session, 'sleep'):
-            return session.measure_cues(peer, track, report['tracks'][0], 155, 30, deck=3)
+            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3)
 
     def test_negative_native_anchor_keeps_actual_grid_and_all_cues_in_audio(self):
         peer = PausedGridPeer()
@@ -86,6 +88,13 @@ class NativeCueAnchorTests(unittest.TestCase):
         self.assertTrue(all(seconds >= 0 for stage, seconds in peer.readbacks if stage != 'anchor'))
         self.assertTrue(all(command.startswith('deck 3 goto') for command in peer.commands))
         self.assertFalse(peer.playing)
+
+    def test_short_recording_uses_replay_verified_shorter_phrase(self):
+        peer = PausedGridPeer(anchor=.25, duration=123)
+        cues = self.measure(peer, seconds=120)
+        self.assertTrue(cues)
+        self.assertTrue(all(cue['spanBeats']==128 for cue in cues))
+        self.assertTrue(all(cue['endSeconds']<peer.duration and cue['replayVerified'] for cue in cues))
 
     def test_anchor_outside_native_bounds_or_nonfinite_stops_before_candidate_seek(self):
         for anchor in (-6.001, float('nan'), float('inf'), float('-inf')):

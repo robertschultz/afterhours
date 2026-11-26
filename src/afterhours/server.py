@@ -5,6 +5,7 @@ from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen, Request
 import argparse
 import json
+import re
 import secrets
 import threading
 import time
@@ -197,7 +198,20 @@ class Handler(RuntimeStaticHandler):
             if self.headers.get('X-DJ-Token') != TOKEN:return self.reply({'error':'Missing local session token'},403)
             return self.agent_video('status')
         if path.path == '/api/set-session':
-            return self.reply(TRACK_ARTWORK.decorate(DJ_SESSION.snapshot()))
+            live = parse_qs(path.query).get('view') == ['live']
+            snapshot = DJ_SESSION.snapshot(compact=True) if live else DJ_SESSION.snapshot()
+            return self.reply(TRACK_ARTWORK.decorate(snapshot))
+        cover = re.fullmatch(r'/api/track-artwork/([a-f0-9]{64})', path.path)
+        if cover:
+            image = TRACK_ARTWORK.fetch('virtualdj:' + cover[1])
+            if not image:
+                return self.reply({'error':'Artwork is unavailable for that recording.'},404)
+            media, content = image
+            self.send_response(200)
+            self.send_header('Content-Type', media)
+            self.send_header('Content-Length', str(len(content)))
+            self.end_headers()
+            return self.wfile.write(content)
         if path.path == '/api/catalog-crate':
             if self.headers.get('X-DJ-Token') != TOKEN:
                 return self.reply({'error':'Missing local session token'},403)
@@ -236,7 +250,8 @@ class Handler(RuntimeStaticHandler):
             # Cached readbacks only: an HTTP poll never sends an OSC command.
             result=DJ_SESSION.control_state()
             if parse_qs(path.query).get('program',['1'])[0] != '0':
-                result['program']=DJ_SESSION.program()
+                program = DJ_SESSION.program()
+                result['program'] = TRACK_ARTWORK.decorate(program) if program else None
             return self.reply(result)
         if path.path == '/api/waveform':
             data=DJ_SESSION.waveform(parse_qs(path.query).get('track',[''])[0])
@@ -250,7 +265,7 @@ class Handler(RuntimeStaticHandler):
         if path.path == '/api/program':
             program = DJ_SESSION.program()
             if program is not None:
-                return self.reply(program)
+                return self.reply(TRACK_ARTWORK.decorate(program))
             with LOCK:
                 return self.reply(dict(STATE, connected=time.time()-OWNER['seen'] < 5))
         read_actions = {"/api/vdj/status": "status", "/api/vdj/catalog": "catalog-status",
@@ -421,6 +436,10 @@ class Handler(RuntimeStaticHandler):
                     result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'))
                 elif action == 'start':
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
+                    if 'entryCadence' in data:
+                        options['entry_cadence'] = data['entryCadence']
+                    if data.get('loopHandoffs') is True:
+                        options['loop_handoffs'] = True
                     if data.get('prepareWhilePlaying') is True:
                         if DJ_SESSION.snapshot().get('mixStyle') != 'phrase':
                             raise ValueError('Preparing while playing requires a phrase-mixing set.')
@@ -447,7 +466,7 @@ class Handler(RuntimeStaticHandler):
                 elif action == 'prepare':
                     result = DJ_SESSION.prepare()
                 elif action == 'prepare-analysis':
-                    result = DJ_SESSION.prepare_analysis()
+                    result = DJ_SESSION.prepare_analysis(entry_cadence=data['entryCadence']) if 'entryCadence' in data else DJ_SESSION.prepare_analysis()
                 elif action == 'record-provider-preview':
                     result = DJ_SESSION.record_provider_preview(data.get('trackId'),data.get('provider'),
                         data.get('previewSeconds'),data.get('evidence'),data.get('observedAt'))

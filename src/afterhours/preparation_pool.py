@@ -16,12 +16,16 @@ class PreparationPool:
         self.cache=copy.deepcopy(cache or {});self.result=[];self.jobs=[];self.pending=[]
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
+        self.analysis_miss=None
+        state = session.snapshot()
+        self.timed = bool(state.get('entryCadence'))
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
-            if cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==session.snapshot()['secondsPerTrack']:
+            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
+                    and bool(cached.get('timedPreparation')) == self.timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
             self.pending.append(track)
@@ -50,6 +54,7 @@ class PreparationPool:
         self.error=job.error
         self.analysis_timed_out=job.analysis_timed_out
         self.catalog_miss=getattr(job,'catalog_miss',None)
+        self.analysis_miss=getattr(job,'analysis_miss',None)
         self.done=True
 
     def step(self,client,seconds_available):
@@ -90,7 +95,10 @@ class PreparationPool:
             self.result.sort(key=lambda t:ids[t['id']]);return
         # Prioritize the immediate next item, while letting the later decoder
         # and analysis progress every third slice.
-        job=loading or active[0 if len(active)==1 or self.slice%3 else 1]
+        if loading and (not self.timed or loading is active[0]):
+            job = loading
+        else:
+            job = active[0 if len(active)==1 or self.slice%3 else 1]
         self.slice+=1;job.step(client,seconds_available)
 
     def close(self,client):

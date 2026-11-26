@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from afterhours import ai_mix
+from afterhours.audio_analysis import exceeds_scan_duration
 from afterhours.vdj_session import validate_order, search_terms, song_identity, TempoFitError
 from afterhours.dj_bridge import BridgeError
 from afterhours import tempo_planner
@@ -188,6 +189,8 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
     ordered.update({tid:candidates[tid] for tid in s.get('setPins',[]) if tid in candidates})
     ordered.update({t['trackId']:candidates[t['trackId']] for t in (deferred or []) if t['trackId'] in candidates})
     unavailable={r['trackId']:r for r in s.get('recordingAvailability',[])}
+    too_long={tid for tid,track in candidates.items()
+              if s.get('mixStyle')!='quick' and exceeds_scan_duration(track)}
     found=set((s.get('catalogSearch') or {}).get('foundIds',[]))
     unavailable_rows=sorted(unavailable.items(),key=lambda item:item[0] not in s.get('setPins',[]))
     protected=set(protected_ids(s))
@@ -226,7 +229,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
               list(guest_ids)[:8]+[t['id'] for t in identity_order if t['id'] in found]+[t['id'] for t in identity_order])
     representatives={}
     for tid in priority:
-        if tid not in ordered or (tid in unavailable and tid not in protected):continue
+        if tid not in ordered or (tid in unavailable and tid not in protected) or tid in too_long:continue
         key=song_identity(ordered[tid])[0]
         if key not in heard:representatives.setdefault(key,tid)
     eligible=set(representatives.values())
@@ -236,6 +239,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         row={k:t.get(k) for k in ('id','title','artist','label','bpm','camelot','genre','duration','year','remix')}
         if t['id'] not in eligible:
             row.update(selectionEligible=False,selectionReason='This recording is unavailable.' if t['id'] in unavailable else
+                       'This recording exceeds the measured-mix scan limit.' if t['id'] in too_long else
                        'This song was already heard in this run.' if song_identity(t)[0] in heard else
                        'Another exact recording represents this song in the available choices.')
         if t['id'] in found:row['searchMatch']=True
@@ -507,6 +511,8 @@ def planning_request(packet, lookups=None, transcript=None):
     # results; never raise the approved per-turn ceiling to fit extra context.
     def encode():
         body['text']['format']['schema']=catalog_schema(schema,packet.get('music',{}).get('catalog',[]))
+        if not packet.get('requestCandidates'):
+            body['text']['format']['schema']['properties']['requestVerdicts']={'type':'null'}
         # Window choices are bound to exactly the windows shown, after the
         # catalog binding so its recording references do not replace them.
         body['text']['format']['schema']['properties']['cueChoices']=cue_schema()

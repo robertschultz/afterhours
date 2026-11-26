@@ -151,7 +151,8 @@ class PlanningRequestTests(unittest.TestCase):
             elif isinstance(node,list):
                 for value in node:visit(value)
         visit(schema)
-        self.assertEqual(len(references),8)
+        self.assertEqual(len(references),7)
+        self.assertEqual(schema['properties']['requestVerdicts'],{'type':'null'})
         for node in references:
             self.assertEqual(node,{'$ref':'#/$defs/recordingId'})
             resolved=schema

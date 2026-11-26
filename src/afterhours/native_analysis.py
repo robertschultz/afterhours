@@ -5,8 +5,13 @@ import math
 from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
+from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_catalog import identity
 from afterhours.audio_analysis import verified_energy
+
+class NativeAnalysisUnsettled(BridgeError):
+    """A confirmed, paused recording never exposed a stable native grid."""
+
 
 DATABASE = Path.home() / 'Library/Application Support/VirtualDJ/database.xml'
 

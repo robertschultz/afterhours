@@ -3,6 +3,7 @@ import unittest
 
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_mixing import NativeHandoff
+from afterhours.vdj_catalog import identity
 
 
 class Peer:
@@ -56,6 +57,56 @@ class Peer:
 
 
 class NativeHandoffTests(unittest.TestCase):
+    def test_owned_loop_precedes_incoming_play_and_fade_uses_incoming_clock(self):
+        peer = Peer()
+        locator = '/fixture/record.wav'
+        original_query, original_send = peer.query, peer.send
+        loop = {'active': False, 'marker': 34000.0}
+
+        def query(script, kind=None):
+            if script == 'deck 1 loop':
+                return loop['active']
+            if script == 'deck 1 get_filepath':
+                return locator
+            if script == 'deck 1 get_active_loop':
+                return 8
+            if script == 'deck 1 get_loop_in_time':
+                return loop['marker']
+            return original_query(peer, script, kind)
+
+        def send(script):
+            if script in ('deck 1 loop 8', 'deck 1 loop_exit'):
+                loop['active'] = script.endswith('8')
+                peer.sent.append(script)
+            else:
+                original_send(script)
+
+        class Client:
+            @staticmethod
+            def query(script, kind=None):
+                return query(script, kind)
+
+            @staticmethod
+            def send(script):
+                send(script)
+
+        client = Client()
+        handoff = NativeHandoff(lambda c, s, k=None: c.query(s, k), lambda c, s: c.send(s), peer.sleep.append)
+        handoff.dispatch(client, 1, 2, 16, loop_recording=identity(locator))
+        self.assertLess(peer.sent.index('deck 1 loop 8'), peer.sent.index('deck 2 play_sync'))
+        self.assertIn("deck 2 repeat_start_fade 'afterhours_crossfade'", peer.sent[-1])
+        self.assertEqual(handoff.release_loop(client), 'released')
+        self.assertFalse(loop['active'])
+
+        loop.update(active=False, marker=40000)
+        peer.playing[2] = False
+        handoff = NativeHandoff(lambda c, s, k=None: c.query(s, k), lambda c, s: c.send(s), peer.sleep.append)
+        handoff.dispatch(client, 1, 2, 16, loop_recording=identity(locator))
+        loop['marker'] += 8000
+        self.assertEqual(handoff.release_loop(client), 'ownership-changed')
+        self.assertTrue(loop['active'])
+        self.assertEqual(peer.sent.count('deck 1 loop_exit'), 1)
+
     def test_selected_spare_and_sync_master_cannot_capture_either_direction(self):
         for outgoing in (1,2):
             for selected in (3,4):

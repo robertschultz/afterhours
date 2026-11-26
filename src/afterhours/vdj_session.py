@@ -215,7 +215,7 @@ class DJSession:
                       'mixStyle': 'phrase', 'phraseBeats': 64, 'fadeBeats': 64,
                       'analysis': None, 'aiReview': None, 'executionPlan': None, 'preparationSelection': None,
                       'queuedUpdate': None, 'lastQueueApplication': None, 'lastQueueRepair': None, 'catalogSearch': None,
-                      'backgroundAnalysis': None, 'tempoControl': None, 'tempoTargets': None,
+                      'backgroundAnalysis': None, 'tempoControl': None, 'tempoTargets': None, 'rollingQueue': None,
                       'mixerBaselines': None, 'startup': None, 'lastError': None,
                       'copilotTargets': None,
                       'copilot': {'mode': 'leading', 'held': False, 'command': None, 'selectionEpoch': 0},
@@ -1131,7 +1131,7 @@ class DJSession:
                               phase='ready', index=-1, segmentProgress=0,
                               message=('Order ready. Analyze the set and apply a measured mix plan before starting.' if mix_style=='phrase' else 'Quick preview ready. Start when you want to listen.'), transitions=[], transitionControl=None,
                               analysis=None, aiReview=None, executionPlan=None, preparationSelection=None, queuedUpdate=None, lastQueueApplication=None, lastQueueRepair=None, startedAt=None, endedAt=None, startup=None,lastError=None,
-                              tempoTargets=copy.deepcopy(tempo_targets),tempoControl=None,backgroundAnalysis=None,
+                              tempoTargets=copy.deepcopy(tempo_targets),tempoControl=None,backgroundAnalysis=None,rollingQueue=None,
                               mixPlans=[transition_recipe(a,b,mix_style,seconds,order[0]['bpm']) for a,b in zip(order,order[1:])])
             self.event(f'{"Operator reordered" if source=="operator" else "Planner ordered"} {len(order)} tracks. Prepare audio to choose measured cues.', 'plan')
             return self.snapshot()
@@ -1250,7 +1250,7 @@ class DJSession:
         job=self.catalog_job
         # Audio timing has priority. Metadata work never loads a deck and stops
         # well before the beat-critical handoff. It resumes after that handoff.
-        if not job or job.done or seconds_available<16 or self.background_job:return
+        if not job or job.done or seconds_available<(9 if getattr(job,'rolling',False) else 16) or self.background_job:return
         try:job.step(client)
         except (BridgeError,ValueError,OSError) as exc:
             job.done=True;job.publish('error',str(exc));self.event(str(exc),'catalog')
@@ -2151,9 +2151,12 @@ class DJSession:
         return order,prepared
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None):
+              held_recording=None, rolling_queue=False):
+        from afterhours.rolling_queue import RollingQueue
+
         self.dig_restart()
         snapshot = self.snapshot()
+        rolling = RollingQueue() if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
         planned=snapshot.get('executionPlan')
@@ -2183,6 +2186,8 @@ class DJSession:
             cue_planner.verify_receipts(snapshot['analysis'])
         def ready(client,track,deck,target,index,override=None):
             nonlocal order,planned
+            if self.catalog_job and getattr(self.catalog_job,'rolling',False):
+                self.catalog_job.resume_search()
             selected = override or planned
             if len(self.decks)>2:self.release_preparation(client,deck)
             if selected and selected.get('tempoSchedule'):target=selected['tempoSchedule'][index]['fromBpm']
@@ -2221,6 +2226,7 @@ class DJSession:
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
         def work(client):
             nonlocal order,planned
+            self.update(rollingQueue={'status': 'ready'} if rolling else None)
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -2443,6 +2449,7 @@ class DJSession:
                                 ready(client,order[index+1],incoming,target,index+1)
                                 t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
                                 revised_final=True;break
+                    if rolling:rolling.tick(self,slack)
                     self.service_catalog(client,slack)
                     self.service_dig(client,slack)
                     self.sleep(.12)

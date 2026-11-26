@@ -16,7 +16,7 @@ from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.native_analysis import track_analysis
+from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
 from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
@@ -200,6 +200,7 @@ class BackgroundAnalysis:
         self.cache=copy.deepcopy(cache or {});self.pending=queue.Queue(maxsize=1)
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.catalog_miss=None
+        self.analysis_miss=None
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -415,6 +416,9 @@ class BackgroundAnalysis:
         except Exception as exc:
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
+            if (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+                    and self.owned and self.loaded==track['engine']['selection_id']):
+                self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True
     def close(self,client):

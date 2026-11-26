@@ -20,7 +20,7 @@ from afterhours.vdj_catalog import (folder_state, selection, identity, load_sele
                          paused_load_target, load_exact_recording)
 from afterhours.native_recording import RECORDINGS
 from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, transition_recipe
-from afterhours.native_analysis import track_analysis
+from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
 from afterhours.audio_analysis import scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
 from afterhours.opening_playback import OpeningHandoffHeld, confirm_started
@@ -1513,10 +1513,13 @@ class DJSession:
                     self.state['queuedUpdate'].update(status='blocked',error=str(exc))
                     self.state['queuedUpdate'].pop('failure',None)
                     miss=getattr(job,'catalog_miss',None)
+                    scan_miss=getattr(job,'analysis_miss',None)
                     pending = self.state['queuedUpdate']
                     staged_ids = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
                     if not cleanup_failed and miss and miss in staged_ids:
                         pending['catalogMissId']=miss
+                    if not cleanup_failed and scan_miss and scan_miss in staged_ids:
+                        pending['analysisMissId']=scan_miss
                     if fitting and not cleanup_failed and isinstance(exc, ValueError) and len(staged_ids) == 1 and staged_ids[0]:
                         pending['measuredFitMissId'] = staged_ids[0]
                     if failure:self.state['queuedUpdate']['failure']=failure
@@ -1589,7 +1592,9 @@ class DJSession:
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
-            if not staged and not (rolling and (not queued or queued.get('catalogMissId') or (self.state.get('entryCadence') and queued.get('measuredFitMissId')))):
+            replaceable=queued.get('catalogMissId') or (self.state.get('entryCadence') and
+                (queued.get('measuredFitMissId') or queued.get('analysisMissId')))
+            if not staged and not (rolling and (not queued or replaceable)):
                 return 0
             # Native console controls can temporarily omit duration during
             # background waveform work. Replay-verified analysis for this
@@ -2197,7 +2202,7 @@ class DJSession:
             stable=stable+1 if reading==previous else 0;previous=reading
             if stable>=3:break
             self.wait_observed(client, .6)
-        else:raise BridgeError('Track analysis did not settle. No playback was started.')
+        else:raise NativeAnalysisUnsettled('Track analysis did not settle. No playback was started.')
         if 150<=track['bpm']<=190 and 75<=bpm<=95 and abs(bpm*2/track['bpm']-1)<=.08:
             # Correct a half-time grid, not the audio playback speed. This is a
             # reversible native analysis edit; the original media is untouched.

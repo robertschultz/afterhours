@@ -143,6 +143,24 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
         self.assertEqual(self.session.state['queuedUpdate']['protectedIds'], ['a','b'])
 
+    def test_timed_queue_replaces_exact_failed_scan_in_parallel_batch(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+        roller=RollingQueue()
+        roller.live_matches.update(t['id'] for t in self.tracks)
+        roller.tick(self.session,35)
+        pending=self.session.state['queuedUpdate']
+        good,miss=pending['rollingTrackIds']
+        pending.update(status='blocked',analysisMissId=miss,error='Exact recording grid did not settle')
+        roller.tick(self.session,35)
+        replacement=self.session.state['queuedUpdate']
+        ids=[track['id'] for track in replacement['tracks']]
+        self.assertEqual(ids[:2],['a','b'])
+        self.assertIn(good,ids)
+        self.assertNotIn(miss,ids)
+        self.assertNotIn('analysisMissId',replacement)
+
     def test_timed_queue_prepares_explicit_opening_tail_in_order(self):
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

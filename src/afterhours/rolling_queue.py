@@ -23,7 +23,9 @@ class RollingQueue:
                 return
             pending = state.get('queuedUpdate') or {}
             timed_set = bool(state.get('entryCadence'))
-            miss = pending.get('catalogMissId') or (pending.get('measuredFitMissId') if timed_set else None)
+            miss = pending.get('catalogMissId')
+            if timed_set:
+                miss = miss or pending.get('analysisMissId') or pending.get('measuredFitMissId')
             attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
             if (miss and pending.get('status')=='blocked' and miss in attempted
                     and not state.get('resumeBlocked') and not session.background_job):

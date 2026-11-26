@@ -16,6 +16,7 @@ class PreparationPool:
         self.cache=copy.deepcopy(cache or {});self.result=[];self.jobs=[];self.pending=[]
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
+        self.analysis_miss=None
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
         for track in self.tracks:
@@ -53,6 +54,7 @@ class PreparationPool:
         self.error=job.error
         self.analysis_timed_out=job.analysis_timed_out
         self.catalog_miss=getattr(job,'catalog_miss',None)
+        self.analysis_miss=getattr(job,'analysis_miss',None)
         self.done=True
 
     def step(self,client,seconds_available):

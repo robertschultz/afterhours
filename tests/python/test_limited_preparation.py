@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from unittest.mock import Mock,patch
 from afterhours.cue_planner import LimitedAudio
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_session import DJSession,RecordingUnavailable
+from afterhours.vdj_session import DJSession,RecordingUnavailable,TrackMetadataChanged
 
 
 class LimitedPreparationTests(unittest.TestCase):
@@ -18,6 +18,10 @@ class LimitedPreparationTests(unittest.TestCase):
         session.plan([t['id'] for t in tracks])
         client = Mock()
         client.status.return_value = {'automix': False, 'decks': [{'playing':False}]*2}
+        changed = {**tracks[1], 'key':'C minor', 'camelot':'5A'}
+        def prepare_track(client, track, deck, bpm, *, cue, checked=None):
+            if deck == 2 and checked is None:
+                raise TrackMetadataChanged(changed)
         with ExitStack() as stack:
             stack.enter_context(patch('afterhours.vdj_session.track_analysis',
                 side_effect=lambda values: {'tracks': list(values)}))
@@ -25,7 +29,7 @@ class LimitedPreparationTests(unittest.TestCase):
             stack.enter_context(patch('afterhours.cue_planner.verify_receipts'))
             stack.enter_context(patch.object(session, 'analyze_deck', side_effect=lambda c, t, d: t))
             stack.enter_context(patch.object(session, 'measure_cues', side_effect=lambda c,t,*a,**kw: t['cueCandidates']))
-            prepare = stack.enter_context(patch.object(session, 'prepare_deck'))
+            prepare = stack.enter_context(patch.object(session, 'prepare_deck', side_effect=prepare_track))
             send = stack.enter_context(patch.object(session, 'send'))
             stack.enter_context(patch.object(session, 'telemetry'))
             stack.enter_context(patch.object(session, '_launch', side_effect=lambda fn, phase:fn(client)))
@@ -34,6 +38,8 @@ class LimitedPreparationTests(unittest.TestCase):
         self.assertEqual(result['entryCadence'], [60,30])
         self.assertEqual(result['executionPlan']['source'], 'Local measured timed-set preparation')
         self.assertTrue(all('cue' in call.kwargs for call in prepare.call_args_list))
+        self.assertEqual(prepare.call_args.kwargs['checked'], changed)
+        self.assertEqual(result['order'][1]['camelot'], changed['camelot'])
         send.assert_called_once_with(client, 'crossfader 0%')
 
     def test_only_unlocked_preview_is_omitted_with_exact_selection_receipt(self):

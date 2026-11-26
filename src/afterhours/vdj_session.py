@@ -1710,7 +1710,18 @@ class DJSession:
                 prepared['aiReview']['source'] = source
                 plan = cue_planner.compile_plan(prepared['aiReview'], report, checked, snapshot['secondsPerTrack'], snapshot['mixStyle'])
                 for i in range(2):
-                    self.prepare_deck(client,checked[i],i+1,plan['tempoSchedule'][i]['fromBpm'],cue=plan['selections'][i])
+                    try:
+                        self.prepare_deck(client,checked[i],i+1,plan['tempoSchedule'][i]['fromBpm'],cue=plan['selections'][i])
+                    except TrackMetadataChanged as exc:
+                        measured = {**seed, 'order':checked, 'analysis':report, 'aiReview':prepared['aiReview'],
+                                    'executionPlan':{**plan, 'applied':True}, 'tempoTargets':targets}
+                        checked, prepared = self.refresh_key_plan(measured, exc.track, i)
+                        report = prepared.pop('analysis')
+                        prepared['aiReview']['source'] = source
+                        plan = cue_planner.compile_plan(prepared['aiReview'], report, checked,
+                                                        snapshot['secondsPerTrack'], snapshot['mixStyle'])
+                        self.prepare_deck(client,checked[i],i+1,plan['tempoSchedule'][i]['fromBpm'],
+                                          cue=plan['selections'][i],checked=exc.track)
                 plan['applied'] = True
                 prepared.update(executionPlan=plan, mixPlans=plan['transitions'], entryCadence=entry_cadence)
             else:

@@ -106,6 +106,21 @@ class OpeningTests(unittest.TestCase):
             job.assert_not_called()
         self.assertEqual(trace.count('deck 1 play'),1)
 
+    def test_play_flag_with_a_stalled_native_clock_does_not_start_analysis(self):
+        s,_,trace,_,beat=self.setup_session()
+        send=s.send
+        def stalled(client,script):
+            send(client,script)
+            if script=='deck 1 play':beat[0]=0
+        s.send=stalled
+        with patch('afterhours.opening_playback.BackgroundAnalysis') as job,patch('afterhours.opening_playback.TransitionMixer'):
+            with self.assertRaisesRegex(BridgeError,'playhead did not advance'):
+                start_and_prepare(s,None,s.snapshot()['order'])
+            job.assert_not_called()
+        self.assertEqual(s.snapshot()['startup']['status'],'blocked')
+        self.assertIsNone(s.snapshot().get('startedAt'))
+        self.assertEqual(trace.count('deck 1 play'),1)
+
     def test_no_future_measured_exit_never_fabricates_or_seeks_an_exit(self):
         s,report,_,_,_=self.setup_session()
         with self.assertRaisesRegex(ValueError,'no verified exit'):

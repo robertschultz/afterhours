@@ -60,6 +60,18 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=28):
     return prepared
 
 
+def confirm_started(session, client, deck, track_id, entry_beat):
+    """A Play flag alone does not confirm that the native audio clock is running."""
+    for _ in range(12):
+        session.sleep(.2)
+        reading=session.telemetry(client)
+        current=reading['decks'][deck-1]
+        if not current.get('playing') or current.get('id')!=track_id:
+            raise BridgeError('Playback was not confirmed. No second Play was sent.')
+        if current['beatPosition']>entry_beat+.05:return reading
+    raise BridgeError('VirtualDJ reported Play but its playhead did not advance. Check its audio output. No second Play was sent.')
+
+
 def start_and_prepare(session,client,requested):
     from afterhours.vdj_session import RecordingUnavailable,TrackMetadataChanged,number,validate_order
     s=session;snapshot=s.snapshot();order=copy.deepcopy(requested);skipped=[]
@@ -130,9 +142,9 @@ def start_and_prepare(session,client,requested):
     s.update(order=order,startup=copy.deepcopy(startup),mixerBaselines=copy.deepcopy(s.mixer.baselines))
     s.availability.require_track(first)
     s.send(client,'deck 1 play')
-    s.sleep(.2);t=s.telemetry(client)
-    if not t['decks'][0].get('playing') or t['decks'][0].get('id')!=first['id']:
-        raise BridgeError('Opening playback was not confirmed. No second Play was sent.')
+    try:t=confirm_started(s,client,1,first['id'],startup['entryBeat'])
+    except BridgeError:
+        startup['status']='blocked';s.update(startup=copy.deepcopy(startup));raise
     startup.update(status='analyzing',playingAt=time.time(),skipped=copy.deepcopy(skipped))
     s.update(startup=copy.deepcopy(startup),startedAt=startup['playingAt'],endedAt=None,phase='playing',
              message=f'Playing {first["title"]}. Preparing the next handoff on muted spare decks.')

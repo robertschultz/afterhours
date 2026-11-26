@@ -23,7 +23,7 @@ from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlCh
 from afterhours.native_analysis import track_analysis
 from afterhours.audio_analysis import scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.opening_playback import OpeningHandoffHeld
+from afterhours.opening_playback import OpeningHandoffHeld, confirm_started
 from afterhours import cue_planner
 from afterhours import ai_mix
 from afterhours import tempo_planner
@@ -2334,16 +2334,12 @@ class DJSession:
                                         0 if final else planned['transitions'][index]['fadeBeats'],final)
                 self.availability.require_track(order[index])
                 self.send(client,f'deck {active} play')
-                self.sleep(.2)
-                t=self.telemetry(client)
+                t=confirm_started(self,client,active,order[index]['id'],checked['beatPosition'])
                 copilot_commands.playing_pair({**snapshot,'telemetry':t})
             if not resume and not immediate:
                 self.availability.require_track(order[0])
                 self.send(client, 'deck 1 play')
-                self.sleep(.2)
-                t = self.telemetry(client)
-                if not t['decks'][0]['playing']:
-                    raise BridgeError('Start was not confirmed. No retry was sent.')
+                t=confirm_started(self,client,1,order[0]['id'],t['decks'][0]['beatPosition'])
             self.update(phase='playing', startedAt=self.snapshot().get('startedAt') if immediate or resume else time.time(), endedAt=None, message=f"Playing {order[index]['title']}")
             with self.lock:
                 self.state['copilot'].update(mode='mix' if self.state['copilot']['mode']=='mix' else 'leading', held=False)

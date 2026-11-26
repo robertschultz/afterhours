@@ -1,16 +1,25 @@
 // GPT-Live's protocol is deliberately separate from music transport.
 const boundedContext=content=>new TextDecoder().decode(new TextEncoder().encode(String(content)).slice(0,480));
 // A complete, explicit transport request can go straight to Afterhours even
-// when GPT-Live does not create a delegation for it. Purely conversational
-// requests and incomplete/qualified stop phrases still use normal delegation.
-export function explicitStop(text){
-  const words=String(text||'').toLowerCase().trim()
+// when GPT-Live does not create a delegation for it.
+function transportWords(text){
+  return String(text||'').toLowerCase().trim()
     .replace(/^(?:hey\s+)?dot[, ]+/,'')
     .replace(/^(?:can|could|would|will) you (?:please )?/,'')
     .replace(/^please /,'').replace(/[.!?]+$/,'')
-    .replace(/[, ]+(?:please|now|right now)$/,'').trim();
+    .replace(/[, ]+please$/,'').trim();
+}
+export function explicitStop(text){
+  const words=transportWords(text).replace(/[, ]+(?:right )?now$/,'');
   return /^(?:stop|pause)(?: (?:playing|it|this|playback|the (?:set|track|music)|music))?$/.test(words)
     || /^(?:hold the music|cancel playback|cancel start)$/.test(words);
+}
+function directTransport(text){
+  if(explicitStop(text))return 'stop the music';
+  const words=transportWords(text);
+  if(/^(?:mix|transition) (?:right )?now$/.test(words) ||
+     /^(?:next(?: track| song)?|play next|(?:play|go to|skip to) the next (?:track|song)|bring in the next track|mix (?:it in|into the next track)|transition(?: to| into) the next track)$/.test(words))return 'transition now';
+  return null;
 }
 export class LiveVoiceClient {
   constructor({request,onState=()=>{},onTranscript=()=>{},onDelegate=()=>{},operatorSpeaking=()=>false,
@@ -40,7 +49,7 @@ export class LiveVoiceClient {
       mic.getAudioTracks().forEach(t=>peer.addTrack(t,mic));
       const channel=this.channel=peer.createDataChannel('oai-events');
       channel.addEventListener('message',e=>{if(generation!==this.generation)return;try{this.event(JSON.parse(e.data));}catch{this.end('An unreadable voice event was received.');}});
-      channel.addEventListener('close',()=>{if(generation===this.generation&&!this.finalized){const detail=this.closedDetail(false,'Voice disconnected.');this.closeRemote();this.cleanup();this.state('closed',detail);}});
+      channel.addEventListener('close',()=>{if(generation===this.generation&&!this.finalized){const detail=this.closedDetail(false,'Voice disconnected.');this.disconnect();this.state('closed',detail);}});
       peer.addEventListener('connectionstatechange',()=>{if(generation===this.generation&&peer.connectionState==='failed')this.end('Voice connection failed.');});
       await peer.setLocalDescription(await peer.createOffer());
       if(generation!==this.generation)return;
@@ -52,16 +61,24 @@ export class LiveVoiceClient {
       if(generation!==this.generation)return;
       this.state('connecting','Connecting to GPT-Live…');
       const result=await this.request('/api/voice',{action:'start',sdp:peer.localDescription.sdp,
-        performer,requestId:crypto.randomUUID(),approveRequest:true,maxSeconds:1800});
-      if(generation!==this.generation){await this.closeRemote(result.session.id);return;}
+        performer,requestId:crypto.randomUUID(),approveRequest:true,maxSeconds:1800,clientLease:true});
+      if(generation!==this.generation){await this.closeRemote(result.session.id,true);return;}
       this.sessionId=result.session.id;this.expiresAt=result.expiresAt;
       this.maxSeconds=result.maxSeconds||120;this.startedAt=result.startedAt||this.expiresAt-this.maxSeconds;
+      if(result.clientLeaseSeconds){
+        const sessionId=this.sessionId;
+        this.leaseTimer=setInterval(()=>{
+          this.request('/api/voice',{action:'heartbeat',sessionId}).catch(()=>{
+            if(this.generation===generation)this.end('Talk lost its connection to Afterhours.');
+          });
+        },8000);
+      }
       await peer.setRemoteDescription({type:'answer',sdp:result.transport.sdp});
       this.limitTimer=setTimeout(()=>this.end(this.limitDetail()),Math.max(0,this.expiresAt*1000-Date.now()));
       this.startTimer=setTimeout(()=>{if(!this.ready)this.end('Voice did not become ready.');},15000);
     }catch(error){
       if(generation!==this.generation)return;
-      await this.closeRemote();this.cleanup();
+      await this.disconnect();
       const message={NotAllowedError:'Microphone access was denied. Allow it in your browser, then try again.',
         NotFoundError:'No microphone found. Connect a microphone or headset, then select Refresh inputs.',
         DevicesNotFoundError:'No microphone found. Connect a microphone or headset, then select Refresh inputs.',
@@ -112,7 +129,7 @@ export class LiveVoiceClient {
   scheduleDelegation(){
     clearTimeout(this.dispatchTimer);
     const text=this.pendingInput.map(part=>part.text).join('').trim();
-    if(!this.waitingDelegation&&!explicitStop(text))return;
+    if(!this.waitingDelegation&&!directTransport(text))return;
     this.dispatchTimer=setTimeout(()=>this.flushDelegation(),text?720:1050);
   }
   flushDelegation(){
@@ -121,16 +138,16 @@ export class LiveVoiceClient {
     if(this.operatorSpeaking()){this.scheduleDelegation();return;}
     const waiting=this.waitingDelegation;
     const text=this.pendingInput.map(part=>part.text).join('').trim();
-    const stop=explicitStop(text);
+    const transport=directTransport(text);
     this.waitingDelegation=null;
-    if(!waiting&&!stop)return;
+    if(!waiting&&!transport)return;
     if(!text){
       this.result('No new operator direction. Do not restart discovery. Wait for the backend or new speech. '+this.latestContext,waiting.id);
       return;
     }
     this.pendingInput=[];
     this.onDelegate({id:waiting?.id??null,offsetMs:waiting?.offsetMs,
-      text:stop?'stop the music':text,sessionId:this.sessionId});
+      text:transport||text,sessionId:this.sessionId});
   }
   context(content){this.latestContext=boundedContext(content);this.send({type:'session.thinking.append',delegation_id:null,content:this.latestContext});}
   result(content,delegationId=null){this.send({type:'session.commentary.append',delegation_id:delegationId,content:boundedContext(content)});}
@@ -142,7 +159,15 @@ export class LiveVoiceClient {
     this.state(value?'muted':'listening',value?'Microphone muted · session time continues':'Microphone live · AI voice');
   }
   async hear(){await this.audio?.play();this.state(this.isMuted?'muted':'listening',this.isMuted?'Microphone muted · session time continues':'Microphone live · AI voice');}
-  async closeRemote(sessionId=this.sessionId){if(sessionId)return this.request('/api/voice',{action:'end',sessionId}).catch(()=>{});}
+  async closeRemote(sessionId=this.sessionId,transportClosed=false){
+    if(sessionId)return this.request('/api/voice',{action:'end',sessionId,transportClosed}).catch(()=>{});
+  }
+  disconnect(){
+    const id=this.sessionId;
+    this.send({type:'session.close'});
+    this.cleanup();
+    return this.closeRemote(id,true);
+  }
   limitDetail(){return `${Math.round(this.maxSeconds/60)}-minute talk limit reached.`;}
   closedDetail(confirmed=true,fallback='Talk stopped.'){
     const expired=this.expiresAt&&Date.now()/1000>=this.expiresAt-1;
@@ -152,14 +177,14 @@ export class LiveVoiceClient {
     if(['closed','idle','closing'].includes(this.phase))return;
     this.endDetail=detail;this.state('closing',`${detail} Closing voice…`);this.microphone?.getTracks().forEach(t=>t.stop());
     if(this.send({type:'session.close'})){
-      this.closeTimer=setTimeout(()=>{const message=this.closedDetail(false);this.closeRemote();this.cleanup();this.state('closed',message);},8000);
+      this.closeTimer=setTimeout(()=>{const message=this.closedDetail(false);this.disconnect();this.state('closed',message);},8000);
     }else{
-      ++this.generation;this.closeRemote();this.cleanup();
+      this.disconnect();
       if(!this.startPending)this.state('closed',this.closedDetail(false));
     }
   }
   cleanup(){
-    clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);clearTimeout(this.dispatchTimer);
+    clearInterval(this.leaseTimer);clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);clearTimeout(this.dispatchTimer);
     this.waitingDelegation=null;
     this.microphone?.getTracks().forEach(t=>t.stop());this.microphone=null;this.ready=false;
     const channel=this.channel;this.channel=null;if(channel)channel.onclose=null;

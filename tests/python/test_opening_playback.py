@@ -70,6 +70,18 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual(recovered['selections'],review['selections'])
         self.assertEqual(recovered['missingEvidence'],[])
 
+    def test_opening_uses_early_verified_exit_even_if_late_entrance_scores_better(self):
+        s,report,_,_,_=self.setup_session()
+        first=report['tracks'][0]
+        early=first['cueCandidates'][0]
+        early['entry']['levelVariationDb']=7
+        later={**early,'id':'late','entry':{**early['entry'],'levelVariationDb':0}}
+        for field in ('entryBeat','exitBeat','endBeat'):later[field]+=400
+        for field in ('entrySeconds','introEndSeconds','exitSeconds','endSeconds'):later[field]+=400*60/155
+        first['cueCandidates'].insert(0,later)
+        prepared=measured_plan(s.snapshot(),s.state['order'][:2],report['tracks'][:2],{'beatPosition':12,'bpm':155})
+        self.assertEqual(prepared['executionPlan']['selections'][0]['id'],early['id'])
+
     def test_analysis_timeout_holds_handoff_without_replaying_or_stopping_opening(self):
         s,_,trace,playing,_=self.setup_session()
         job=Mock(done=True,error='Audio analysis did not settle in time.',analysis_timed_out=True,cache={})

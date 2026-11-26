@@ -933,11 +933,16 @@ class DJSession:
             # explicit Stop sends the idempotent pause command once, separately.
             if self.stop_audio:
                 try:
+                    stopped_crossfader=None
                     with self.factory(self.port, timeout=.5, budget_seconds=3) as stop:
                         # Every deck the set plays through, wherever the rotation stood.
                         stop.send(' & '.join(f'deck {deck} pause' for deck in self.decks))
                         paused = not any(as_bool(stop.query(f'deck {deck} play', 'bool')) for deck in self.decks)
-                        if paused:self.retry_paused_cleanup(stop)
+                        if paused:
+                            self.retry_paused_cleanup(stop)
+                            if self.handoff:
+                                try:stopped_crossfader=number(stop.query('crossfader'),0,1)
+                                except (BridgeError,OSError):pass
                         if paused and self.mixer:
                             # Restore only while confirmed paused. This cleanup
                             # deliberately bypasses the canceled worker checks.
@@ -951,7 +956,11 @@ class DJSession:
                         if telemetry and paused:
                             for deck in telemetry['decks']:
                                 deck['playing'] = False
-                            telemetry['sampledAt'] = time.time()
+                            if stopped_crossfader is not None:
+                                telemetry['crossfader']=stopped_crossfader
+                            if self.handoff is None or stopped_crossfader is not None:
+                                telemetry['sampledAt']=time.time()
+                        if paused:self.state.update(activeHandoff=None,transitionControl=None)
                 except (BridgeError, OSError):
                     self.update(message='Stop could not be confirmed. Pause the decks in VirtualDJ.')
             terminal=self.snapshot()
@@ -1110,7 +1119,7 @@ class DJSession:
             if _archive_boundary:self.archive_call('boundary')
             self.state.update(order=order, recoveryRemainder=[], secondsPerTrack=seconds, excerptBars=excerpt_bars,
                               setlist={**policy,'sourceById':sources},
-                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds,
+                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds, quickTargetBpm=None,
                               **MIX_STYLES[mix_style],
                               phase='ready', index=-1, segmentProgress=0,
                               message=('Order ready. Analyze the set and apply a measured mix plan before starting.' if mix_style=='phrase' else 'Quick preview ready. Start when you want to listen.'), transitions=[], transitionControl=None,
@@ -1253,7 +1262,8 @@ class DJSession:
             old_plan=s.get('executionPlan') or {}
             frozen=(old_plan.get('tempoSchedule') or [])[:protected]
             quick=s['mixStyle']=='quick'
-            opening=s['order'][0]['bpm'] if quick and s['order'] else old_plan.get('targetBpm')
+            opening=old_plan.get('targetBpm')
+            if quick and s['order']:opening=s.get('quickTargetBpm') or s['order'][0]['bpm']
             order=validate_order(ids,s['candidates'],s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
                                  frozen or None,opening if audible else None,fixed=quick,
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
@@ -2173,6 +2183,19 @@ class DJSession:
                 if selected:self.prepare_deck(client,track,deck,target,cue=selected['selections'][index])
                 else:self.prepare_deck(client,track,deck,target)
             except TrackMetadataChanged as exc:
+                if not override and not selected and snapshot['mixStyle']=='quick':
+                    checked=exc.track
+                    if checked['id']!=track['id']:raise
+                    self.prepare_deck(client,checked,deck,target,checked=checked)
+                    with self.lock:
+                        order[index]=checked
+                        candidates=[checked if t['id']==checked['id'] else t for t in self.state['candidates']]
+                        self.update(order=copy.deepcopy(order),candidates=candidates)
+                        queued=self.state.get('queuedUpdate')
+                        if queued:
+                            queued['tracks']=[copy.deepcopy(checked) if t['id']==checked['id'] else t for t in queued['tracks']]
+                    self.event(f"{track['title']}: native metadata refreshed at the set tempo.",'analysis')
+                    return
                 if override or not selected:raise
                 revised,prepared=self.refresh_key_plan({**self.snapshot(),'order':order,'executionPlan':planned},exc.track,index)
                 newplan=prepared['executionPlan']
@@ -2207,6 +2230,7 @@ class DJSession:
             if not resume and any(as_bool(self.q(client,f'deck {deck} play','bool')) for deck in self.decks[2:]):
                 raise BridgeError('Pause every deck before starting this set.')
             target = planned['targetBpm'] if planned else order[0]['bpm']
+            if snapshot['mixStyle']=='quick':self.update(quickTargetBpm=target)
             resume_window = None
             paused_current = False
             if immediate:

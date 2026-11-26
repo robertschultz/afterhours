@@ -431,7 +431,10 @@ class SessionTests(unittest.TestCase):
                     'blendBeats':blend,'reason':'Synthetic new selections.'} for a,b in zip(ids,ids[1:])])
                 self.assertEqual(s.state['queuedUpdate']['status'],'needs-analysis')
             return t
-        def prepare(c,track,deck,target,cue=None):
+        def prepare(c,track,deck,target,cue=None,checked=None):
+            if quick_insert and track['id']=='3' and checked is None:
+                from afterhours.vdj_session import TrackMetadataChanged
+                raise TrackMetadataChanged({**track,'camelot':'1A'})
             loads.append((track['id'],deck))
             s.wait_observed(c,5)
             if cue:self.assertEqual(cue['trackId'],track['id'])
@@ -510,6 +513,7 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(all(t['timing']['basis']=='native-beat-grid' and t['timing']['fadeBeats']==8
                                 for t in result['transitions']))
             self.assertIsNone(result['queuedUpdate'])
+            self.assertEqual(result['order'][3]['camelot'],'1A')
             self.assertFalse(any(d['playing'] for d in decks))
             return
         if revise:

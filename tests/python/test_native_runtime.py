@@ -11,8 +11,9 @@ from unittest.mock import patch
 from afterhours import native_runtime as runtime
 
 SERVICE='''import argparse,json
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from afterhours.web_runtime import LoopbackHTTPServer
 p=argparse.ArgumentParser();p.add_argument('--port',type=int);args,_=p.parse_known_args()
 kind='music' if Path(__file__).name=='server.py' else 'performance'
 class H(BaseHTTPRequestHandler):
@@ -24,7 +25,7 @@ class H(BaseHTTPRequestHandler):
             '/api/performance':{'director':{},'mode':'paused','segments':[]}}
         body=json.dumps(values.get(self.path,{})).encode()
         self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-with ThreadingHTTPServer(('127.0.0.1',args.port),H) as server:
+with LoopbackHTTPServer(('127.0.0.1',args.port),H) as server:
     print(f'{kind} fixture listening on {server.server_address}',flush=True)
     server.serve_forever()
 '''

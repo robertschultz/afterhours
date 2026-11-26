@@ -334,6 +334,9 @@ class SessionTests(unittest.TestCase):
     def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
         self.simulate_run(30,8,128,background=True,late_background=True)
 
+    def test_measured_set_crossfades_on_time_when_stems_drop_before_play(self):
+        self.simulate_run(30,8,128,control='stems-drop')
+
     def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False,late_background=False):
         """Deterministic peer simulation; this does not play or assess music."""
         s=DJSession(threading.Lock());pool=[{'id':str(i),'title':str(i),'bpm':155,'genre':'Drum & Bass','camelot':'2A'} for i in range(4)]
@@ -487,7 +490,9 @@ class SessionTests(unittest.TestCase):
             _,deck,key=script.split(maxsplit=2);deck=int(deck)
             if key=='masterdeck':return master[0]==deck
             if key.startswith('cross_assign'):return key==("cross_assign 'left'" if deck%2 else "cross_assign 'right'")
-            if key.startswith('has_stems'):return True
+            if key.startswith('has_stems'):
+                return not (control=='stems-drop' and s.state['index']==0 and deck==2
+                            and decks[0]['beatPosition']>=mix_at-9)
             if key=='get_beatpos':return decks[deck-1]['beatPosition']
             if key=='get_bpm absolute':return pool[int(decks[deck-1]['id'])]['bpm']
             if key=='get_filepath':return decks[deck-1]['id']
@@ -591,11 +596,12 @@ class SessionTests(unittest.TestCase):
         self.assertLess(max(b-a for a,b in zip(observed,observed[1:])),1)
         self.assertEqual(controls[1]['eq_low_freq'],.5)
         self.assertEqual(controls[2]['eq_low_freq'],.5)
-        for transition in result['transitions']:
-            self.assertEqual(transition['recipe']['leadControl'],'stems')
+        for index,transition in enumerate(result['transitions']):
+            fallback=control=='stems-drop' and index==0
+            self.assertEqual(transition['recipe']['leadControl'],'frequency-eq' if fallback else 'stems')
             for sample in transition['mixerSamples']:
-                for control in ('stem Vocal','stem Instru'):
-                    self.assertFalse(sample['outgoing'][control]>.03 and sample['incoming'][control]>.03)
+                for lead in ('eq_mid_freq',) if fallback else ('stem Vocal','stem Instru'):
+                    self.assertFalse(sample['outgoing'][lead]>.03 and sample['incoming'][lead]>.03)
         for deck in (1,2):
             self.assertEqual(controls[deck]['stem Vocal'],.5)
             self.assertEqual(controls[deck]['stem Instru'],.5)

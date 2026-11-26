@@ -2410,6 +2410,7 @@ class DJSession:
                     self._copilot_result('confirmed', 'Copilot resumed from the playing recording at a verified future cue.')
                 revised_final=False
                 waiting_for_continuation=False
+                stems_check_at=0
                 while True:
                     t = self.telemetry(client)
                     current = t['decks'][active-1]
@@ -2445,6 +2446,19 @@ class DJSession:
                         # substitute cue, or implicit handoff when Hold expires.
                         self.sleep(.12)
                         continue
+                    if (self.mixer and not final and self.mixer.lead_mode=='stems'
+                            and current['beatPosition']>=goal-12
+                            and (time.monotonic()>=stems_check_at or current['beatPosition']>=goal)):
+                        stems_check_at=time.monotonic()+.7
+                        if self.mixer.fallback_from_unready_stems(client):
+                            self.event(recipe['leadControlNote'],'technique')
+                            current=self.telemetry(client)['decks'][active-1]
+                            if current['beatPosition']>=goal-4:
+                                window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
+                                window['basis']='measured-continuation-exit'
+                                start_beat,goal=window['entryBeat'],window['mixAtBeat']
+                                self.update(targetBeat=goal,timing=dict(window),segmentBeats=window['segmentBeats'])
+                            continue
                     self.update(segmentProgress=max(0, min(1, (current['beatPosition'] - start_beat) / (window['endBeat']-start_beat))))
                     slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
                     runway=self.final_preparation_runway(track,index,current) if final and planned else 0

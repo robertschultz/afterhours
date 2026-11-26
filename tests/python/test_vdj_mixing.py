@@ -225,6 +225,33 @@ class MixerTests(unittest.TestCase):
         self.assertTrue(any('afterhours_in_mid' in script for script in sent))
         self.assertFalse(any('stem ' in script for script in sent))
 
+    def test_stem_loss_before_play_rearms_only_the_silent_deck_for_eq(self):
+        mixer,values,sent=self.mixer()
+        recipe=transition_recipe(track(),track())
+        mixer.arm(None,1,2,recipe)
+        before=values[1].copy()
+        values[2]['stems']=False
+        sent.clear()
+        self.assertTrue(mixer.fallback_from_unready_stems(None))
+        mixer.validate_armed(None)
+        self.assertEqual(values[1],before)
+        self.assertEqual(values[2]['eq_mid_freq'],0)
+        self.assertEqual([values[2][name] for name in LEAD_CONTROLS],[.5,.5])
+        self.assertEqual(recipe['leadControl'],'frequency-eq')
+        self.assertEqual(len(sent),1)
+        self.assertTrue(all(part.startswith('deck 2 ') for part in sent[0].split(' & ')))
+        self.assertFalse(mixer.fallback_from_unready_stems(None))
+
+    def test_stem_fallback_preserves_manual_mixer_changes(self):
+        for field,value in (('play',True),('eq_high_freq',.2)):
+            with self.subTest(field=field):
+                mixer,values,sent=self.mixer()
+                mixer.arm(None,1,2,transition_recipe(track(),track()))
+                values[2].update(stems=False,**{field:value})
+                sent.clear()
+                with self.assertRaises(BridgeError):mixer.fallback_from_unready_stems(None)
+                self.assertEqual(sent,[])
+
     def test_stem_loss_or_manual_edit_prevents_mix_and_late_lead_cannot_catch_up(self):
         m,v,sent=self.mixer();m.arm(None,1,2,transition_recipe(track(),track()));before=len(sent)
         v[2]['stems']=False

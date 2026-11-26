@@ -15,6 +15,12 @@ def named_query(text):
     return query if 2<=len(query)<=120 and ';' not in query else None
 
 
+def named_recording(query):
+    if not isinstance(query,str):return None,None
+    title, separator, artist = query.rpartition(' by ')
+    return (title, artist) if separator and title and artist else (None, None)
+
+
 def ready_opening(snapshot):
     """Go may start only the exact applied opening that has never run.
 

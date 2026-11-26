@@ -4,6 +4,7 @@ import math
 
 from afterhours import session_curation
 from afterhours.dj_discovery import credit, normalized
+from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import validate_order
@@ -29,13 +30,19 @@ def transition_cost(outgoing, incoming, cues):
 def quick_opening(session, query, found):
     """Use an exact live match and a feasible next slot before audio analysis."""
     wanted=normalized(query)
+    title,artist=named_recording(query)
+    title,artist=normalized(title),normalized(artist)
     blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
     candidates=[row for row in session.get('candidates',[])
                 if row['id'] in found and row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
     for first in candidates:
-        if wanted!=normalized(first.get('title')) and wanted not in credit(first.get('artist')):
+        first_title=normalized(first.get('title'))
+        first_artists=credit(first.get('artist'))
+        qualified=bool(title and first_title==title and artist in first_artists)
+        if wanted!=first_title and wanted not in first_artists and not qualified:
             continue
-        followups=sorted((row for row in candidates if row['id']!=first['id']),
+        followups=sorted((row for row in candidates if row['id']!=first['id']
+                          and (not qualified or normalized(row.get('title'))!=first_title)),
                          key=lambda row: abs(first['bpm']-row['bpm']))
         for second in followups:
             pair=[first['id'],second['id']]

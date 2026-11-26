@@ -1430,6 +1430,9 @@ class DJSession:
                     failure=preview_failure(self.availability,self.state['queuedUpdate']['tracks'],str(exc))
                     self.state['queuedUpdate'].update(status='blocked',error=str(exc))
                     self.state['queuedUpdate'].pop('failure',None)
+                    miss=getattr(job,'catalog_miss',None)
+                    if not cleanup_failed and miss and self.state['queuedUpdate'].get('rollingTrackId')==miss:
+                        self.state['queuedUpdate']['catalogMissId']=miss
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
@@ -1491,8 +1494,11 @@ class DJSession:
             if self.state['copilot']['mode']=='off':return 0
             queued=self.state.get('queuedUpdate') or {}
             tracks=queued.get('tracks',[])
-            if (queued.get('status') not in ('needs-analysis','analyzing','ready')
-                    or len(tracks)<=index+1 or tracks[index]['id']!=track['id']):
+            staged=(queued.get('status') in ('needs-analysis','analyzing','ready')
+                    and len(tracks)>index+1 and tracks[index]['id']==track['id'])
+            rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
+                     and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
+            if not staged and not (rolling and (not queued or queued.get('catalogMissId'))):
                 return 0
         duration_ms=(current.get('controls') or {}).get('durationMs')
         position=current.get('position')

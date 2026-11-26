@@ -9,6 +9,7 @@ from afterhours.vdj_session import song_identity
 class RollingQueue:
     def __init__(self):
         self.searched = set()
+        self.missed = set()
 
     def tick(self, session, slack):
         with session.lock:
@@ -19,6 +20,13 @@ class RollingQueue:
             if slack < 4 or session.cancel.is_set():
                 return
             pending = state.get('queuedUpdate') or {}
+            miss=pending.get('catalogMissId')
+            if (miss and pending.get('status')=='blocked' and pending.get('rollingTrackId')==miss
+                    and not state.get('resumeBlocked') and not session.background_job):
+                self.missed.add(miss)
+                session.update(queuedUpdate=None,rollingQueue={'status':'searching'})
+                session.event('The next candidate was not found. Searching for another recording.', 'queue')
+                pending={}
             if pending.get('status') == 'blocked' and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
             if pending or session.background_job:
@@ -46,7 +54,7 @@ class RollingQueue:
                         + (0 if same_genre else 2.5), candidate['id'])
 
             candidates = [track for track in state['candidates']
-                          if track['id'] not in unavailable and track['id'] not in ids
+                          if track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             for track in sorted(candidates, key=score):
@@ -57,6 +65,7 @@ class RollingQueue:
                                          source='planner')
                 except (ValueError, BridgeError):
                     continue
+                session.state['queuedUpdate']['rollingTrackId']=track['id']
                 session.update(rollingQueue={'status': 'preparing', 'next': track['title']})
                 return
 

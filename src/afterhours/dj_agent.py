@@ -1718,13 +1718,16 @@ class DJAgent:
                 self.clarification=None
                 query=playback_requests.named_query(text) if source=='voice' and transport=='fresh-start' else None
                 if query and self.settings.state['discover'] and dj_settings.lead(self.session.snapshot())=='all':
+                    _,artist=playback_requests.named_recording(query)
+                    search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(query)
+                        self.session.discover_more(search)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
                         return self.snapshot()
                     self.searches.add(query);self.search_rounds=1
                     self.playback_request['fastOpeningQuery']=query
+                    if search!=query:self.playback_request['fastOpeningSearch']=search
                     self.awaiting_catalog=True;self.search_from_turn=True
                     summary='Searching the crate for '+query+'.'
                     self.playback_request['message']=summary
@@ -1815,7 +1818,7 @@ class DJAgent:
             catalog_ready=self.awaiting_catalog and (catalog.get('status') in ('complete','error') or s.get('phase')=='catalog-ready')
             request=self.playback_request or {}
             if (catalog_ready and catalog.get('status')=='complete' and request.get('fastOpeningQuery')
-                    and dj_discovery.normalized(catalog.get('query'))==dj_discovery.normalized(request['fastOpeningQuery'])
+                    and dj_discovery.normalized(catalog.get('query'))==dj_discovery.normalized(request.get('fastOpeningSearch') or request['fastOpeningQuery'])
                     and request.get('status')=='choosing' and request.get('sessionId')==s.get('id')
                     and request.get('revision')==self.state['revision'] and self.clock()<request['expiresAt']
                     and not s.get('active') and not s.get('order') and not mixing_only

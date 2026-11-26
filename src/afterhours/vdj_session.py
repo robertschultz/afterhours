@@ -901,7 +901,7 @@ class DJSession:
                     self.state.update(phase='takeover',message=message,lastError=None)
                 self.event(message,'takeover',reason=str(exc))
         except OpeningHandoffHeld as exc:
-            message=('The opening is playing. Analysis for the next handoff timed out; the handoff is held.'
+            message=('The opening is playing. The next handoff is on hold. '+str(exc)
                      if not cleanup_failed else 'The opening was confirmed playing. Check the preparation deck before mixing.')
             with self.lock:
                 self.state['copilot'].update(mode='off',held=False)

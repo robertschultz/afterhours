@@ -2137,9 +2137,10 @@ class DJSession:
         known = [d for d in heard if d['deck'] == self.active_deck]
         if all(d.get('unavailable') for d in (known or heard)):
             raise BridgeError('The audible deck clock is unavailable.')
-        # Keep controls visible outside transitions. The mixer already reads EQ
-        # on its timing loop; avoid adding six queries to that critical path.
-        mixing = self.snapshot().get('phase') == 'mixing'
+        # The mixer already reads EQ on its timing loop. Check the phase
+        # without copying the entire set and its growing transition history.
+        with self.lock:
+            mixing = self.state['phase'] == 'mixing'
         for d in decks:
             deck = d['deck']
             cached = self.eq_readings.get(deck)

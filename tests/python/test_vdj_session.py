@@ -331,18 +331,22 @@ class SessionTests(unittest.TestCase):
     def test_quick_playback_adopts_an_insertion_during_a_fade_and_extends_its_final_track(self):
         self.simulate_run(15,8,104,quick_insert=True)
 
-    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False):
+    def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
+        self.simulate_run(30,8,128,background=True,late_background=True)
+
+    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False,late_background=False):
         """Deterministic peer simulation; this does not play or assess music."""
         s=DJSession(threading.Lock());pool=[{'id':str(i),'title':str(i),'bpm':155,'genre':'Drum & Bass','camelot':'2A'} for i in range(4)]
         s.update(candidates=pool);s.plan([t['id'] for t in pool],seconds=seconds)
         from test_cue_planner import fixture
         from afterhours import ai_mix, cue_planner
         _,report,response=fixture(seconds=seconds)
-        if control == 'hold-go':
-            later=copy.deepcopy(report['tracks'][0]['cueCandidates'][0])
+        if control == 'hold-go' or late_background:
+            extended=report['tracks'][1 if late_background else 0]
+            later=copy.deepcopy(extended['cueCandidates'][0])
             later.update(id='verified-later',entryBeat=128,exitBeat=192,endBeat=224,
                          entrySeconds=128*60/155,exitSeconds=192*60/155,endSeconds=224*60/155)
-            report['tracks'][0]['cueCandidates'].append(later)
+            extended['cueCandidates'].append(later)
             report['fingerprint']=cue_planner.fingerprint(report['tracks'])
         if bpms:
             for t,e,bpm in zip(pool,report['tracks'],bpms):
@@ -401,6 +405,9 @@ class SessionTests(unittest.TestCase):
                 if key=='pitch':
                     d=decks[deck-1];d['bpm']=pool[int(d['id'])]['bpm']*(1+(controls[deck][key]-.5)*.16)
         def telemetry(c,**kwargs):
+            if late_background:
+                for deck in decks:
+                    deck.update(position=deck['beatPosition']*60/155,controls={'durationMs':180_000})
             t={'decks':copy.deepcopy(decks[:4 if four else 2]),'crossfader':cross[0],'sampledAt':now[0]}
             s.update(telemetry=t);reads.append(now[0])
             if control in ('hold-go','skip') and s.state['phase']=='playing' and s.state['index']==0:
@@ -490,7 +497,9 @@ class SessionTests(unittest.TestCase):
         class MeasuredJob:
             def __init__(self,session,revision,tracks,cache):
                 self.revision=revision;self.cache={};self.done=False;self.error=None;self.result=copy.deepcopy(full_report['tracks'][2:])
-            def step(self,c,slack):self.done=s.state['index']==1 and slack>=16
+            def step(self,c,slack):
+                self.done=(s.state['index']==1 and slack>=16
+                           and (not late_background or decks[1]['beatPosition']>mix_at+4))
             def close(self,c):pass
             def snapshot(self):return {'status':'analyzing','message':'Synthetic preparation','completed':0,'total':2}
         from afterhours.background_analysis import BackgroundAnalysis
@@ -529,7 +538,10 @@ class SessionTests(unittest.TestCase):
         if selected_spare:
             self.assertTrue(all(d['beatPosition']==0 and not d['playing'] for d in decks[2:]))
             self.assertFalse(any('deck 3 ' in command or 'deck 4 ' in command for command,_,_ in sent))
-        self.assertEqual([t['timing']['mixAtBeat'] for t in result['transitions']], [192,128,128] if control=='hold-go' else [mix_at]*3)
+        windows=([128,192,128] if late_background else [192,128,128] if control=='hold-go' else [mix_at]*3)
+        self.assertEqual([t['timing']['mixAtBeat'] for t in result['transitions']],windows)
+        if late_background:
+            self.assertEqual(result['transitions'][1]['timing']['basis'],'measured-continuation-exit')
         self.assertTrue(all(t['completedAt']-t['at']>=t['timing']['fadeBeats']*60/(t.get('tempoPlan',{}).get('toBpm',155))-.1 for t in result['transitions']))
         if control=='skip':
             self.assertEqual([t['id'] for t in result['order']],['0','2','1','3'])
@@ -547,10 +559,11 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(len([x for x in sent if "repeat_start_fade 'afterhours_tempo'" in x[0]]),3)
             self.assertAlmostEqual(result['telemetry']['decks'][1]['bpm'],bpms[-1],delta=.15)
         if background:self.assertEqual([t['id'] for t in result['order']],['0','1','2','3'])
-        if seconds==30 and not bpms and not control:
+        if seconds==30 and not bpms and not control and not late_background:
             for a,b in zip(result['transitions'],result['transitions'][1:]):
                 self.assertAlmostEqual(b['at']-a['at'],64*60/155,delta=.3)
-        self.assertTrue(all(t['timing']['basis'] in ('measured-audio-candidate','operator-steered-measured-exit') for t in result['transitions']))
+        self.assertTrue(all(t['timing']['basis'] in ('measured-audio-candidate','operator-steered-measured-exit',
+                                                  'measured-continuation-exit') for t in result['transitions']))
         self.assertFalse(any(d['playing'] for d in decks))
         if four:
             # Each record is loaded once, on the next deck round; each blend

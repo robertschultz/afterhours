@@ -31,6 +31,8 @@ def intent(text):
         'hold': {'hold', 'hold it', 'hold the mix', 'wait', 'wait a sec', 'not yet'},
         'go': {'go', 'go now', 'go for it', 'bring it in', 'mix now', 'resume the mix',
                'mix it in', 'mix it in. go for it', 'mix into the next track',
+               'next', 'next track', 'play the next track', 'skip to the next track',
+               'play next', 'go to the next track', 'next song', 'play the next song',
                'start mixing into the next track', 'start mixing the next track',
                'transition to the next track', 'transition into the next track',
                'transition up to the next track', 'mix in the next track',

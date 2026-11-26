@@ -34,7 +34,7 @@ class CleanupPeer(Peer):
 
     def send(self,script):
         self.commands.append(script)
-        if script.startswith('repeat_stop'):
+        if 'repeat_stop ' in script:
             if self.fail_ramp:raise BridgeError('Injected ramp cancellation failure')
             return
         guard=re.match(r'deck ([34]) play \? nothing : ',script)
@@ -225,23 +225,23 @@ class AnalysisCleanupTests(unittest.TestCase):
 
     def test_crossfade_cancellation_failure_has_a_fixed_owned_stop_path(self):
         s=DJSession(threading.Lock());p=CleanupPeer()
-        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps.add('crossfade');s.handoff=handoff
+        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps['crossfade']=1;s.handoff=handoff
         p.fail_ramp=True;s.factory=lambda *a,**kw:nullcontext(p);s.control_lock.acquire()
         s._work(lambda client:None)
-        self.assertEqual(s.state['cleanupPending'],{'ramps':['afterhours_crossfade'],'unknown':False})
+        self.assertEqual(s.state['cleanupPending'],{'ramps':['1:afterhours_crossfade'],'unknown':False})
         self.assertIsNone(s.handoff)
         p.fail_ramp=False;s.retry_paused_cleanup(p)
         self.assertFalse(s.state['resumeBlocked'])
-        self.assertEqual(p.commands,["repeat_stop 'afterhours_crossfade'"]*2)
+        self.assertEqual(p.commands,["deck 1 repeat_stop 'afterhours_crossfade'"]*2)
 
     def test_owned_audible_ramps_are_stopped_before_slow_analysis_cleanup(self):
         s,p,j=self.owned();s.background_job=j
-        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps.add('crossfade');s.handoff=handoff
-        mixer=TransitionMixer(Mock(),Mock());mixer.ramps.add('out_low');s.mixer=mixer
+        handoff=NativeHandoff(Mock(),Mock(),Mock());handoff.ramps['crossfade']=1;s.handoff=handoff
+        mixer=TransitionMixer(Mock(),Mock());mixer.ramps['out_low']=1;s.mixer=mixer
         close=j.close
         def cleanup(client):
-            self.assertEqual(handoff.ramps,set());self.assertEqual(mixer.ramps,set())
-            self.assertEqual(p.commands,["repeat_stop 'afterhours_crossfade'","repeat_stop 'afterhours_out_low'"])
+            self.assertEqual(handoff.ramps,{});self.assertEqual(mixer.ramps,{})
+            self.assertEqual(p.commands,["deck 1 repeat_stop 'afterhours_crossfade'","deck 1 repeat_stop 'afterhours_out_low'"])
             close(client)
         j.close=cleanup;s.factory=lambda *a,**kw:nullcontext(p);s.control_lock.acquire()
         s._work(lambda client:None)

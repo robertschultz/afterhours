@@ -17,7 +17,7 @@ import uuid
 from afterhours.dj_bridge import VirtualDJ, BridgeError, as_bool
 from afterhours.track_metadata import musical_key
 from afterhours.vdj_catalog import (folder_state, selection, identity, load_selected, search_literal, count_value,
-                         paused_load_target, load_exact_recording)
+                         paused_load_target, load_exact_recording, catalog_keywords)
 from afterhours.native_recording import RECORDINGS
 from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, transition_recipe
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
@@ -326,9 +326,7 @@ class DJSession:
             if not locator:
                 # Archived metadata may predate saved browser cursors. Use a
                 # safe title/artist search, then revalidate the exact engine ID.
-                raw = str(record.get('artist') or record.get('title') or '')
-                query = re.sub(r'[\x00-\x1f\x7f"`/\\*?\[\]{}#]', ' ', raw)
-                query = ' '.join(query.split())[:160]
+                query = catalog_keywords(record.get('artist'), record.get('title'))
                 locator = {'query': query, 'position': 0} if query else None
             found.append(record)
             if locator:
@@ -622,8 +620,10 @@ class DJSession:
             number(track.get('bpm'), 40, 300)
             if not isinstance(track.get('title'), str) or not track['title'].strip():
                 raise ValueError('Saved track has no title.')
-            search_literal(track.get('artist'))
-            positions[track['id']] = {'position': 0, 'query': track['artist']}
+            if not isinstance(track.get('artist'), str):
+                raise ValueError('Saved track artist is invalid.')
+            if query := catalog_keywords(track['artist'], track['title']):
+                positions[track['id']] = {'position': 0, 'query': query}
             folders.add(engine['folder_id'])
         # A crate can retain recordings found in earlier folders. Their origin
         # is provenance, not the current search scope. Recover that scope
@@ -1953,7 +1953,9 @@ class DJSession:
         if self.background_job:self.background_job.invalidate_catalog()
         if folder_state(client)['id'] != self.folder['id']:
             raise BridgeError('Catalog folder changed. Discover music again before starting.')
-        context = self.positions[track['id']]
+        context = self.positions.get(track['id'])
+        if not context:
+            raise RecordingLookupIncomplete('No searchable metadata is available for this exact recording.')
         if self.catalog_job:self.catalog_job.resume_search()
         self._dig_resume=True
         # Re-run the saved search; another view/operator may have changed it.
@@ -2001,8 +2003,7 @@ class DJSession:
             return False
 
         original=context['query']
-        title=re.sub(r'[\x00-\x1f\x7f"`/\\*?\[\]{}#]',' ',str(track.get('title') or ''))
-        title=' '.join(title.split())[:160]
+        title = catalog_keywords(track.get('title'))
         # Keep the saved cursor's fast path, then narrow by title before a
         # costly artist walk. Versions with the same title are never substitutes:
         # only the original opaque recording identity can authorize Load.

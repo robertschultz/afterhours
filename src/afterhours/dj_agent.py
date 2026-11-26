@@ -32,7 +32,7 @@ from afterhours.planner_journal import PlannerJournal, comparison
 from afterhours import conversation_feed
 from afterhours import catalog_browser
 from afterhours import agent_loop
-from afterhours import dj_settings
+from afterhours import dj_settings, dj_discovery
 from afterhours import set_plan
 from afterhours import learned_preferences
 from afterhours import native_settings
@@ -187,7 +187,13 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         score=len(terms & names)
         distance=abs((anchor/t['bpm']-1)*100) if anchor and t.get('bpm') else 1000
         return (-score,distance)
-    ranked=sorted(candidates.values(),key=relevance) if terms else list(candidates.values())
+    style=dj_discovery.style_for(request)
+    order=s.get('order') or []
+    cursor=max(0,s.get('index',0))
+    anchors=order[max(0,cursor-1):cursor+2]
+    recent=list(heard_tracks)[-6:]+order[max(0,cursor-3):cursor+1] if order else list(heard_tracks)[-6:]
+    recent=list({track['id']:track for track in recent}.values())
+    ranked,discovery_facts=dj_discovery.rank_candidates(candidates.values(),style,anchors,recent,relevance)
     requested=[t['id'] for t in ranked if relevance(t)[0]<0 and t['id'] not in unavailable][:4]
     ordered.update({tid:candidates[tid] for tid in requested if tid in candidates})
     ordered.update({tid:candidates[tid] for tid in list(guest_ids)[:8] if tid in candidates})
@@ -216,6 +222,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
                        'This song was already heard in this run.' if song_identity(t)[0] in heard else
                        'Another exact recording represents this song in the available choices.')
         if t['id'] in found:row['searchMatch']=True
+        if discovery_facts.get(t['id']):row['discoveryEvidence']=discovery_facts[t['id']]
         pitch=(anchor/t['bpm']-1)*100 if anchor and t.get('bpm') else None
         row.update(pitchAtSetTempo=round(pitch,2) if pitch is not None else None,
                    withinTempoLimit=abs(pitch)<=limit if pitch is not None else None)
@@ -236,6 +243,8 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         # full=True is the lookup book: every eligible row, never sent whole to the provider.
         'catalog':[catalog_track(t) for t in list(ordered.values())[:None if full else 32]],
         'requestedIds':requested,
+        'discoveryHints':dj_discovery.DISCOVERY.hints(style, list(candidates.values())),
+        'discoveryPolicy':'Genre-tagged popularity is a community discovery signal, not a dated chart position. The iTunes rank, when present, is for the US Dance store chart, not a House chart. Use hints only as catalog search leads. Favor artist and label variety, preserve explicit requests, and choose only verified catalog IDs.' ,
         'pinnedIds':list(s.get('setPins',[])),
         'fulfilledPinnedIds':set_plan.played_pins(s),
         'catalogScope':'Bounded selection context, prioritized for the latest operator request; omitted records are not evidence of absence.',

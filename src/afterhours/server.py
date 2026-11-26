@@ -11,7 +11,7 @@ import time
 import os
 import signal
 import sqlite3
-from afterhours import ai_mix, playback_requests, queue_planning
+from afterhours import ai_mix, dj_discovery, playback_requests, queue_planning
 from afterhours.planner_policy import track_seconds
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_api import request as vdj_request
@@ -563,6 +563,7 @@ def main():
         DJ_SESSION.factory=lambda *a,**kwargs:VirtualDJ(*a,reply_port=args.vdj_reply_port,**kwargs)
     if recovery:recovery.start(DJ_SESSION)
     TRACK_ARTWORK.start()
+    dj_discovery.DISCOVERY.start()
     start_guest_requests()
     threading.Thread(target=DJ_SESSION.observe,daemon=True).start()
     threading.Thread(target=DJ_AGENT.run,daemon=True).start()
@@ -580,6 +581,7 @@ def main():
         ROOM_REQUESTS.close()
         if GUEST_COORDINATOR:GUEST_COORDINATOR.close()
         TRACK_ARTWORK.close()
+        dj_discovery.DISCOVERY.close()
         LIVE_VOICE.end()
         if recovery:
             try:recovery.close(DJ_SESSION)

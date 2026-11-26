@@ -1,5 +1,5 @@
 """Local performance control and clean second-screen output. Audio server stays untouched."""
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 import argparse
 import json
@@ -16,7 +16,7 @@ from afterhours.director_signaling import signaling_error
 from urllib.error import HTTPError
 from afterhours.agent_profiles import AgentProfiles
 from afterhours.character_board import CharacterBoards
-from afterhours.web_runtime import RuntimeStaticHandler
+from afterhours.web_runtime import LoopbackHTTPServer, RuntimeStaticHandler
 
 from afterhours.paths import data_root
 
@@ -254,7 +254,7 @@ class Handler(RuntimeStaticHandler):
 
 
 def make_server(port=8768,audio_port=8765,provider=None,generation_limit=0,director=None,captures=None,profiles=None,stages=None):
-    httpd=ThreadingHTTPServer(('127.0.0.1',port),Handler);httpd.token=secrets.token_urlsafe(32)
+    httpd=LoopbackHTTPServer(('127.0.0.1',port),Handler);httpd.token=secrets.token_urlsafe(32)
     httpd.performance=Performance(provider,generation_limit);httpd.audio_port=audio_port
     httpd.director=director or DirectorGate()
     httpd.profiles=profiles or AgentProfiles()

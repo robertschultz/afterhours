@@ -1,6 +1,10 @@
-# Afterhours
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/afterhours-cover-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/afterhours-cover-light.png">
+  <img alt="afterhours — An agentic DJ engine for live mixing" src="docs/assets/afterhours-cover-light.png">
+</picture>
 
-![Afterhours blueprint illustration of two DJ decks, a mixer, and audio waveforms](docs/assets/afterhours-blueprint.png)
+# Afterhours
 
 Afterhours is a local-first, agentic DJ engine. It turns musical direction into a set plan, prepares a queue, and supervises transitions using deck readback. It exposes a local HTTP API for clients and uses VirtualDJ for audio playback and mixing.
 

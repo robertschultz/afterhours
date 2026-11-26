@@ -1,5 +1,5 @@
 """Local DJ services and the client command API."""
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen, Request
@@ -31,7 +31,7 @@ from afterhours.guest_coordinator import GuestCoordinator
 from afterhours.guest_protocol import GuestProtocol
 from afterhours.guest_polls import GuestPolls
 from afterhours.guest_poll_coordinator import PollCoordinator
-from afterhours.web_runtime import RuntimeStaticHandler
+from afterhours.web_runtime import LoopbackHTTPServer, RuntimeStaticHandler
 from afterhours import mcp_http
 from afterhours.mcp_control import MCPControl
 from afterhours.mcp_receipts import ReceiptStore
@@ -139,15 +139,16 @@ class Handler(RuntimeStaticHandler):
             return self.reply({"error":"VirtualDJ is busy; inspect state before retrying."},409)
         try:
             if DJ_SESSION.active and data.get('execute') and data.get('action') in {'play', 'pause'}:
-                return self.reply({'error':'Take over the scheduled set before using individual deck transport.'},409)
-            result = vdj_request(data, port=getattr(self.server, 'vdj_port', 7474))
-            return self.reply(result)
+                result,status={'error':'Take over the scheduled set before using individual deck transport.'},409
+            else:
+                result,status=vdj_request(data,port=getattr(self.server,'vdj_port',7474)),200
         except ValueError as exc:
-            return self.reply({"error":str(exc)},400)
+            result,status={"error":str(exc)},400
         except (BridgeError, OSError) as exc:
-            return self.reply({"connected":False,"error":str(exc)},503)
+            result,status={"connected":False,"error":str(exc)},503
         finally:
             VDJ_LOCK.release()
+        return self.reply(result,status)
 
     def agent_video_request(self,path,data=None):
         base='http://127.0.0.1:8768'
@@ -419,12 +420,13 @@ class Handler(RuntimeStaticHandler):
                 elif action == 'plan':
                     result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'))
                 elif action == 'start':
+                    options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
                     if data.get('prepareWhilePlaying') is True:
                         if DJ_SESSION.snapshot().get('mixStyle') != 'phrase':
                             raise ValueError('Preparing while playing requires a phrase-mixing set.')
-                        result = DJ_SESSION.start(immediate=True,initialize_mixer=True)
+                        result = DJ_SESSION.start(immediate=True,initialize_mixer=True,**options)
                     else:
-                        result = DJ_SESSION.start()
+                        result = DJ_SESSION.start(**options)
                 elif action in ('insert-track','preview-insertion'):
                     track_id=data.get('trackId')
                     if not isinstance(track_id,str) or not track_id:raise ValueError('Choose an exact recording to insert.')
@@ -555,7 +557,7 @@ def main():
                 message='The saved queue could not be restored. A fresh set is ready; the saved record was retained.')
             print('Queue recovery unavailable; saved data retained. Playback remains off.',flush=True)
     DJ_AGENT.restore_settings()
-    httpd=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
+    httpd=LoopbackHTTPServer(('127.0.0.1',args.port),Handler)
     try:
         mcp_store=ReceiptStore(RUNTIME/'mcp'/'receipts.sqlite3')
         MCP_CONTROL=MCPControl(DJ_AGENT,mcp_store)

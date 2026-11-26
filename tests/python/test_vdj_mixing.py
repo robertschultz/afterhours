@@ -135,7 +135,7 @@ class MixerTests(unittest.TestCase):
         m,v,sent=self.mixer();m.arm(None,1,2,transition_recipe(track(),track()));m.begin(None)
         client=Mock();m.cancel_ramps(client)
         script=client.send.call_args.args[0]
-        self.assertIn("repeat_stop 'afterhours_in_level'",script)
+        self.assertIn("deck 2 repeat_stop 'afterhours_in_level'",script)
         self.assertNotIn('eq_',script);self.assertNotIn(' play',script)
         m.cancel_ramps(client);client.send.assert_called_once()
 

@@ -215,7 +215,7 @@ class DJSession:
                       'mixStyle': 'phrase', 'phraseBeats': 64, 'fadeBeats': 64,
                       'analysis': None, 'aiReview': None, 'executionPlan': None, 'preparationSelection': None,
                       'queuedUpdate': None, 'lastQueueApplication': None, 'lastQueueRepair': None, 'catalogSearch': None,
-                      'backgroundAnalysis': None, 'tempoControl': None, 'tempoTargets': None,
+                      'backgroundAnalysis': None, 'tempoControl': None, 'tempoTargets': None, 'rollingQueue': None,
                       'mixerBaselines': None, 'startup': None, 'lastError': None,
                       'copilotTargets': None,
                       'copilot': {'mode': 'leading', 'held': False, 'command': None, 'selectionEpoch': 0},
@@ -812,10 +812,10 @@ class DJSession:
         names=[];analysis=[]
         if kind in ('mixer','handoff'):
             ramps=getattr(owner,'ramps',None)
-            if isinstance(ramps,(set,list,tuple)):
-                names=['afterhours_'+name for name in ramps if isinstance(name,str)]
+            if isinstance(ramps,dict):
+                names=[f'{deck}:afterhours_{name}' for name,deck in ramps.items()]
         elif kind=='tempo' and isinstance(getattr(owner,'NAME',None),str):
-            names=[owner.NAME]
+            names=[f'{owner.deck}:{owner.NAME}']
         elif kind=='background':
             describe=getattr(owner,'cleanup_descriptors',None)
             if callable(describe):analysis=describe()
@@ -832,9 +832,16 @@ class DJSession:
         names=pending.get('ramps') or []
         allowed={'afterhours_'+name for name in ('in_level','out_low','out_mid','out_vocal','out_instru',
                  'in_low','in_mid','in_vocal','in_instru','out_high','crossfade')}|{tempo_planner.TempoRamp.NAME}
-        if not isinstance(names,list) or any(name not in allowed for name in names):
-            return  # Recovered data can never supply an arbitrary engine verb.
-        if names:client.send(' & '.join(f"repeat_stop '{name}'" for name in names))
+        stops=[]
+        for descriptor in names:
+            deck,separator,name=descriptor.partition(':')
+            if not separator:  # Old checkpoints only retained the ramp name.
+                name=deck
+            if name not in allowed or (separator and deck not in ('1','2','3','4')):
+                return  # Recovered data can never supply an arbitrary engine verb.
+            prefix=f'deck {deck} ' if separator else ''
+            stops.append(f"{prefix}repeat_stop '{name}'")
+        if stops:client.send(' & '.join(stops))
         remaining=[];errors=[]
         for descriptor in pending.get('analysis',[]):
             try:cleanup_analysis_deck(client,descriptor)
@@ -933,11 +940,16 @@ class DJSession:
             # explicit Stop sends the idempotent pause command once, separately.
             if self.stop_audio:
                 try:
+                    stopped_crossfader=None
                     with self.factory(self.port, timeout=.5, budget_seconds=3) as stop:
                         # Every deck the set plays through, wherever the rotation stood.
                         stop.send(' & '.join(f'deck {deck} pause' for deck in self.decks))
                         paused = not any(as_bool(stop.query(f'deck {deck} play', 'bool')) for deck in self.decks)
-                        if paused:self.retry_paused_cleanup(stop)
+                        if paused:
+                            self.retry_paused_cleanup(stop)
+                            if self.handoff:
+                                try:stopped_crossfader=number(stop.query('crossfader'),0,1)
+                                except (BridgeError,OSError):pass
                         if paused and self.mixer:
                             # Restore only while confirmed paused. This cleanup
                             # deliberately bypasses the canceled worker checks.
@@ -951,7 +963,11 @@ class DJSession:
                         if telemetry and paused:
                             for deck in telemetry['decks']:
                                 deck['playing'] = False
-                            telemetry['sampledAt'] = time.time()
+                            if stopped_crossfader is not None:
+                                telemetry['crossfader']=stopped_crossfader
+                            if self.handoff is None or stopped_crossfader is not None:
+                                telemetry['sampledAt']=time.time()
+                        if paused:self.state.update(activeHandoff=None,transitionControl=None)
                 except (BridgeError, OSError):
                     self.update(message='Stop could not be confirmed. Pause the decks in VirtualDJ.')
             terminal=self.snapshot()
@@ -1110,12 +1126,12 @@ class DJSession:
             if _archive_boundary:self.archive_call('boundary')
             self.state.update(order=order, recoveryRemainder=[], secondsPerTrack=seconds, excerptBars=excerpt_bars,
                               setlist={**policy,'sourceById':sources},
-                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds,
+                              maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds, quickTargetBpm=None,
                               **MIX_STYLES[mix_style],
                               phase='ready', index=-1, segmentProgress=0,
                               message=('Order ready. Analyze the set and apply a measured mix plan before starting.' if mix_style=='phrase' else 'Quick preview ready. Start when you want to listen.'), transitions=[], transitionControl=None,
                               analysis=None, aiReview=None, executionPlan=None, preparationSelection=None, queuedUpdate=None, lastQueueApplication=None, lastQueueRepair=None, startedAt=None, endedAt=None, startup=None,lastError=None,
-                              tempoTargets=copy.deepcopy(tempo_targets),tempoControl=None,backgroundAnalysis=None,
+                              tempoTargets=copy.deepcopy(tempo_targets),tempoControl=None,backgroundAnalysis=None,rollingQueue=None,
                               mixPlans=[transition_recipe(a,b,mix_style,seconds,order[0]['bpm']) for a,b in zip(order,order[1:])])
             self.event(f'{"Operator reordered" if source=="operator" else "Planner ordered"} {len(order)} tracks. Prepare audio to choose measured cues.', 'plan')
             return self.snapshot()
@@ -1234,15 +1250,17 @@ class DJSession:
         job=self.catalog_job
         # Audio timing has priority. Metadata work never loads a deck and stops
         # well before the beat-critical handoff. It resumes after that handoff.
-        if not job or job.done or seconds_available<16 or self.background_job:return
+        if not job or job.done or seconds_available<(9 if getattr(job,'rolling',False) else 16) or self.background_job:return
         try:job.step(client)
         except (BridgeError,ValueError,OSError) as exc:
             job.done=True;job.publish('error',str(exc));self.event(str(exc),'catalog')
 
-    def revise_queue(self,ids,reason='',mix_transitions=None,tempo_targets=None,preserve_prefix=0,cue_choices=None):
+    def revise_queue(self,ids,reason='',mix_transitions=None,tempo_targets=None,preserve_prefix=0,cue_choices=None, *, source=None):
         """Stage a future revision without touching the playing/cued prefix."""
         with self.lock:
             s=self.snapshot()
+            if source not in (None,'operator','planner'):
+                raise ValueError('Unknown setlist source.')
             if type(preserve_prefix) is not int or not 0<=preserve_prefix<=len(s['order']):
                 raise ValueError('Invalid protected queue prefix.')
             audible=s['active'] or any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[]))
@@ -1252,24 +1270,29 @@ class DJSession:
             if isinstance(ids,list):self.require_available(ids[protected:])
             old_plan=s.get('executionPlan') or {}
             frozen=(old_plan.get('tempoSchedule') or [])[:protected]
+            quick=s['mixStyle']=='quick'
+            opening=old_plan.get('targetBpm')
+            if quick and s['order']:opening=s.get('quickTargetBpm') or s['order'][0]['bpm']
             order=validate_order(ids,s['candidates'],s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
-                                 frozen or None,old_plan.get('targetBpm') if audible else None,
+                                 frozen or None,opening if audible else None,fixed=quick,
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
-                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
+                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],source=source or 'planner',tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
             if audible and s['phase'] not in ('playing','mixing','loading'):
                 raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
-            if not old_plan.get('applied'):
+            if not quick and not old_plan.get('applied'):
                 raise ValueError('Live queue expansion needs a measured mix plan. Prepare the set before starting an autonomous run.')
             old=[t['id'] for t in s['order']]
             policy=s.get('setlist',{})
             if not policy.get('allowReorder',True) and ids!=old:raise ValueError('Planner reordering is off.')
             if any(i>=len(ids) or ids[i]!=tid for i,tid in enumerate(old) if tid in policy.get('lockedIds',[])):
                 raise ValueError('A locked track must keep its position.')
-            prepared=cue_planner.revise_prepared_queue(s,order,mix_transitions,reason,protected,tempo_targets,cue_choices=cue_choices) if mix_transitions else None
+            prepared=cue_planner.revise_prepared_queue(s,order,mix_transitions,reason,protected,tempo_targets,cue_choices=cue_choices) if mix_transitions and not quick else None
             self.state['queuedUpdate']={'id':uuid.uuid4().hex,'tracks':order,'protectedIds':old[:protected],
-                'status':'ready' if prepared else 'needs-analysis','reason':reason,'prepared':prepared,
+                'status':'ready' if prepared or quick else 'needs-analysis','reason':reason,'prepared':prepared,
+                **({'quick':True} if quick else {}),
+                **({'sourceById':{tid:source for tid in ids if tid not in old}} if source else {}),
                 'mixTransitions':copy.deepcopy(mix_transitions),'tempoTargets':copy.deepcopy(tempo_targets),
                 'cueChoices':copy.deepcopy(cue_choices) if cue_choices else None,
                 'standingStyle':copy.deepcopy(getattr(self,'standing_style',None))}
@@ -1277,6 +1300,8 @@ class DJSession:
             self.state['message']=('Upcoming queue updated. The prepared change will join after the current handoff.'+
                 (f" The DJ chose where {entries} record{'s' if entries!=1 else ''} come{'s' if entries==1 else ''} in." if entries else '') if prepared else
                 'Upcoming tracks queued for background analysis. The playing and cued tracks are unchanged.')
+            if quick:
+                self.state['message']='Upcoming tracks queued at the set tempo. The playing and cued tracks are unchanged.'
             self.event(self.state['message'],'queue')
             return self.snapshot()
 
@@ -1291,7 +1316,7 @@ class DJSession:
                 self.remember_cleanup_failure('background',job)
                 raise
             self.background_job=None;job=None
-        if not q or q['status'] not in ('needs-analysis','analyzing','ready'):return
+        if not q or q.get('quick') or q['status'] not in ('needs-analysis','analyzing','ready'):return
         restriction=preview_failure(self.availability,q['tracks'])
         if (restriction and job and job.error
                 and preview_failure(self.availability,q['tracks'],job.error) is None):
@@ -1435,6 +1460,17 @@ class DJSession:
                 return None
             if [t['id'] for t in order[:protected]]!=[t['id'] for t in old[:protected]]:
                 q['status']='needs-review';return None
+            if q.get('quick'):
+                if self.state['mixStyle']!='quick':
+                    q['status']='needs-review';return None
+                track_ids=[t['id'] for t in order]
+                sources={**self.state['setlist'].get('sourceById',{}),**q.get('sourceById',{})}
+                self.state['setlist']['sourceById']={tid:sources.get(tid,'operator') for tid in track_ids}
+                self.update(order=copy.deepcopy(order),queuedUpdate=None,
+                            lastQueueApplication={'queueRevision':q['id'],'planId':None,
+                                                  'trackIds':track_ids,'appliedAt':time.time()})
+                self.event('Quick queue revision adopted. Playing cue preserved.','queue-applied')
+                return copy.deepcopy(order),None
             prepared=copy.deepcopy(q['prepared']);cue_planner.verify_receipts(prepared['analysis'])
             # Which of the planner's window choices were used is a receipt, not set state.
             windows=prepared.pop('cueChoices',None)
@@ -2118,9 +2154,12 @@ class DJSession:
         return order,prepared
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None):
+              held_recording=None, rolling_queue=False):
+        from afterhours.rolling_queue import RollingQueue
+
         self.dig_restart()
         snapshot = self.snapshot()
+        rolling = RollingQueue() if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
         planned=snapshot.get('executionPlan')
@@ -2150,6 +2189,8 @@ class DJSession:
             cue_planner.verify_receipts(snapshot['analysis'])
         def ready(client,track,deck,target,index,override=None):
             nonlocal order,planned
+            if self.catalog_job and getattr(self.catalog_job,'rolling',False):
+                self.catalog_job.resume_search()
             selected = override or planned
             if len(self.decks)>2:self.release_preparation(client,deck)
             if selected and selected.get('tempoSchedule'):target=selected['tempoSchedule'][index]['fromBpm']
@@ -2157,6 +2198,19 @@ class DJSession:
                 if selected:self.prepare_deck(client,track,deck,target,cue=selected['selections'][index])
                 else:self.prepare_deck(client,track,deck,target)
             except TrackMetadataChanged as exc:
+                if not override and not selected and snapshot['mixStyle']=='quick':
+                    checked=exc.track
+                    if checked['id']!=track['id']:raise
+                    self.prepare_deck(client,checked,deck,target,checked=checked)
+                    with self.lock:
+                        order[index]=checked
+                        candidates=[checked if t['id']==checked['id'] else t for t in self.state['candidates']]
+                        self.update(order=copy.deepcopy(order),candidates=candidates)
+                        queued=self.state.get('queuedUpdate')
+                        if queued:
+                            queued['tracks']=[copy.deepcopy(checked) if t['id']==checked['id'] else t for t in queued['tracks']]
+                    self.event(f"{track['title']}: native metadata refreshed at the set tempo.",'analysis')
+                    return
                 if override or not selected:raise
                 revised,prepared=self.refresh_key_plan({**self.snapshot(),'order':order,'executionPlan':planned},exc.track,index)
                 newplan=prepared['executionPlan']
@@ -2175,6 +2229,7 @@ class DJSession:
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
         def work(client):
             nonlocal order,planned
+            self.update(rollingQueue={'status': 'ready'} if rolling else None)
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -2191,6 +2246,7 @@ class DJSession:
             if not resume and any(as_bool(self.q(client,f'deck {deck} play','bool')) for deck in self.decks[2:]):
                 raise BridgeError('Pause every deck before starting this set.')
             target = planned['targetBpm'] if planned else order[0]['bpm']
+            if snapshot['mixStyle']=='quick':self.update(quickTargetBpm=target)
             resume_window = None
             paused_current = False
             if immediate:
@@ -2349,6 +2405,14 @@ class DJSession:
                                 self.update(copilotTargets=self.mixer.targets())
                         self.update(targetBeat=goal, timing=dict(window), segmentBeats=window['segmentBeats'], fadeBeats=window['fadeBeats'])
                         continue  # fresh observation after preparation or retiming
+                    if final and snapshot['mixStyle']=='quick':
+                        revised=self.adopt_queue(index)
+                        if revised:
+                            order,planned=revised
+                            if index+1<len(order):
+                                ready(client,order[index+1],incoming,target,index+1)
+                                t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
+                                revised_final=True;break
                     if self.snapshot()['copilot']['held']:
                         # Current music continues. Do not invent a loop, seek,
                         # substitute cue, or implicit handoff when Hold expires.
@@ -2373,6 +2437,10 @@ class DJSession:
                             if control['held'] or (control.get('command') or {}).get('status') == 'pending':
                                 continue
                             if not final:self.state['phase'] = 'mixing'
+                            elif snapshot['mixStyle']=='quick':
+                                if (self.state.get('queuedUpdate') or {}).get('status')=='ready':
+                                    continue  # adopt an insertion received as the last window ended
+                                self.state['phase']='stopping'
                         break
                     slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
                     self.service_background(client,slack)
@@ -2384,6 +2452,7 @@ class DJSession:
                                 ready(client,order[index+1],incoming,target,index+1)
                                 t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
                                 revised_final=True;break
+                    if rolling:rolling.tick(self,slack)
                     self.service_catalog(client,slack)
                     self.service_dig(client,slack)
                     self.sleep(.12)

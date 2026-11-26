@@ -70,6 +70,9 @@ def placement(session, track_id):
     cues = {row['trackId']: row for row in plan.get('selections', []) if row.get('trackId')}
     targets = staged.get('tempoTargets') if staged else session.get('tempoTargets')
     frozen = (plan.get('tempoSchedule') or [])[:protected]
+    quick = session.get('mixStyle') == 'quick'
+    opening = plan.get('targetBpm')
+    if quick and session.get('order'):opening=session.get('quickTargetBpm') or session['order'][0]['bpm']
     history = session_curation.history_ids(session)
     if len(ids) - len(history) >= 12:
         raise ValueError('The current queue window is full. Wait for it to advance or remove an upcoming track.')
@@ -79,8 +82,7 @@ def placement(session, track_id):
         try:
             validate_order(revised, session.get('candidates', []), session.get('maxTempoShift', 8),
                            session.get('secondsPerTrack', 30), targets, frozen or None,
-                           plan.get('targetBpm') if protected else None,
-                           fixed=session.get('mixStyle') == 'quick', history_prefix=history)
+                           opening if protected else None, fixed=quick, history_prefix=history)
         except ValueError:
             continue
         before = order[slot - 1]

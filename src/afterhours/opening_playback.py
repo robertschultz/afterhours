@@ -21,7 +21,7 @@ class OpeningHandoffHeld(BridgeError):
     pass
 
 
-def measured_plan(snapshot, order, measured, current, lead_seconds=45):
+def measured_plan(snapshot, order, measured, current, lead_seconds=28):
     """Fit a future verified exit while leaving the already playing audio alone."""
     evidence={row['id']:copy.deepcopy(row) for row in measured}
     first=evidence[order[0]['id']]
@@ -29,6 +29,13 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=45):
     first['cueCandidates']=[c for c in first['cueCandidates'] if c.get('replayVerified') and c['exitBeat']>=earliest]
     if not first['cueCandidates']:
         raise ValueError('The opening track is playing, but no verified exit remains with enough time to prepare the next deck.')
+    # The first deck has been playing since its first beat. Its candidate
+    # supplies the exit only, so a tighter entrance six minutes in has no
+    # value. Prefer the earliest verified exit with a supported blend.
+    usable=[c for c in first['cueCandidates'] if c['maxBlendBeats']>=8]
+    if not usable:
+        raise ValueError('The opening track is playing, but no verified exit supports a handoff.')
+    opening=min(usable,key=lambda c:c['exitBeat'])
     tracks=[evidence[t['id']] for t in order]
     report=cue_planner.attach_candidates({'tracks':tracks},
         {t['id']:t['cueCandidates'] for t in tracks},snapshot['secondsPerTrack'],current['bpm'],
@@ -39,7 +46,9 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=45):
     seed={**snapshot,'analysis':report,
           'executionPlan':{'applied':True,'orderIds':[order[0]['id']],'targetBpm':current['bpm'],'tempoSchedule':[fixed]},
           'aiReview':{'decision':'propose','secondsBetweenEntries':snapshot['secondsPerTrack'],
-                      'selections':[],'transitions':[]}}
+                      'selections':[{'trackId':order[0]['id'],'candidateId':opening['id'],
+                                     'reason':'Earliest verified exit with time to prepare the incoming deck.'}],
+                      'transitions':[]}}
     prepared=cue_planner.complete_background_queue(seed,order,tracks,
         'Opening music started first; the upcoming handoff uses verified spare-deck measurements.',1,
         tempo_targets=snapshot.get('tempoTargets'))

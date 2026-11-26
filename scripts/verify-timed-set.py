@@ -61,11 +61,16 @@ def main():
     parser.add_argument('--seconds', type=int, default=3600)
     parser.add_argument('--start', action='store_true', help='Start the already selected queue with alternating 60/30 seconds.')
     parser.add_argument('--prepare', action='store_true', help='Verify the opening buffer while paused before starting.')
+    parser.add_argument('--provider', help='Require every observed recording to have this exact native provider.')
+    parser.add_argument('--provider-sequence', help='Require this comma-separated sequence at the start of the set.')
     args = parser.parse_args()
     if args.prepare and not args.start:
         parser.error('--prepare requires --start.')
     if args.seconds < 30:
         parser.error('Observe at least 30 seconds.')
+    expected_sources = tuple(source.strip() for source in args.provider_sequence.split(',')) if args.provider_sequence else ()
+    if len(expected_sources) > 12 or not all(expected_sources):
+        parser.error('Supply up to twelve nonempty provider IDs in order.')
     state = request(SESSION)
     if args.start:
         if state['active'] or any(d.get('playing') for d in (state.get('telemetry') or {}).get('decks', [])):
@@ -97,6 +102,7 @@ def main():
     last_music = None
     deck_meter_seen = set()
     heard = set()
+    provider_sequence = []
     deadline = time.monotonic() + args.seconds + 45
     while time.monotonic() < deadline:
         state = request(SESSION)
@@ -105,6 +111,7 @@ def main():
         order = state['order']
         ordered_ids = tuple(t['id'] for t in order)
         titles = {t['id']: t.get('title') for t in order}
+        providers = {t['id']: (t.get('catalog') or {}).get('provider') for t in order}
         if ordered_ids != last_order:
             counts['queueChanges'] += 1
             emit('queue', index=state['index'], order=[titles[k] for k in ordered_ids], at=time.time())
@@ -122,12 +129,18 @@ def main():
         for row in state['transitions'][counts['handoffs']:]:
             if last_entry is None:
                 last_entry = state['startedAt']
+                provider_sequence.append(providers.get(row['from']))
+            provider_sequence.append(providers.get(row['to']))
+            if args.provider and any(providers.get(row[key]) != args.provider for key in ('from','to')):
+                raise ValueError('A verified handoff used a different or unclassified provider.')
+            if tuple(provider_sequence[:len(expected_sources)]) != expected_sources[:len(provider_sequence)]:
+                raise ValueError('The heard provider sequence diverged from the expected opening.')
             checks = handoff_checks(row, last_entry, cadence[counts['handoffs'] % len(cadence)])
             heard.update((row['from'], row['to']))
             counts['handoffs'] += 1
             counts['passedHandoffs'] += int(all(checks['checks'].values()))
             emit('handoff', fromTrack=titles.get(row['from']), toTrack=titles.get(row['to']),
-                 at=row['at'], **checks)
+                 fromProvider=providers.get(row['from']), toProvider=providers.get(row['to']), at=row['at'], **checks)
             last_entry = row['at']
         started = state.get('startedAt')
         now = time.time()
@@ -148,7 +161,8 @@ def main():
                     latest += cadence[required % len(cadence)] + 10
                     required += 1
                 passed = (counts['handoffs'] == counts['passedHandoffs'] and counts['handoffs'] >= max(1, required)
-                          and heard <= deck_meter_seen and max_observation_gap <= 4)
+                          and heard <= deck_meter_seen and max_observation_gap <= 4
+                          and len(provider_sequence) >= len(expected_sources))
                 emit('complete', seconds=round(elapsed, 1), nativeMeterTracks=len(deck_meter_seen),
                      minimumHandoffs=required, maxObservationGapSeconds=round(max_observation_gap, 2),
                      passed=passed, **counts)

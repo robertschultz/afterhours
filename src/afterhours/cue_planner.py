@@ -71,9 +71,9 @@ def excerpt_beats(seconds, target_bpm):
     return min((32,64,128,256,512,1024,2048), key=lambda n: abs(n-desired))
 
 
-def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8, *, timed=False):
+def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8, *, timed=False, span_beats=None):
     """Rank candidate grid offsets locally; native seek/readback follows."""
-    span = excerpt_beats(seconds, target_bpm)
+    span = excerpt_beats(seconds, target_bpm) if span_beats is None else span_beats
     blend = min(32 if seconds <= 30 else 64, span//2)
     duration = evidence['duration']
     end = next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'), duration)

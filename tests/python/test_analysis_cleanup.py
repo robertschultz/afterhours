@@ -24,6 +24,7 @@ class CleanupPeer(Peer):
         super().__init__()
         self.values.update({k.replace('deck 3','deck 4'):v for k,v in list(self.values.items()) if k.startswith('deck 3')})
         self.values.update({'deck 4 get_deck':4,'deck 1 play':False,'deck 2 play':False})
+        self.values.update({'deck 3 deck_has_error':False,'deck 4 deck_has_error':False})
         self.ignore_unload=set();self.fail_query=None;self.fail_after_restore=False;self.fail_ramp=False
 
     def query(self,script,kind=None):
@@ -143,6 +144,15 @@ class AnalysisCleanupTests(unittest.TestCase):
         s,p,j=self.owned();j.loaded=None;j.requested_load=identity('test')
         self.latch(s,p,j);s.retry_paused_cleanup(p)
         self.assertFalse(s.state['resumeBlocked'])
+        self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
+
+    def test_native_load_error_releases_the_isolated_empty_deck(self):
+        s,p,j=self.owned();j.loaded=None;j.requested_load=identity('test')
+        p.values.update({'deck 3 loaded':False,'deck 3 deck_has_error':True})
+        s.remember_cleanup_failure('background',j)
+        s.retry_paused_cleanup(p)
+        self.assertFalse(s.state['resumeBlocked'])
+        self.assertEqual(p.values['deck 3 volume'],1)
         self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
 
     def test_empty_readback_cannot_release_an_unconfirmed_stream_load(self):

@@ -21,7 +21,7 @@ from afterhours.vdj_catalog import (folder_state, selection, identity, load_sele
 from afterhours.native_recording import RECORDINGS
 from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, transition_recipe
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
-from afterhours.audio_analysis import scan_track
+from afterhours.audio_analysis import exceeds_scan_duration, scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
 from afterhours.opening_playback import OpeningHandoffHeld, confirm_started
 from afterhours import cue_planner
@@ -90,6 +90,8 @@ def validate_order(ids, candidates, max_tempo_shift=8, seconds=30, tempo_targets
     if any(i not in by_id for i in ids):
         raise ValueError("A track is no longer in the analyzed catalog. Discover music again.")
     tracks = [by_id[i] for i in ids]
+    if not fixed and (long_recording:=next((t for t in tracks if exceeds_scan_duration(t)),None)):
+        raise ValueError(f'{long_recording["title"]} exceeds the measured-mix scan limit. Choose an individual recording.')
     if len({song_identity(t)[0] for t in tracks}) != len(tracks):
         raise ValueError('This short set repeats a song title. Choose different songs, including across remasters.')
     if fixed:
@@ -1878,42 +1880,52 @@ class DJSession:
                     number(self.q(client,f'deck {deck} get_time elapsed absolute'),
                            -6000 if grid_anchor else 0,1200000)/1000)
         anchor,anchor_time=at(0,grid_anchor=True)
-        policy=cue_planner.propose_offsets(evidence,rows,anchor_time,track['bpm'],target_bpm,seconds,
-                                          limit=10 if timed else 8,timed=timed)
-        result=[]
-        for offset in policy['offsets']:
-            entry,entry_time=at(offset)
-            intro,intro_time=at(offset+policy['blendBeats'])
-            exit_beat,exit_time=at(offset+policy['spanBeats'])
-            end,end_time=at(offset+policy['spanBeats']+policy['blendBeats'])
-            # A fluid grid's absolute beat numbering can shift across tempo
-            # regions. Validate the measured span, not a global offset guess.
-            if (abs((intro-entry)-policy['blendBeats'])>.2 or
-                    abs((exit_beat-entry)-policy['spanBeats'])>.2 or
-                    abs((end-exit_beat)-policy['blendBeats'])>.2):
-                self.event('Candidate crosses a changing native beat span; skipped.', 'analysis',
-                           trackId=track['id'], observedBeats=[entry,intro,exit_beat,end])
-                continue
-            native={'anchorBeat':anchor,'offsetBeats':offset,'entryBeat':entry,'entrySeconds':entry_time,
-                    'introEndSeconds':intro_time,'exitBeat':exit_beat,'exitSeconds':exit_time,
-                    'endBeat':end,'endSeconds':end_time}
-            try:cue=cue_planner.candidate(evidence,rows,native,policy)
-            except ValueError:continue  # Fluid-grid readback may invalidate an estimated window.
-            # Prove that execution can reproduce the absolute cue before the
-            # candidate is offered to the planner. Both decks remain paused.
-            guard()
-            self.send(client,f"deck {deck} goto {cue['entrySeconds']/cue['recordingDuration']*100:.9f}%")
-            self.sleep(.12)
-            replay_beat=number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000)
-            replay_time=number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000
-            if abs(replay_beat-entry)>.2 or abs(replay_time-entry_time)>.2:
-                self.event('Absolute cue could not be reproduced; skipped.','analysis',trackId=track['id'])
-                continue
-            cue['replayVerified']=True
-            result.append(cue)
-        if not result:
-            raise BridgeError(f'No usable measured excerpt was found for {track["title"]}. Choose another track or a longer interval.')
-        return result
+        span=cue_planner.excerpt_beats(seconds,target_bpm)
+        preferred_span=span
+        # Requested pacing can exceed a short recording's verified audio.
+        # Work down through shorter complete phrases without lowering the
+        # signal, grid, or replay requirements for any proposed transition.
+        while span>=32:
+            policy=cue_planner.propose_offsets(evidence,rows,anchor_time,track['bpm'],target_bpm,seconds,
+                                              limit=10 if timed else 8,timed=timed,span_beats=span)
+            result=[]
+            for offset in policy['offsets']:
+                entry,entry_time=at(offset)
+                intro,intro_time=at(offset+policy['blendBeats'])
+                exit_beat,exit_time=at(offset+policy['spanBeats'])
+                end,end_time=at(offset+policy['spanBeats']+policy['blendBeats'])
+                # A fluid grid's absolute beat numbering can shift across tempo
+                # regions. Validate the measured span, not a global offset guess.
+                if (abs((intro-entry)-policy['blendBeats'])>.2 or
+                        abs((exit_beat-entry)-policy['spanBeats'])>.2 or
+                        abs((end-exit_beat)-policy['blendBeats'])>.2):
+                    self.event('Candidate crosses a changing native beat span; skipped.', 'analysis',
+                               trackId=track['id'], observedBeats=[entry,intro,exit_beat,end])
+                    continue
+                native={'anchorBeat':anchor,'offsetBeats':offset,'entryBeat':entry,'entrySeconds':entry_time,
+                        'introEndSeconds':intro_time,'exitBeat':exit_beat,'exitSeconds':exit_time,
+                        'endBeat':end,'endSeconds':end_time}
+                try:cue=cue_planner.candidate(evidence,rows,native,policy)
+                except ValueError:continue  # Fluid-grid readback may invalidate an estimated window.
+                # Prove that execution can reproduce the absolute cue before the
+                # candidate is offered to the planner. Both decks remain paused.
+                guard()
+                self.send(client,f"deck {deck} goto {cue['entrySeconds']/cue['recordingDuration']*100:.9f}%")
+                self.sleep(.12)
+                replay_beat=number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000)
+                replay_time=number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000
+                if abs(replay_beat-entry)>.2 or abs(replay_time-entry_time)>.2:
+                    self.event('Absolute cue could not be reproduced; skipped.','analysis',trackId=track['id'])
+                    continue
+                cue['replayVerified']=True
+                result.append(cue)
+            if result:
+                if span!=preferred_span:
+                    self.event(f'{track["title"]}: verified a shorter {span//4}-bar excerpt for this handoff.',
+                               'analysis',trackId=track['id'])
+                return result
+            span//=2
+        raise BridgeError(f'No usable measured excerpt was found for {track["title"]}. Try another recording.')
 
     def apply_plan(self):
         snapshot=self.snapshot();report=snapshot.get('analysis');review=snapshot.get('aiReview')

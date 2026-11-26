@@ -59,6 +59,8 @@ class OpeningTests(unittest.TestCase):
         self.assertLess(trace.index('deck 1 play'),trace.index('analyze'))
         self.assertLess(trace.index('analyze'),trace.index('prepare-next'))
         self.assertEqual(trace.count('deck 1 play'),1)
+        s.match_tempo.assert_not_called()
+        self.assertIn('deck 1 pitch 100%', trace[0])
         self.assertFalse(any('deck 1 goto' in c for c in trace[trace.index('deck 1 play')+1:]))
         self.assertTrue(plan['applied']);self.assertEqual(window['entryBeat'],0)
         self.assertEqual([t['id'] for t in order],['0','1'])

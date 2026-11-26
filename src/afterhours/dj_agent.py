@@ -2218,18 +2218,29 @@ class DJAgent:
                 self.state.update(status='ready',message='Direction updated. Selection is ready to review.',lastEvaluation=receipt)
                 self.save()
                 audible=any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[]))
-                if (result['search'] or result['trackIds']) and (s.get('phase')!='takeover' or not audible):
+                manual_takeover=s.get('phase')=='takeover' and audible
+                if (result['search'] or result['trackIds']) and (external or not manual_takeover):
                     try:
+                        if manual_takeover:
+                            raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
                         self.apply(rev)
                         if result['search']:self.catalog_curation=curation_token
                     except (ValueError,OSError,BridgeError) as exc:
-                        if external:external.finish('blocked','The selection could not be applied.')
+                        if external:
+                            reason=('manual-playback' if str(exc).startswith('Manual playback keeps control.') else 'selection-held')
+                            request=self.playback_request or {}
+                            if request.get('id')==external.id and self.playback_pending():
+                                request.update(status='failed',message=str(exc))
+                            external.finish('blocked','The selection could not be applied.',reason)
                         self.planner.close(round_id,'held',str(exc))
                         if curation_token:self.curation.end('blocked','Selection held: '+str(exc))
                         self.state.update(message='Selection held: '+str(exc));self.save()
                 if not result['search']:
                     if self.playback_request and self.playback_request['status']=='choosing' and not result['trackIds']:
-                        self.cancel_playback('No playable selection was accepted. The decks are unchanged.')
+                        no_selection='No playable selection was accepted. The decks are unchanged.'
+                        if external and self.playback_request.get('id')==external.id:
+                            external.finish('blocked',no_selection,'selection-held')
+                        self.cancel_playback(no_selection)
                     if self.text_turn and not curation_token:self.remaining=0
                     if not result['trackIds']:
                         self.state['message']=result['reply'];self.save()
@@ -2243,7 +2254,15 @@ class DJAgent:
                         external.finish(outcome,'The engine recorded this direction outcome.')
                 guest_confirmed=not result['search'] and (not result['trackIds'] or (self.state.get('proposal') or {}).get('status')=='applied')
         except (ValueError,TypeError,KeyError,OSError,BridgeError) as e:
-            if external:external.finish('blocked','The external evaluation could not complete.',getattr(e,'code','selection-held'))
+            if external:
+                message=str(e)
+                reason=getattr(e,'code',None)
+                if reason is None:
+                    if message=='OpenAI key is not configured.':reason='openai-key-missing'
+                    elif message.startswith(('OpenAI did not accept','OpenAI could not authorize')):reason='openai-authorization'
+                    elif message.startswith('AI request failed (HTTP 429)'):reason='openai-quota'
+                    else:reason='selection-held'
+                external.finish('blocked','The external evaluation could not complete.',reason)
             with self.lock:
                 if rev==self.state['revision'] and generation==self.generation:
                     self.planner.close(round_id,'failed',str(e))

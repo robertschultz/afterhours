@@ -241,7 +241,11 @@ class MCPControl:
                         except ValueError as exc:status='blocked';reason=getattr(exc,'code',None)
                 elif playback.get('id')==identifier:
                     if playback.get('status') in ('playing','completed'):status='confirmed'
-                    elif playback.get('status') in ('failed','cancelled','manual'):status='blocked'
+                    elif playback.get('status') in ('failed','cancelled','manual'):
+                        status='blocked'
+                        if playback['status']=='failed':
+                            reason=('native-tempo-unsettled' if 'tempo did not settle' in playback.get('message','')
+                                    else 'playback-start-failed')
                 elif grant:
                     try:grant.check()
                     except ValueError as exc:status='blocked';reason=getattr(exc,'code',None)

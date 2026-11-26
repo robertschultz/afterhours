@@ -68,4 +68,7 @@ After choosing at least two recordings in Afterhours, run
 It starts native playback and reports entry spacing, tempo and phase agreement,
 loop wraps and release, and mixer readbacks in JSON lines. Run it without
 `--start` to observe a set from its beginning that has already been started
-through the API. The script leaves playback running and records no audio.
+through the API. Add `--prepare` to verify and cue the initial buffer while
+paused before the clock starts. This validates longer runs with an opening
+queue ready while new records are being found and measured. The script leaves
+playback running and records no audio.

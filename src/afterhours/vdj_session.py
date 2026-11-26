@@ -109,6 +109,14 @@ def validate_order(ids, candidates, max_tempo_shift=8, seconds=30, tempo_targets
     return copy.deepcopy(tracks)
 
 
+def validate_entry_cadence(value):
+    if value is not None and (
+            not isinstance(value, list) or not 1 <= len(value) <= 8
+            or any(type(seconds) is not int or not 30 <= seconds <= 180 for seconds in value)):
+        raise ValueError('Choose one to eight entry intervals between 30 and 180 seconds.')
+    return value
+
+
 def song_identity(track):
     # Catalog releases can credit the same recording to artists in a different
     # order. Conservatively exclude identical title+mix from one short set.
@@ -1616,8 +1624,9 @@ class DJSession:
             self.update(setlist=policy)
             return self.snapshot()
 
-    def prepare_analysis(self):
+    def prepare_analysis(self, entry_cadence=None):
         """Preload and verify full-track numerical features while paused."""
+        entry_cadence = validate_entry_cadence(entry_cadence)
         snapshot=self.snapshot()
         if snapshot['mixStyle']!='phrase':
             raise ValueError('Choose genre-aware EQ mixing to prepare measured cue candidates.')
@@ -1657,7 +1666,8 @@ class DJSession:
                 self.update(message=f'Mapping musical entry and exit candidates · {track["title"]}. Audio stays paused.')
                 try:
                     candidates[track['id']]=self.measure_cues(client,checked_track,evidence,
-                        checked[0]['bpm'] if checked else checked_track['bpm'],snapshot['secondsPerTrack'])
+                        checked[0]['bpm'] if checked else checked_track['bpm'],snapshot['secondsPerTrack'],
+                        **({'timed': True} if entry_cadence else {}))
                 except cue_planner.LimitedAudio as exc:
                     omit(track,exc,'limited-decoded-audio');continue
                 checked.append(checked_track)
@@ -1675,17 +1685,37 @@ class DJSession:
                 # filtered order has just passed the tempo-route validator, so
                 # restarting the whole analysis would repeat identical work.
                 self.event('Native tempo or key refined the selection. The measured order remains within its mixing limits.','analysis-metadata')
-            estimate=tempo_planner.estimate(checked,snapshot['secondsPerTrack'],snapshot.get('maxTempoShift',8),targets)
-            for i in range(2):self.prepare_deck(client,checked[i],i+1,estimate[i]['fromBpm'])
+            report=cue_planner.attach_candidates(report,candidates,snapshot['secondsPerTrack'],checked[0]['bpm'],targets,snapshot.get('maxTempoShift',8))
+            prepared = {}
+            if entry_cadence:
+                source = 'Local measured timed-set preparation'
+                seed = {**snapshot, 'entryCadence':entry_cadence, 'rollingQueue':True, 'analysis':report,
+                        'executionPlan':{'orderIds':[], 'targetBpm':report['targetBpm']},
+                        'aiReview':{'decision':'propose', 'secondsBetweenEntries':snapshot['secondsPerTrack'],
+                                    'selections':[], 'transitions':[]}}
+                prepared = cue_planner.complete_background_queue(seed, checked, [],
+                            'Verified opening buffer; select later recordings during playback.', 0, tempo_targets=targets)
+                report = prepared.pop('analysis')
+                cue_planner.verify_receipts(report)
+                prepared['aiReview']['source'] = source
+                plan = cue_planner.compile_plan(prepared['aiReview'], report, checked, snapshot['secondsPerTrack'], snapshot['mixStyle'])
+                for i in range(2):
+                    self.prepare_deck(client,checked[i],i+1,plan['tempoSchedule'][i]['fromBpm'],cue=plan['selections'][i])
+                plan['applied'] = True
+                prepared.update(executionPlan=plan, mixPlans=plan['transitions'], entryCadence=entry_cadence)
+            else:
+                estimate=tempo_planner.estimate(checked,snapshot['secondsPerTrack'],snapshot.get('maxTempoShift',8),targets)
+                for i in range(2):self.prepare_deck(client,checked[i],i+1,estimate[i]['fromBpm'])
             self.send(client,'crossfader 0%')
             self.telemetry(client)
-            report=cue_planner.attach_candidates(report,candidates,snapshot['secondsPerTrack'],checked[0]['bpm'],targets,snapshot.get('maxTempoShift',8))
             count=sum(len(t['cueCandidates']) for t in report['tracks'])
             selection={'fromIds':[t['id'] for t in order],'orderIds':[t['id'] for t in checked],'skipped':skipped} if skipped else None
             policy=snapshot.get('setlist',{'allowReorder':True,'lockedIds':[],'sourceById':{}})
             policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in {t['id'] for t in checked}}}
+            message = ('Measured timed opening is ready. Audio remains paused.' if entry_cadence else
+                       f'{count} measured cue candidates prepared. Plan the transitions before starting.')
             self.update(order=checked,setlist=policy,tempoTargets=targets,preparationSelection=selection,analysis=report,phase='ready',
-                        message=f'{count} measured cue candidates prepared. Plan the transitions before starting.')
+                        message=message, **prepared)
             self.event(f'Prepared {count} audio-derived cue candidates with native position readbacks. Musical phrases remain estimates.','analysis')
         self._launch(work,'analyzing')
         return self.snapshot()
@@ -2258,10 +2288,7 @@ class DJSession:
 
         self.dig_restart()
         snapshot = self.snapshot()
-        if entry_cadence is not None and (
-                not isinstance(entry_cadence, list) or not 1 <= len(entry_cadence) <= 8
-                or any(type(seconds) is not int or not 30 <= seconds <= 180 for seconds in entry_cadence)):
-            raise ValueError('Choose one to eight entry intervals between 30 and 180 seconds.')
+        entry_cadence = validate_entry_cadence(entry_cadence)
         if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
             raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
         rolling = RollingQueue() if rolling_queue else None

@@ -60,7 +60,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seconds', type=int, default=3600)
     parser.add_argument('--start', action='store_true', help='Start the already selected queue with alternating 60/30 seconds.')
+    parser.add_argument('--prepare', action='store_true', help='Verify the opening buffer while paused before starting.')
     args = parser.parse_args()
+    if args.prepare and not args.start:
+        parser.error('--prepare requires --start.')
     if args.seconds < 30:
         parser.error('Observe at least 30 seconds.')
     state = request(SESSION)
@@ -68,6 +71,20 @@ def main():
         if state['active'] or any(d.get('playing') for d in (state.get('telemetry') or {}).get('decks', [])):
             raise ValueError('The decks are already in use.')
         token = request('/api/config')['token']
+        if args.prepare:
+            state = request(SESSION, {'action': 'prepare-analysis', 'entryCadence': [60, 30]}, token)
+            preparation_deadline = time.monotonic() + 15*60
+            previous = None
+            while state['active']:
+                if time.monotonic() >= preparation_deadline:
+                    raise RuntimeError('The paused opening buffer did not finish.')
+                if previous != state['message']:
+                    emit('preparing', detail=state['message'])
+                    previous = state['message']
+                time.sleep(1)
+                state = request(SESSION)
+            if not (state.get('executionPlan') or {}).get('applied'):
+                raise RuntimeError(state['message'])
         state = request(SESSION, {'action': 'start', 'prepareWhilePlaying': True, 'rollingQueue': True,
                                   'entryCadence': [60, 30], 'loopHandoffs': True}, token)
     session = state['id']

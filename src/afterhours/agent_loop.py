@@ -16,7 +16,7 @@ import json
 import re
 
 from afterhours import ai_mix
-from afterhours import catalog_browser
+from afterhours import catalog_browser, dj_discovery
 from afterhours.vdj_mixing import transition_recipe
 
 MAX_CALLS_PER_REQUEST = 3
@@ -261,6 +261,11 @@ class Lookups:
             raise ValueError('limit must be 1 to 8.')
         outgoing = self.rows[source]
         ranked = []
+        position = self.positions.get(source)
+        prior = [self.rows[track_id] for track_id, index in self.positions.items()
+                 if track_id in self.rows and position is not None and position-3 <= index <= position]
+        if not prior:
+            prior = [outgoing]
         for row in self.rows.values():
             if row['id'] == source or row.get('selectionEligible') is False:
                 continue
@@ -272,13 +277,20 @@ class Lookups:
             key = self.compatible(outgoing, row)
             # Known compatible keys first, then unknown keys, then clashes.
             ready=self.cues.get(row['id'],{}).get('replayVerified') is True
-            ranked.append(({True: 0, None: 1, False: 2}[key], not ready, abs(change), row['id'], change, key))
-        ranked.sort(key=lambda item: (item[0], item[1] if prefer_prepared else False, item[2]))
+            edges = dj_discovery.relationships(row, [outgoing], prior)
+            popularity = dj_discovery.DISCOVERY.evidence(row)
+            discovery = ((.7 if edges.get('sharedGenre') else 0) + (.45 if edges.get('sharedLabel') else 0)
+                         + (.4 if popularity else 0) - .85 * edges.get('recentArtistAppearances', 0))
+            ranked.append(({True: 0, None: 1, False: 2}[key], not ready, abs(change),
+                           row['id'], change, key, [name for name in ('sharedGenre','sharedLabel','sharedArtists')
+                                                     if edges.get(name)], discovery))
+        ranked.sort(key=lambda item: (item[0], item[1] if prefer_prepared else False, item[2], -item[7]))
         shown = ranked[:limit]
         self.surface([source] + [item[3] for item in shown])
         return {'afterId': source, 'playable': len(ranked), 'compatibleKey': sum(1 for item in ranked if item[5] is True),
                 'matches': [{**self.brief(self.rows[item[3]]), 'tempoChangePercent': item[4], 'harmonicCompatible': item[5],
-                             'preparedCue': not item[1], 'queuePosition': self.positions.get(item[3])} for item in shown]}
+                             'preparedCue': not item[1], 'queuePosition': self.positions.get(item[3]),
+                             **({'relationships': item[6]} if item[6] else {})} for item in shown]}
 
     def compare(self, arguments):
         ids = arguments.get('trackIds')

@@ -187,6 +187,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         score=len(terms & names)
         distance=abs((anchor/t['bpm']-1)*100) if anchor and t.get('bpm') else 1000
         return (-score,distance)
+    identity_order=sorted(candidates.values(),key=relevance) if terms else list(candidates.values())
     style=dj_discovery.style_for(request)
     order=s.get('order') or []
     cursor=max(0,s.get('index',0))
@@ -206,7 +207,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
     # identities; extra releases of a song are not additional playable choices.
     heard={song_identity(t)[0] for t in heard_tracks}
     priority=(protected_ids(s)+[t['id'] for t in queued]+list(s.get('setPins',[]))+requested+
-              list(guest_ids)[:8]+[t['id'] for t in ranked if t['id'] in found]+[t['id'] for t in ranked])
+              list(guest_ids)[:8]+[t['id'] for t in identity_order if t['id'] in found]+[t['id'] for t in identity_order])
     representatives={}
     for tid in priority:
         if tid not in ordered or (tid in unavailable and tid not in protected):continue
@@ -216,7 +217,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
     ordered={tid:t for tid,t in ordered.items() if tid in eligible or tid in evidence}
     requested=[tid for tid in requested if tid in eligible]
     def catalog_track(t):
-        row={k:t.get(k) for k in ('id','title','artist','bpm','camelot','genre','duration','year','remix')}
+        row={k:t.get(k) for k in ('id','title','artist','label','bpm','camelot','genre','duration','year','remix')}
         if t['id'] not in eligible:
             row.update(selectionEligible=False,selectionReason='This recording is unavailable.' if t['id'] in unavailable else
                        'This song was already heard in this run.' if song_identity(t)[0] in heard else
@@ -244,7 +245,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         'catalog':[catalog_track(t) for t in list(ordered.values())[:None if full else 32]],
         'requestedIds':requested,
         'discoveryHints':dj_discovery.DISCOVERY.hints(style, list(candidates.values())),
-        'discoveryPolicy':'Genre-tagged popularity is a community discovery signal, not a dated chart position. The iTunes rank, when present, is for the US Dance store chart, not a House chart. Use hints only as catalog search leads. Favor artist and label variety, preserve explicit requests, and choose only verified catalog IDs.' ,
+        'discoveryPolicy':'Genre popularity is a community signal. Report only supplied chart ranks with their source and scope. Favor artist and label variety, use hints as search leads, and choose only verified catalog IDs.',
         'pinnedIds':list(s.get('setPins',[])),
         'fulfilledPinnedIds':set_plan.played_pins(s),
         'catalogScope':'Bounded selection context, prioritized for the latest operator request; omitted records are not evidence of absence.',
@@ -559,7 +560,7 @@ def crate_rows(records, working, anchor, limit, blocked=lambda track_id:None):
         key=song_identity(t)[0]
         if key in songs:continue
         songs.add(key);known.add(tid)
-        row={k:t.get(k) for k in ('id','title','artist','bpm','camelot','genre','duration','year','remix')}
+        row={k:t.get(k) for k in ('id','title','artist','label','bpm','camelot','genre','duration','year','remix')}
         bpm=row['bpm'] if isinstance(row['bpm'],(int,float)) and not isinstance(row['bpm'],bool) and row['bpm']>0 else None
         pitch=(anchor/bpm-1)*100 if anchor and bpm else None
         row.update(pitchAtSetTempo=round(pitch,2) if pitch is not None else None,

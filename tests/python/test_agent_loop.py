@@ -149,7 +149,8 @@ class LookupTests(unittest.TestCase):
         changes=[abs(row['tempoChangePercent']) for row in result['matches']]
         self.assertEqual(changes,sorted(changes))
         self.assertEqual(result['playable'],sum(1 for r in crate() if r['id']!='t01' and abs((125/r['bpm']-1)*100)<=8))
-        self.assertEqual(set(result['matches'][0]),{'id','title','artist','bpm','camelot','genre','tempoChangePercent','harmonicCompatible','preparedCue','queuePosition'})
+        self.assertEqual(set(result['matches'][0])-{'relationships'},{'id','title','artist','bpm','camelot','genre','tempoChangePercent','harmonicCompatible','preparedCue','queuePosition'})
+        self.assertTrue(any('sharedGenre' in row.get('relationships',[]) for row in result['matches']))
         text,detail=book.describe('suggest_next',{'afterId':'t01','limit':8},result)
         self.assertEqual(text,'Looked for what can follow Warm Start')
         self.assertEqual(detail,f" · {result['playable']} within the tempo limit · {result['compatibleKey']} in a compatible key")

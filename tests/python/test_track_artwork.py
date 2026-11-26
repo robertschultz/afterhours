@@ -7,7 +7,7 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from urllib.request import urlopen
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from afterhours.track_artwork import TrackArtwork, beatport_cover, recording_id
 from afterhours.vdj_catalog import identity
@@ -15,6 +15,7 @@ from afterhours.vdj_catalog import identity
 
 XML_COVER='https://geo-media.beatport.com/image_size/1400x1400/11111111-aaaa-aaaa-aaaa-111111111111.jpg'
 CACHE_COVER='https://geo-media.beatport.com/image_size/500x500/22222222-bbbb-bbbb-bbbb-222222222222.jpg'
+APPLE_COVER='https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/11/22/33/fixture.jpg/800x800bb.jpg'
 
 
 class TrackArtworkTests(unittest.TestCase):
@@ -40,6 +41,38 @@ class TrackArtworkTests(unittest.TestCase):
         self.assertEqual(self.art.lookup(sid)['url'],XML_COVER)
         self.assertIsNone(self.art.lookup(recording_id(124)))
         self.assertIsNone(self.art.lookup('virtualdj:'+identity('netsearch://va123')))
+    def test_apple_and_beatport_art_share_an_opaque_url_contract(self):
+        self.xml([('netsearch://ap123', APPLE_COVER), ('netsearch://bp123', XML_COVER),
+                  ('netsearch://bp124', APPLE_COVER), ('netsearch://ap124', XML_COVER)])
+        self.assertEqual(self.art.refresh(), 2)
+        apple = 'virtualdj:' + identity('netsearch://ap123')
+        beatport = recording_id(123)
+        self.assertNotEqual(apple, beatport)
+        result = self.art.decorate({'library': [{'id': apple}], 'nextTrack': {'id': beatport}})
+        self.assertEqual(self.art.lookup(apple)['provider'], 'apple-music')
+        self.assertEqual(result['library'][0]['artworkPath'], '/api/track-artwork/'+identity('netsearch://ap123'))
+        self.assertEqual(result['nextTrack']['artworkPath'], '/api/track-artwork/'+identity('netsearch://bp123'))
+
+    def test_fetch_only_serves_bounded_image_payloads_for_an_exact_id(self):
+        self.xml([('netsearch://ap123', APPLE_COVER)])
+        self.art.refresh()
+        opener = Mock()
+        response = Mock()
+        response.headers.get_content_type.return_value = 'image/jpeg'
+        response.read.return_value = b'\xff\xd8\xffvalid'
+        from contextlib import nullcontext
+        opener.open.return_value = nullcontext(response)
+        apple = 'virtualdj:' + identity('netsearch://ap123')
+        self.assertEqual(self.art.fetch(apple, opener), ('image/jpeg', b'\xff\xd8\xffvalid'))
+        self.assertEqual(opener.open.call_args.args[0].full_url, APPLE_COVER)
+        response.read.return_value = b'0' * 2_000_001
+        self.assertIsNone(self.art.fetch(apple, opener))
+        response.headers.get_content_type.return_value = 'text/html'
+        self.assertIsNone(self.art.fetch(apple, opener))
+        opener.reset_mock()
+        self.assertIsNone(self.art.fetch(recording_id(123), opener))
+        opener.open.assert_not_called()
+
     def test_provider_cache_preferred_and_read_only(self):
         self.xml([('netsearch://bp123',XML_COVER)])
         path=self.cache([(123,CACHE_COVER),(124,None),(125,'https://unrelated.example/cover.jpg')])
@@ -104,6 +137,14 @@ class TrackArtworkTests(unittest.TestCase):
                     patch.object(server,'vdj_request',side_effect=AssertionError('audio command on artwork read')):
                 with urlopen(f'http://127.0.0.1:{httpd.server_port}/api/set-session',timeout=2) as response:
                     result=json.load(response)
+                with urlopen(f'http://127.0.0.1:{httpd.server_port}/api/set-session?view=live',timeout=2) as response:
+                    compact=json.load(response)
+                self.assertEqual(result['order'][0]['artworkPath'], compact['order'][0]['artworkPath'])
+                with patch.object(self.art,'fetch',return_value=('image/jpeg',b'fixture')) as fetch:
+                    with urlopen(f'http://127.0.0.1:{httpd.server_port}'+result['order'][0]['artworkPath'],timeout=2) as response:
+                        self.assertEqual(response.headers.get_content_type(),'image/jpeg')
+                        self.assertEqual(response.read(), b'fixture')
+                    fetch.assert_called_once_with(recording_id(123))
                 self.assertEqual(result['order'][0]['artworkUrl'],XML_COVER)
                 self.assertFalse(result['active']);self.assertEqual(state['order'],[{'id':recording_id(123)}])
         finally:httpd.shutdown();httpd.server_close();worker.join(2)

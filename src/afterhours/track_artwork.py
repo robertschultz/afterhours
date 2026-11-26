@@ -1,4 +1,4 @@
-"""Read Beatport artwork already supplied to VirtualDJ, away from audio work.
+"""Read public catalog artwork already supplied to VirtualDJ, away from audio work.
 
 Only public cover metadata is read. No provider credentials, audio downloads,
 title matching, provider login, or paid image generation is involved.
@@ -10,26 +10,35 @@ import hashlib
 import re
 import sqlite3
 import threading
-from urllib.parse import urlsplit
+from urllib.request import build_opener, HTTPRedirectHandler, Request
+from afterhours.native_sources import BEATPORT, SOURCES, catalog_reference
 import xml.etree.ElementTree as ET
 
 VDJ_ROOT=Path.home()/'Library/Application Support/VirtualDJ'
 
 
 def beatport_cover(value):
-    if not isinstance(value,str) or len(value)>2048:return None
-    try:
-        url=urlsplit(value)
-        if (url.scheme!='https' or url.hostname not in ('geo-media.beatport.com','media.beatport.com')
-                or url.username or url.password or url.port not in (None,443)
-                or url.query or url.fragment or not re.fullmatch(r'/image_size/\d{1,4}x\d{1,4}/[a-fA-F0-9-]+\.(?:jpg|jpeg|png|webp)',url.path)):
-            return None
-    except ValueError:return None
-    return value
+    return BEATPORT.cover(value)
 
 
 def recording_id(track_id):
     return 'virtualdj:'+hashlib.sha256(f'netsearch://bp{track_id}'.encode()).hexdigest()
+
+
+def artwork_path(track_id):
+    if isinstance(track_id, str) and re.fullmatch(r'virtualdj:[a-f0-9]{64}', track_id):
+        return '/api/track-artwork/'+track_id.removeprefix('virtualdj:')
+    return None
+
+
+class NoArtworkRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, message, headers, url):
+        return None
+
+
+ARTWORK_OPENER = build_opener(NoArtworkRedirect())
+IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
+MAX_COVER_BYTES = 2_000_000
 
 
 class TrackArtwork:
@@ -46,10 +55,14 @@ class TrackArtwork:
             if path.stat().st_size<=64_000_000:
                 for _,song in ET.iterparse(path,events=('end',)):
                     if song.tag!='Song':continue
-                    match=re.fullmatch(r'netsearch://bp([1-9][0-9]{0,11})',song.get('FilePath',''))
-                    link=song.find('Link')
-                    cover=beatport_cover(link.get('Cover') if link is not None else None)
-                    if match and cover:found[recording_id(match[1])]={'url':cover,'provider':'beatport','trackId':match[1],'source':'virtualdj.database'}
+                    locator = song.get('FilePath','')
+                    provider, provider_id = catalog_reference(locator)
+                    link = song.find('Link')
+                    cover = provider.cover(link.get('Cover')) if provider and link is not None else None
+                    if cover:
+                        exact_id = 'virtualdj:'+hashlib.sha256(locator.encode()).hexdigest()
+                        found[exact_id] = {'url':cover, 'provider':provider.id, 'trackId':provider_id,
+                                           'source':'virtualdj.database'}
                     song.clear()
         except (OSError,ET.ParseError):pass
         # Prefer the provider's own cached artwork over a general VDJ cover link.
@@ -72,17 +85,41 @@ class TrackArtwork:
     def lookup(self,track_id):
         with self.lock:return copy.deepcopy(self.index.get(track_id))
 
+    def fetch(self, track_id, opener=ARTWORK_OPENER):
+        evidence = self.lookup(track_id)
+        if not evidence:
+            return None
+        provider = next((p for p in SOURCES.values() if p.id == evidence['provider']), None)
+        url = provider.cover(evidence['url']) if provider else None
+        if not url:
+            return None
+        try:
+            request = Request(url, headers={'Accept':'image/jpeg, image/png, image/webp'})
+            with opener.open(request, timeout=4) as response:
+                media = response.headers.get_content_type()
+                content = response.read(MAX_COVER_BYTES + 1) if media in IMAGE_TYPES else b''
+                if content and len(content) <= MAX_COVER_BYTES:
+                    return media, content
+        except OSError:
+            return None
+        return None
+
     def decorate(self,session):
         """Enrich a read snapshot; never modify the engine's planning state."""
         result=copy.deepcopy(session)
         with self.lock:art=dict(self.index)
         rows=list(result.get('order') or [])+list(result.get('candidates') or [])
+        rows += list((result.get('queuedUpdate') or {}).get('tracks') or [])
+        rows += list(result.get('library') or ())
+        if result.get('nextTrack'):
+            rows.append(result['nextTrack'])
         rows+=list((result.get('telemetry') or {}).get('decks') or [])
         rows+=list((result.get('backgroundAnalysis') or {}).get('decks') or [])
         for row in rows:
             evidence=art.get(row.get('id') or row.get('trackId'))
             if evidence:
                 row['artworkUrl']=evidence['url'];row['artwork']={**evidence}
+                row['artworkPath'] = artwork_path(row.get('id') or row.get('trackId'))
         return result
 
     def start(self):

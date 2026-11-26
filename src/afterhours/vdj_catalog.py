@@ -11,6 +11,7 @@ import time
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.track_metadata import vdj_track
 from afterhours.native_recording import ExactRecording
+from afterhours.native_sources import catalog_reference
 
 
 def identity(value):
@@ -60,8 +61,10 @@ def selection(client, include_details=False):
     locator = text_value(client.query("get_browsed_filepath", "text"))
     if not locator:
         return None
+    source, provider_id = catalog_reference(locator)
     track = {
         "id": identity(locator),
+        "catalog": {"provider": source.id, "track_id": provider_id} if source else None,
         "title": text_value(client.query("get_browsed_title", "text")),
         "artist": text_value(client.query("get_browsed_artist", "text")),
         "bpm": client.query("get_browsed_bpm"),

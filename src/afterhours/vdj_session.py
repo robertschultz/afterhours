@@ -235,9 +235,19 @@ class DJSession:
         with self.lock:
             return self.state['active']
 
-    def snapshot(self):
+    def snapshot(self, *, compact=False):
         with self.lock:
-            result = copy.deepcopy(self.state)
+            source = self.state
+            if compact:
+                excluded = {'analysis', 'aiReview', 'transitions', 'tempoSchedule'}
+                source = {key: value for key, value in source.items() if key not in excluded}
+                plan = source.get('executionPlan')
+                if plan:
+                    source['executionPlan'] = {key: plan.get(key) for key in ('id','applied')}
+                queued = source.get('queuedUpdate')
+                if queued:
+                    source['queuedUpdate'] = {key: queued.get(key) for key in ('id','tracks','status','reason')}
+            result = copy.deepcopy(source)
             result['catalogFolder'] = copy.deepcopy(self.folder)
         result['copilotContext'] = copilot_commands.context(result)
         result['copilot']['supportedCommands'] = ['hold', 'go', 'skip', 'off', 'on', 'mix', 'resume']

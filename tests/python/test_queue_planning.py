@@ -143,6 +143,16 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
         self.assertEqual(self.session.state['queuedUpdate']['protectedIds'], ['a','b'])
 
+    def test_timed_queue_prepares_explicit_opening_tail_in_order(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            timedContinuation=[self.tracks[-1], self.tracks[-2]],
+                            entryCadence=[60,30], executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session, 30)
+        state = self.session.snapshot()
+        self.assertEqual([row['id'] for row in state['queuedUpdate']['tracks']], ['a','b','x'])
+        self.assertEqual([row['id'] for row in state['timedContinuation']], ['d'])
+
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})

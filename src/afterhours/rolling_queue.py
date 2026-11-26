@@ -75,6 +75,11 @@ class RollingQueue:
                     set_slot=set_slot(str(state.get('agentDirection') or '')))
             else:
                 candidates = sorted(candidates, key=score)
+            deferred = state.get('timedContinuation') or []
+            if deferred:
+                ranked = {t['id']: t for t in candidates}
+                requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
+                candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
             for track in candidates:
                 if session.cancel.is_set():
                     return
@@ -84,6 +89,8 @@ class RollingQueue:
                 except (ValueError, BridgeError):
                     continue
                 session.state['queuedUpdate']['rollingTrackId']=track['id']
+                if deferred:
+                    session.update(timedContinuation=[t for t in deferred if t['id'] != track['id']])
                 if timed_set:
                     session.event(f"Selected {track['title']} for the next measured queue slot.", 'queue',
                                   trackId=track['id'], currentCatalogMatch=track['id'] in self.live_matches,

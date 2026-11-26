@@ -222,16 +222,21 @@ def start_and_prepare(session,client,requested):
                       segmentBeats=window['endBeat']-startup['entryBeat'])
         plan['applied']=True;startup.update(status='ready',preparedAt=time.time(),skipped=copy.deepcopy(skipped))
         future=None
+        deferred=[]
         if len(order)>len(pair):
             checked={t['id']:t for t in pair};order=[copy.deepcopy(checked.get(t['id'],t)) for t in order]
-            future={'id':uuid.uuid4().hex,'tracks':order,'protectedIds':[t['id'] for t in pair],
+            next_tracks = order
+            if snapshot.get('entryCadence') and snapshot.get('rollingQueue') and can_omit and not targets:
+                next_tracks = order[:len(pair)+1]
+                deferred = order[len(pair)+1:]
+            future={'id':uuid.uuid4().hex,'tracks':next_tracks,'protectedIds':[t['id'] for t in pair],
                     'status':'needs-analysis','reason':'Continue the selected session after the opening pair.',
                     'prepared':None,'mixTransitions':None,'tempoTargets':targets,
                     'startId':startup['id'],'skipped':copy.deepcopy(skipped),
                     'sourceById':copy.deepcopy(policy.get('sourceById',{}))}
         current_ids={t['id'] for t in pair}
         policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in current_ids}}
-        s.update(order=pair,**prepared,queuedUpdate=future,setlist=policy,startup=copy.deepcopy(startup),
+        s.update(order=pair,**prepared,queuedUpdate=future,timedContinuation=deferred,setlist=policy,startup=copy.deepcopy(startup),
                  tempoTargets=subset['tempoTargets'],mixPlans=plan['transitions'],
                  backgroundAnalysis={**job.snapshot(),'status':'ready','message':'Opening handoff verified. Music has continued playing.'})
         with s.lock:

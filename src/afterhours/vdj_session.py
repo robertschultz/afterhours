@@ -257,6 +257,7 @@ class DJSession:
         protected.update(t['id'] for t in (self.state.get('queuedUpdate') or {}).get('tracks', []))
         protected.update((self.state.get('setlist') or {}).get('lockedIds', []))
         protected.update(self.state.get('setPins',[]))
+        protected.update(t['id'] for t in self.state.get('timedContinuation', []))
         protected.update(t.get('id') for t in (self.state.get('telemetry') or {}).get('decks', []) if t.get('loaded'))
         records = self.state['candidates']
         kept = {t['id'] for t in records if t['id'] in protected}
@@ -2288,7 +2289,7 @@ class DJSession:
         def work(client):
             nonlocal order,planned
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
-                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs)
+                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[])
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):

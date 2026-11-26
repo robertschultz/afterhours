@@ -82,6 +82,23 @@ class OpeningTests(unittest.TestCase):
         prepared=measured_plan(s.snapshot(),s.state['order'][:2],report['tracks'][:2],{'beatPosition':12,'bpm':155})
         self.assertEqual(prepared['executionPlan']['selections'][0]['id'],early['id'])
 
+    def test_rolling_set_leaves_verified_exit_runway_on_the_incoming_record(self):
+        s,report,_,_,_=self.setup_session()
+        incoming=report['tracks'][1]
+        early=incoming['cueCandidates'][0]
+        early['entry']['levelVariationDb']=7
+        late=copy.deepcopy(early)
+        late['id']='late-quiet-entrance'
+        late['entry']['levelVariationDb']=0
+        for field in ('entryBeat','exitBeat','endBeat'):late[field]+=320
+        for field in ('entrySeconds','introEndSeconds','exitSeconds','endSeconds'):late[field]+=320*60/155
+        incoming['cueCandidates'].append(late)
+        args=(s.state['order'][:2],report['tracks'][:2],{'beatPosition':12,'bpm':155})
+        ordinary=measured_plan(s.snapshot(),*args)
+        rolling=measured_plan({**s.snapshot(),'rollingQueue':{'status':'ready'}},*args)
+        self.assertEqual(ordinary['executionPlan']['selections'][1]['id'],late['id'])
+        self.assertEqual(rolling['executionPlan']['selections'][1]['id'],early['id'])
+
     def test_analysis_timeout_holds_handoff_without_replaying_or_stopping_opening(self):
         s,_,trace,playing,_=self.setup_session()
         job=Mock(done=True,error='Audio analysis did not settle in time.',analysis_timed_out=True,cache={})

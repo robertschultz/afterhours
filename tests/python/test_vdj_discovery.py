@@ -46,9 +46,11 @@ class DiscoveryTests(unittest.TestCase):
             now[0]=2;job.step(None);job.step(None)
             state=s.snapshot()['catalogSearch'];self.assertEqual((state['examined'],state['added']),(1,1))
             self.assertEqual(state['foundIds'],['one'])
+            self.assertEqual(state['browseRows'],[row['metadata']])
             # Reading an existing row is progress, never another found track.
             job.step(None);state=s.snapshot()['catalogSearch'];self.assertEqual((state['examined'],state['added']),(2,1))
             self.assertEqual(state['foundIds'],['one'])
+            self.assertEqual(state['browseRows'],[row['metadata']])
             self.assertEqual(s.snapshot()['order'],[])
 
     def test_opening_search_keeps_old_finds_and_commits_after_three_new_recordings(self):

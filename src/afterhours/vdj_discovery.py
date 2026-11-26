@@ -1,9 +1,15 @@
 """Cooperative metadata-only crate discovery. Never loads, seeks or plays audio."""
+from collections import deque
 import copy
 import re
 import time
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_catalog import folder_state, selection, search_literal
+
+
+def remember_browse_row(rows, track):
+    if rows and rows[-1]['id']==track['id']:return
+    rows.append({key:track.get(key) for key in ('id','title','artist','genre','bpm')})
 
 
 class CatalogSearch:
@@ -20,7 +26,7 @@ class CatalogSearch:
         self.term_index=0;self.position=0;self.added=0;self.per_term=0
         self.matched=0;self.seen=set()
         self.phase='begin';self.ready_at=0;self.deadline=None;self.done=False
-        self.last_id=None;self.repeated=0
+        self.last_id=None;self.repeated=0;self.browse_rows=deque(maxlen=12)
         # A set opening can reuse its first matching records immediately.
         # An explicit import or expansion must dig beyond known archive rows.
         opening=not session.snapshot().get('order') and not recheck_missing
@@ -35,7 +41,7 @@ class CatalogSearch:
             **({'externalRequestId':self.external_request_id} if self.external_request_id else {}),
             'term':self.terms[min(self.term_index,len(self.terms)-1)],'filters':copy.deepcopy(self.filters),
             'examined':self.examined,'added':self.added,'matched':self.matched,
-            'foundIds':sorted(self.seen)[:32],'message':message,'updated':time.time()})
+            'foundIds':sorted(self.seen)[:32],'browseRows':list(self.browse_rows),'message':message,'updated':time.time()})
         if self.external_finish and status in ('complete','error'):
             self.external_finish('confirmed' if status=='complete' else 'blocked',
                 'The engine recorded the catalog search outcome.',
@@ -82,6 +88,7 @@ class CatalogSearch:
         if selected:
             self.repeated=self.repeated+1 if selected['id']==self.last_id else 0;self.last_id=selected['id']
             track=selected['metadata'];bpm=track.get('bpm')
+            remember_browse_row(self.browse_rows,track)
             if self.recheck_missing:self.session.availability.found_again(track['id'])
             matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))
@@ -126,10 +133,11 @@ class CrateDig:
         self.position=0;self.term_examined=0;self.term_added=0
         self.examined=0;self.added=0;self.terms_done=0
         self.last_id=None;self.repeated=0;self.empty=0;self.term_seen=0;self.done=False
+        self.browse_rows=deque(maxlen=12)
 
     def publish(self,status,message=''):
         self.session.update(crateDig={'status':status,'term':self.term,'examined':self.examined,'added':self.added,
-            'termsDone':self.terms_done,'crateCount':self.session.crate.summary()['count'],
+            'termsDone':self.terms_done,'browseRows':list(self.browse_rows),'crateCount':self.session.crate.summary()['count'],
             'message':message,'updated':time.time()})
 
     def stop(self,status,message):
@@ -154,6 +162,7 @@ class CrateDig:
         self.terms_done+=1
         self.publish('digging',f'{self.added} recordings added to the crate.')
         self.term=None
+        self.browse_rows.clear()
 
     def fault(self,message,passing=False):
         """End the dig after a fault and set its name aside, so it is not searched again at once.
@@ -202,6 +211,7 @@ class CrateDig:
             self.empty=0;self.term_seen+=1
             self.repeated=self.repeated+1 if selected['id']==self.last_id else 0;self.last_id=selected['id']
             track=selected['metadata']
+            remember_browse_row(self.browse_rows,track)
             if not self.repeated and not s.availability.blocked(track['id']):
                 # One row the crate refuses is skipped; the name carries on.
                 try:_,inserted=s.crate.upsert(track,source='dig',query=self.term,position=self.position)
@@ -214,6 +224,6 @@ class CrateDig:
             self.empty+=1
         if self.empty>=self.EMPTY_READS or self.repeated>=2 or self.position>=self.MAX_ROWS:
             self.finish_term();return
-        if self.examined%self.PUBLISH_EVERY==0:
+        if (selected and not self.repeated) or self.examined%self.PUBLISH_EVERY==0:
             self.publish('digging',f'{self.added} recordings added to the crate.')
         s.send(client,'browser_scroll +1')

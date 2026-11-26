@@ -79,6 +79,8 @@ class TrackArtwork:
         rows=list(result.get('order') or [])+list(result.get('candidates') or [])
         rows+=list((result.get('telemetry') or {}).get('decks') or [])
         rows+=list((result.get('backgroundAnalysis') or {}).get('decks') or [])
+        rows+=list((result.get('catalogSearch') or {}).get('browseRows') or [])
+        rows+=list((result.get('crateDig') or {}).get('browseRows') or [])
         for row in rows:
             evidence=art.get(row.get('id') or row.get('trackId'))
             if evidence:

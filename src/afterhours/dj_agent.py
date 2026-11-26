@@ -1718,13 +1718,16 @@ class DJAgent:
                 self.clarification=None
                 query=playback_requests.named_query(text) if source=='voice' and transport=='fresh-start' else None
                 if query and self.settings.state['discover'] and dj_settings.lead(self.session.snapshot())=='all':
+                    _,artist=playback_requests.named_recording(query)
+                    search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(query)
+                        self.session.discover_more(search)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
                         return self.snapshot()
                     self.searches.add(query);self.search_rounds=1
                     self.playback_request['fastOpeningQuery']=query
+                    if search!=query:self.playback_request['fastOpeningSearch']=search
                     self.awaiting_catalog=True;self.search_from_turn=True
                     summary='Searching the crate for '+query+'.'
                     self.playback_request['message']=summary
@@ -1815,7 +1818,7 @@ class DJAgent:
             catalog_ready=self.awaiting_catalog and (catalog.get('status') in ('complete','error') or s.get('phase')=='catalog-ready')
             request=self.playback_request or {}
             if (catalog_ready and catalog.get('status')=='complete' and request.get('fastOpeningQuery')
-                    and dj_discovery.normalized(catalog.get('query'))==dj_discovery.normalized(request['fastOpeningQuery'])
+                    and dj_discovery.normalized(catalog.get('query'))==dj_discovery.normalized(request.get('fastOpeningSearch') or request['fastOpeningQuery'])
                     and request.get('status')=='choosing' and request.get('sessionId')==s.get('id')
                     and request.get('revision')==self.state['revision'] and self.clock()<request['expiresAt']
                     and not s.get('active') and not s.get('order') and not mixing_only
@@ -2528,7 +2531,9 @@ class DJAgent:
         self.session_scope={**scope,'sessionId':session['id'],'revision':revision,'orderIds':list(order)}
         if not pending and scope['mode']=='finite' and packet['reason']=='operator message' and session.get('active'):
             self.curation.end('revoked','The DJ is keeping this run to the finite selection requested.')
-            if request.get('status')=='playing':request['scope']='finite'
+            if request.get('status')=='playing':
+                request['scope']='finite'
+                if session.get('rollingQueue'):self.session.update(rollingQueue=None)
         if pending:
             request.update(status='choosing',scope=scope['mode'])
             self.clarification=None
@@ -2706,7 +2711,9 @@ class DJAgent:
         if any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):
             return fail('A deck started manually. The pending automatic start was cancelled.')
         request.update(status='starting',message='Starting the opening recording.')
-        try:self.session.start(initialize_mixer=True,immediate=True)
+        rolling=(request.get('source')=='voice' and request.get('scope')!='finite' and self.settings.state['discover']
+                 and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
+        try:self.session.start(initialize_mixer=True,immediate=True,**({'rolling_queue':True} if rolling else {}))
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')
         self.save();return True

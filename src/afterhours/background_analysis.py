@@ -170,6 +170,7 @@ class BackgroundAnalysis:
         self.session=session;self.revision=revision;self.tracks=copy.deepcopy(tracks)
         self.cache=copy.deepcopy(cache or {});self.pending=queue.Queue(maxsize=1)
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
+        self.catalog_miss=None
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -329,7 +330,7 @@ class BackgroundAnalysis:
                 return
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
     def run(self):
-        from afterhours.vdj_session import DJSession, RecordingUnavailable
+        from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
         from afterhours.cue_planner import LimitedAudio
         helper=DJSession(threading.Lock(),crate=getattr(self.session,'crate',None),
                          recordings=getattr(self.session,'recordings',None),
@@ -370,9 +371,11 @@ class BackgroundAnalysis:
             self.status='cancelled';self.message='Background preparation paused; verified measurements were kept.'
         except (RecordingUnavailable,LimitedAudio) as exc:
             code='recording-unavailable' if isinstance(exc,RecordingUnavailable) else 'limited-decoded-audio'
+            if isinstance(exc,RecordingUnavailable):self.catalog_miss=track['id']
             self.session.availability.record(track['id'],code,str(exc))
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         except Exception as exc:
+            if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True

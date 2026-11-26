@@ -15,6 +15,12 @@ def named_query(text):
     return query if 2<=len(query)<=120 and ';' not in query else None
 
 
+def named_recording(query):
+    if not isinstance(query,str):return None,None
+    title, separator, artist = query.rpartition(' by ')
+    return (title, artist) if separator and title and artist else (None, None)
+
+
 def ready_opening(snapshot):
     """Go may start only the exact applied opening that has never run.
 
@@ -52,7 +58,7 @@ def queue_intent(value):
 
 def normalized_intent(text):
     if not isinstance(text, str):return None
-    value=' '.join(text.casefold().replace('’',"'").strip().split()).rstrip('.!?')
+    value=' '.join(text.casefold().replace('’',"'").split()).strip(' .!?')
     value=re.sub(r'^(?:hey )?dot[, ]+', '', value)
     value=re.sub(r'^(?:ok(?:ay)?[, ]+|yes[, ]+)', '', value)
     value=re.sub(r'^(?:can|could|would|will) (?:you|we) (?:please )?', '', value)

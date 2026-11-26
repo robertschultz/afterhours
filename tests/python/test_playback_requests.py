@@ -13,7 +13,7 @@ from test_dj_agent import decision,settled
 
 
 class PlaybackSession(ScenarioSession):
-    def start(self,initialize_mixer=False,immediate=False):
+    def start(self,initialize_mixer=False,immediate=False,rolling_queue=False):
         assert immediate is True
         assert initialize_mixer is True
         self.calls.append(('start',))
@@ -521,7 +521,7 @@ class PauseWordTests(unittest.TestCase):
     def test_plain_pause_and_stop_phrasings_stop_the_music(self):
         from afterhours import playback_requests
         for text in ('pause','Pause.','can you pause?','pause it','pause please','pause playback','pause the set','pause the track',
-                     'stop it','stop the track','stop playback','hold the music','Stop the music now.',
+                     'stop it','stop the track','stop playback','hold the music','Stop the music now.', '. Stop the music now',
                      'Hey Dot, could you stop the music right now?', 'Dot, pause playback, please.'):
             self.assertEqual(playback_requests.intent(text),'stop',text)
 

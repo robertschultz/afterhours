@@ -15,6 +15,7 @@ class PreparationPool:
         self.session=session;self.revision=revision;self.tracks=copy.deepcopy(tracks)
         self.cache=copy.deepcopy(cache or {});self.result=[];self.jobs=[];self.pending=[]
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
+        self.catalog_miss=None
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
@@ -38,12 +39,18 @@ class PreparationPool:
             job.close(client);job.pool_closed=True
             if unfinished:
                 job.done=True;self.pending[:0]=copy.deepcopy(job.tracks)
-            elif job.error:self.error=job.error;self.analysis_timed_out=job.analysis_timed_out;self.done=True
+            elif job.error:self.remember_failure(job)
             else:self.result.extend(job.result)
 
     def invalidate_catalog(self):
         for job in self.jobs:
             if not job.done:job.invalidate_catalog()
+
+    def remember_failure(self,job):
+        self.error=job.error
+        self.analysis_timed_out=job.analysis_timed_out
+        self.catalog_miss=getattr(job,'catalog_miss',None)
+        self.done=True
 
     def step(self,client,seconds_available):
         self.suspended=seconds_available<12
@@ -59,7 +66,7 @@ class PreparationPool:
         for job in self.jobs:
             if job.done and not getattr(job,'pool_closed',False):
                 self.cache.update(job.cache);job.close(client);job.pool_closed=True
-                if job.error:self.error=job.error;self.analysis_timed_out=job.analysis_timed_out;self.done=True;return
+                if job.error:self.remember_failure(job);return
                 self.result.extend(job.result)
         active=[j for j in self.jobs if not j.done]
         # A loading child owns the shared catalog. Its measured scan can share

@@ -344,6 +344,14 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         if not candidates:raise ValueError('No replay-verified cue for a queued recording.')
         cue=next((c for c in candidates if previous and c['id']==previous['candidateId']),None)
         if cue is None:
+            if snapshot.get('rollingQueue'):
+                usable=[c for c in candidates if c['maxBlendBeats']>=8]
+                if usable:
+                    last_exit=max(c['exitSeconds'] for c in usable)
+                    reserve=[c for c in usable if last_exit-c['exitSeconds']>=45]
+                    # An entrance near the end can exhaust every verified
+                    # exit while the next record is still being prepared.
+                    candidates=reserve or [min(usable,key=lambda c:c['exitSeconds'])]
             def cost(c):
                 before=cues[-1]['exit'] if cues else c['entry']
                 return (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])

@@ -294,9 +294,23 @@ class TransitionMixer:
         self.resume_controls.pop(outgoing,None)
         return actual
 
-    def validate_armed(self, client):
+    def fallback_from_unready_stems(self, client):
+        if self.lead_mode!='stems' or all(self.stems_ready(client,d) for d in (self.outgoing,self.incoming)):
+            return False
+        if (as_bool(self.q(client,f'deck {self.incoming} play','bool'))
+                or abs(value(self.q(client,'crossfader'))-deck_rotation.crossfader_end(self.outgoing))>.02):
+            raise MixerControlChanged('The incoming channel is no longer silent. No transition was started.')
+        self.validate_armed(client,check_stems=False)
+        self.armed[self.incoming]=self.set_controls(client,self.incoming,
+            {'eq_mid_freq':0,**dict.fromkeys(LEAD_CONTROLS,.5)})
+        self.lead_mode='frequency-eq'
+        self.recipe.update(leadControl=self.lead_mode,
+            leadControlNote='Stems lost readiness before the mix; midrange EQ reduces overlap but cannot isolate vocals.')
+        return True
+
+    def validate_armed(self, client, *, check_stems=True):
         # Called before Mix, not after an incoming deck has become audible.
-        if self.lead_mode=='stems' and not all(self.stems_ready(client,d) for d in (self.outgoing,self.incoming)):
+        if check_stems and self.lead_mode=='stems' and not all(self.stems_ready(client,d) for d in (self.outgoing,self.incoming)):
             raise BridgeError('High-quality stems are no longer ready. No transition was started.')
         for deck,target in self.armed.items():
             actual=self.read(client,deck)

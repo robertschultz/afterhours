@@ -23,7 +23,7 @@ from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlCh
 from afterhours.native_analysis import track_analysis
 from afterhours.audio_analysis import scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.opening_playback import OpeningHandoffHeld
+from afterhours.opening_playback import OpeningHandoffHeld, confirm_started
 from afterhours import cue_planner
 from afterhours import ai_mix
 from afterhours import tempo_planner
@@ -1430,6 +1430,9 @@ class DJSession:
                     failure=preview_failure(self.availability,self.state['queuedUpdate']['tracks'],str(exc))
                     self.state['queuedUpdate'].update(status='blocked',error=str(exc))
                     self.state['queuedUpdate'].pop('failure',None)
+                    miss=getattr(job,'catalog_miss',None)
+                    if not cleanup_failed and miss and self.state['queuedUpdate'].get('rollingTrackId')==miss:
+                        self.state['queuedUpdate']['catalogMissId']=miss
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
@@ -1484,6 +1487,26 @@ class DJSession:
                               tempoTargets=copy.deepcopy(prepared['analysis'].get('tempoTargets')))
             self.event('Prepared queue revision adopted at the handoff. Playing cue preserved.','queue-applied')
             return copy.deepcopy(order),copy.deepcopy(plan)
+
+    def final_preparation_runway(self, track, index, current):
+        """Time to prepare a staged continuation on the existing recording."""
+        with self.lock:
+            if self.state['copilot']['mode']=='off':return 0
+            queued=self.state.get('queuedUpdate') or {}
+            tracks=queued.get('tracks',[])
+            staged=(queued.get('status') in ('needs-analysis','analyzing','ready')
+                    and len(tracks)>index+1 and tracks[index]['id']==track['id'])
+            rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
+                     and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
+            if not staged and not (rolling and (not queued or queued.get('catalogMissId'))):
+                return 0
+        duration_ms=(current.get('controls') or {}).get('durationMs')
+        position=current.get('position')
+        if (type(duration_ms) not in (int,float) or not math.isfinite(duration_ms)
+                or type(position) not in (int,float) or not math.isfinite(position) or position<0):
+            return 0
+        # Leave a margin for tempo adjustment and the last native readbacks.
+        return max(0,(duration_ms/1000-position)/1.08-4)
 
     def edit_setlist(self, operation, track_id=None, value=None, ids=None):
         """Edit preparation state only; never issue audio commands."""
@@ -2317,21 +2340,18 @@ class DJSession:
                                         0 if final else planned['transitions'][index]['fadeBeats'],final)
                 self.availability.require_track(order[index])
                 self.send(client,f'deck {active} play')
-                self.sleep(.2)
-                t=self.telemetry(client)
+                t=confirm_started(self,client,active,order[index]['id'],checked['beatPosition'])
                 copilot_commands.playing_pair({**snapshot,'telemetry':t})
             if not resume and not immediate:
                 self.availability.require_track(order[0])
                 self.send(client, 'deck 1 play')
-                self.sleep(.2)
-                t = self.telemetry(client)
-                if not t['decks'][0]['playing']:
-                    raise BridgeError('Start was not confirmed. No retry was sent.')
+                t=confirm_started(self,client,1,order[0]['id'],t['decks'][0]['beatPosition'])
             self.update(phase='playing', startedAt=self.snapshot().get('startedAt') if immediate or resume else time.time(), endedAt=None, message=f"Playing {order[index]['title']}")
             with self.lock:
                 self.state['copilot'].update(mode='mix' if self.state['copilot']['mode']=='mix' else 'leading', held=False)
             self.event(f"Set {'resumed' if resume else 'started'} · {order[index]['title']}", 'playing')
             resumed_index = index if resume else None
+            return_to_verified_exit=False
             while index<len(order):
                 track=order[index]
                 self.update(index=index)
@@ -2373,7 +2393,13 @@ class DJSession:
                         raise MixerControlChanged('Deck tempos moved after alignment. No transition was sent.')
                     resume_window=copilot_commands.retime({**self.snapshot(),'order':order,'executionPlan':planned,'index':index},current,
                                                          0 if final else recipe['fadeBeats'],final)
-                window = resume_window or (cue_planner.execution_window(planned['selections'][index],t['decks'][active-1]['beatPosition'],0 if final else recipe['fadeBeats'],final)
+                current=t['decks'][active-1]
+                if return_to_verified_exit and current['beatPosition']>planned['selections'][index]['exitBeat']-8:
+                    resume_window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
+                    resume_window['basis']='measured-continuation-exit'
+                    self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
+                return_to_verified_exit=False
+                window = resume_window or (cue_planner.execution_window(planned['selections'][index],current['beatPosition'],0 if final else recipe['fadeBeats'],final)
                           if planned else segment_window(entries[active], t['decks'][active-1]['beatPosition'],
                                         snapshot['secondsPerTrack'], target, snapshot['mixStyle'], final, recipe))
                 resume_window = None
@@ -2383,6 +2409,8 @@ class DJSession:
                 if resume and index == resumed_index:
                     self._copilot_result('confirmed', 'Copilot resumed from the playing recording at a verified future cue.')
                 revised_final=False
+                waiting_for_continuation=False
+                stems_check_at=0
                 while True:
                     t = self.telemetry(client)
                     current = t['decks'][active-1]
@@ -2418,9 +2446,27 @@ class DJSession:
                         # substitute cue, or implicit handoff when Hold expires.
                         self.sleep(.12)
                         continue
+                    if (self.mixer and not final and self.mixer.lead_mode=='stems'
+                            and current['beatPosition']>=goal-12
+                            and (time.monotonic()>=stems_check_at or current['beatPosition']>=goal)):
+                        stems_check_at=time.monotonic()+.7
+                        if self.mixer.fallback_from_unready_stems(client):
+                            self.event(recipe['leadControlNote'],'technique')
+                            current=self.telemetry(client)['decks'][active-1]
+                            if current['beatPosition']>=goal-4:
+                                window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
+                                window['basis']='measured-continuation-exit'
+                                start_beat,goal=window['entryBeat'],window['mixAtBeat']
+                                self.update(targetBeat=goal,timing=dict(window),segmentBeats=window['segmentBeats'])
+                            continue
                     self.update(segmentProgress=max(0, min(1, (current['beatPosition'] - start_beat) / (window['endBeat']-start_beat))))
-                    if current['beatPosition'] >= goal:
-                        if current['beatPosition'] - goal > 1:
+                    slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
+                    runway=self.final_preparation_runway(track,index,current) if final and planned else 0
+                    if current['beatPosition']>=goal and runway>=16 and not waiting_for_continuation:
+                        waiting_for_continuation=True
+                        self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
+                    if current['beatPosition'] >= goal and runway<16:
+                        if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:
                                 raise BridgeError('The analyzed transition window was missed. Scheduling stopped; no substitute cue was used.')
                             # A delayed native read must not turn a missed block
@@ -2442,7 +2488,7 @@ class DJSession:
                                     continue  # adopt an insertion received as the last window ended
                                 self.state['phase']='stopping'
                         break
-                    slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
+                    slack=max(slack,runway)
                     self.service_background(client,slack)
                     if slack>=16 and (self.snapshot().get('queuedUpdate') or {}).get('status')=='ready':
                         revised=self.adopt_queue(index)
@@ -2451,6 +2497,7 @@ class DJSession:
                             if final and index+1<len(order):
                                 ready(client,order[index+1],incoming,target,index+1)
                                 t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
+                                return_to_verified_exit=bool(planned)
                                 revised_final=True;break
                     if rolling:rolling.tick(self,slack)
                     self.service_catalog(client,slack)

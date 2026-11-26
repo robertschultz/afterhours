@@ -107,6 +107,26 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
 
+    def test_rolling_replaces_only_its_failed_catalog_lookup_after_cleanup(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        roller=RollingQueue()
+        roller.tick(self.session,30)
+        pending=self.session.state['queuedUpdate']
+        miss=pending['rollingTrackId']
+        pending.update(status='blocked',error='Native Load acknowledgement unknown')
+        roller.tick(self.session,30)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'],miss)
+        self.assertEqual(self.session.snapshot()['rollingQueue']['status'],'held')
+        pending.update(catalogMissId=miss,error='Recording was not found before Load')
+        self.session.update(rollingQueue={'status':'preparing'})
+        roller.tick(self.session,30)
+        replacement=self.session.snapshot()['queuedUpdate']
+        self.assertNotEqual(replacement['rollingTrackId'],miss)
+        self.assertEqual(replacement['protectedIds'],['a','b'])
+        self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
+
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})
@@ -183,6 +203,41 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertIsNone(queue_planning.runway(state, 104))
         state['executionPlan']['selections'][1]['replayVerified'] = False
         self.assertIsNone(queue_planning.runway(state, 101))
+
+    def test_voice_artist_start_rolls_the_queue_unless_the_request_is_finite(self):
+        agent=dj_agent.DJAgent(self.session, evaluator=Mock())
+        self.session.start=Mock()
+        state=self.session.snapshot()
+        request={'status':'preparing','source':'voice','sessionId':state['id'],
+                 'revision':agent.state['revision'],'orderIds':[t['id'] for t in state['order']],
+                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk'}
+        for scope in (None,'finite'):
+            with self.subTest(scope=scope):
+                agent.playback_request={**request,'scope':scope}
+                self.session.start.reset_mock()
+                self.assertTrue(agent.advance_playback())
+                self.assertEqual(self.session.start.call_args.kwargs.get('rolling_queue',False),scope is None)
+
+    def test_voice_title_by_artist_starts_that_recording_with_a_distinct_followup(self):
+        self.session.start=Mock()
+        self.session.discover_more=Mock(side_effect=lambda _:self.session.update(
+            phase='discovering',catalogSearch={'status':'searching'}))
+        evaluator=Mock(side_effect=AssertionError('Exact live matches should start without a planning call'))
+        agent=dj_agent.DJAgent(self.session,evaluator=evaluator)
+        agent.enable(True,seconds=120,requests=5)
+        agent.message('Play Around the World by Daft Punk',source='voice',message_id='title-by-artist',approved=True)
+        search='around the world by daft punk; daft punk'
+        self.session.discover_more.assert_called_once_with(search)
+        candidates=[{**track('cover'),'title':'Around the World','artist':'Cover Artist'},
+                    {**track('requested'),'title':'Around the World','artist':'Daft Punk'},
+                    {**track('remix',bpm=125.2),'title':'Around the World','artist':'Daft Punk'},
+                    {**track('next',bpm=126),'title':'Digital Love','artist':'Daft Punk'}]
+        self.session.update(candidates=candidates,phase='catalog-ready',catalogSearch={
+            'status':'complete','query':search,'foundIds':[item['id'] for item in candidates]})
+        agent.tick(force=True)
+        self.assertEqual([item['id'] for item in self.session.snapshot()['order']],['requested','next'])
+        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True)
+        evaluator.assert_not_called()
 
     def test_next_track_prefers_a_verified_cue_between_key_matches(self):
         rows = [track('out'), track('close'), track('ready', bpm=126)]

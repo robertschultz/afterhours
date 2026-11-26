@@ -463,7 +463,7 @@ class SessionTests(unittest.TestCase):
                 clock_deck,name,a,b,beats,deck,key=re.fullmatch(r"(?:deck (\d) )?repeat_start_fade '([^']+)' ([\d.]+) ([\d.]+) (\d+)bt & deck (\d) ([\w ]+)",script).groups()
                 self.assertEqual(clock_deck,deck)
                 ramps[name]=(now[0],int(deck),key,float(a),float(b),int(beats)*60/decks[int(deck)-1]['bpm'])
-            elif script.startswith('repeat_stop'):
+            elif 'repeat_stop ' in script:
                 for command in script.split(' & '):
                     name=command.split("'")[1]
                     if name=='afterhours_crossfade':fade[0]=None

@@ -96,7 +96,7 @@ class NativeHandoff:
     """
     def __init__(self, query, send, sleep):
         self.q, self.send, self.sleep = query, send, sleep
-        self.ramps = set()
+        self.ramps = {}
         self.dispatched = False
 
     def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO):
@@ -135,13 +135,13 @@ class NativeHandoff:
                 not as_bool(self.q(client,f'deck {outgoing} masterdeck','bool')) or
                 abs(value(self.q(client,'crossfader'))-start)>.02):
             raise MixerControlChanged('The playing pair changed after start. No crossfade was sent.')
-        self.ramps.add('crossfade')
+        self.ramps['crossfade']=outgoing
         self.send(client,f"deck {outgoing} repeat_start_fade 'afterhours_crossfade' {start:.6f} {end:.6f} {beats}bt & crossfader")
 
     def cancel_ramps(self, client):
         if self.ramps:
             # Bypass a cancelled worker's send guard, exactly as owned EQ ramps.
-            client.send("repeat_stop 'afterhours_crossfade'")
+            client.send(f"deck {self.ramps['crossfade']} repeat_stop 'afterhours_crossfade'")
             self.ramps.clear()
 
 
@@ -149,7 +149,7 @@ class TransitionMixer:
     def __init__(self, query, send):
         self.q, self.send = query, send
         self.baselines = {}
-        self.ramps = set()
+        self.ramps = {}
         self.done = set()
         self.recipe = None
         self.incoming = None
@@ -311,7 +311,7 @@ class TransitionMixer:
 
     def ramp(self, client, name, deck, control, start, end, beats):
         # Each bounded native ramp has a unique owned name and is cancellable.
-        self.ramps.add(name)
+        self.ramps[name]=deck
         self.send(client,f"deck {deck} repeat_start_fade 'afterhours_{name}' {start:.6f} {end:.6f} {beats}bt & deck {deck} {control}")
 
     def begin(self, client):
@@ -391,5 +391,5 @@ class TransitionMixer:
         # Direct sends intentionally ignore the session cancel flag so takeover
         # can stop already-dispatched ramps. Leave live controls at their values.
         if self.ramps:
-            client.send(' & '.join(f"repeat_stop 'afterhours_{name}'" for name in sorted(self.ramps)))
+            client.send(' & '.join(f"deck {deck} repeat_stop 'afterhours_{name}'" for name,deck in sorted(self.ramps.items())))
             self.ramps.clear()

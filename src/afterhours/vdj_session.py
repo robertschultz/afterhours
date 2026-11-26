@@ -812,10 +812,10 @@ class DJSession:
         names=[];analysis=[]
         if kind in ('mixer','handoff'):
             ramps=getattr(owner,'ramps',None)
-            if isinstance(ramps,(set,list,tuple)):
-                names=['afterhours_'+name for name in ramps if isinstance(name,str)]
+            if isinstance(ramps,dict):
+                names=[f'{deck}:afterhours_{name}' for name,deck in ramps.items()]
         elif kind=='tempo' and isinstance(getattr(owner,'NAME',None),str):
-            names=[owner.NAME]
+            names=[f'{owner.deck}:{owner.NAME}']
         elif kind=='background':
             describe=getattr(owner,'cleanup_descriptors',None)
             if callable(describe):analysis=describe()
@@ -832,9 +832,16 @@ class DJSession:
         names=pending.get('ramps') or []
         allowed={'afterhours_'+name for name in ('in_level','out_low','out_mid','out_vocal','out_instru',
                  'in_low','in_mid','in_vocal','in_instru','out_high','crossfade')}|{tempo_planner.TempoRamp.NAME}
-        if not isinstance(names,list) or any(name not in allowed for name in names):
-            return  # Recovered data can never supply an arbitrary engine verb.
-        if names:client.send(' & '.join(f"repeat_stop '{name}'" for name in names))
+        stops=[]
+        for descriptor in names:
+            deck,separator,name=descriptor.partition(':')
+            if not separator:  # Old checkpoints only retained the ramp name.
+                name=deck
+            if name not in allowed or (separator and deck not in ('1','2','3','4')):
+                return  # Recovered data can never supply an arbitrary engine verb.
+            prefix=f'deck {deck} ' if separator else ''
+            stops.append(f"{prefix}repeat_stop '{name}'")
+        if stops:client.send(' & '.join(stops))
         remaining=[];errors=[]
         for descriptor in pending.get('analysis',[]):
             try:cleanup_analysis_deck(client,descriptor)

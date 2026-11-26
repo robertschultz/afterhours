@@ -47,7 +47,7 @@ class Peer:
             if self.fail_play:raise BridgeError('Transport acknowledgement lost')
         elif 'repeat_start_fade' in script:
             if self.fail_fade:raise BridgeError('Fade acknowledgement lost')
-        elif script.startswith('repeat_stop'):
+        elif 'repeat_stop ' in script:
             if self.fail_cancel:raise BridgeError('Native stop unavailable')
         else:raise AssertionError(script)
 
@@ -72,7 +72,7 @@ class NativeHandoffTests(unittest.TestCase):
                     self.assertIn(f' {endpoint} 16bt & crossfader',p.sent[-1])
                     self.assertFalse(any('mix_now' in s or 'goto' in s or 'deck 3 ' in s or 'deck 4 ' in s for s in p.sent))
                     h.cancel_ramps(p)
-                    self.assertEqual(p.sent[-1],"repeat_stop 'afterhours_crossfade'")
+                    self.assertEqual(p.sent[-1],f"deck {outgoing} repeat_stop 'afterhours_crossfade'")
                     self.assertFalse(h.ramps)
 
     def test_delayed_start_is_read_again_but_never_replayed(self):
@@ -115,10 +115,10 @@ class NativeHandoffTests(unittest.TestCase):
     def test_uncertain_fade_and_failed_cleanup_retain_exact_owned_ramp(self):
         p=Peer();p.fail_fade=True;h=p.handoff()
         with self.assertRaisesRegex(BridgeError,'Fade acknowledgement lost'):h.dispatch(p,1,2,16)
-        self.assertEqual(h.ramps,{'crossfade'})
+        self.assertEqual(h.ramps,{'crossfade':1})
         p.fail_cancel=True
         with self.assertRaises(BridgeError):h.cancel_ramps(p)
-        self.assertEqual(h.ramps,{'crossfade'})
+        self.assertEqual(h.ramps,{'crossfade':1})
         p.fail_cancel=False;h.cancel_ramps(p)
         self.assertFalse(h.ramps)
 

@@ -68,6 +68,27 @@ class AnalysisCleanupTests(unittest.TestCase):
         with self.assertRaises(BridgeError):j.close(p)
         s.remember_cleanup_failure('background',j)
 
+    def test_native_auto_headphone_cue_after_unload_allows_safe_restoration(self):
+        for during_retry in (False, True):
+            with self.subTest(during_retry=during_retry):
+                s, peer, job = self.owned()
+                descriptor = job.cleanup_descriptors()[0]
+                native_send = peer.send
+                def send(command):
+                    native_send(command)
+                    if command.endswith('deck 3 unload'):
+                        peer.values['deck 3 pfl'] = True
+                peer.send = send
+                if during_retry:
+                    descriptor['unloadRequested'] = True
+                    peer.values['deck 3 loaded'] = False
+                    peer.values['deck 3 pfl'] = True
+                cleanup_analysis_deck(peer, descriptor)
+                self.assertFalse(peer.values['deck 3 pfl'])
+                self.assertFalse(peer.values['deck 3 loaded'])
+                self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
+                self.assertTrue(descriptor['restoreRequested'])
+
     def test_failed_close_keeps_ownership_until_explicit_cleanup_verifies_it(self):
         s,p,j=self.owned();self.latch(s,p,j)
         self.assertTrue(j.owned);self.assertEqual(j.cleanup_descriptors()[0]['selectionId'],identity('test'))

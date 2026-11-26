@@ -132,32 +132,43 @@ def cleanup_analysis_deck(client, descriptor):
         elif row['loadPending']:
             raise BridgeError(f'Analysis deck {deck} stream load is still unconfirmed; isolation and ownership were retained.')
         return loaded
-    # A lost final readback may follow a successful restoration. Verify that
-    # exact final state before requiring the earlier muted-isolation state.
-    if row['restoreRequested']:
-        guard_deck(client,deck)
-        if (not as_bool(client.query(f'deck {deck} play','bool')) and
-                not as_bool(client.query(f'deck {deck} loaded','bool')) and effect_is_restored() and
-                abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])<.00001 and
-                as_bool(client.query(f'deck {deck} pfl','bool'))==baseline['pfl']):return
-    loaded=isolated_identity()
-    current=client.query(f'deck {deck} get_effect_name 1','text')
-    if current not in (PLUGIN,baseline['effect']):
-        raise BridgeError(f'Analysis deck {deck} effect changed; cleanup will not overwrite it.')
-    if current==PLUGIN:restore_effect(client,deck,expected_effect)
-    if not effect_is_restored():
-        raise BridgeError(f'Analysis deck {deck} effect cleanup was not confirmed.')
-    # Effect restoration can take time. Recheck isolation and exact recording
-    # immediately before the guarded, idempotent unload.
-    loaded=isolated_identity()
-    if loaded:
-        descriptor['unloadRequested']=True
-        client.send(f'deck {deck} play ? nothing : deck {deck} unload')
-        if as_bool(client.query(f'deck {deck} loaded','bool')):
-            raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
-    if isolated_identity():raise BridgeError(f'Analysis deck {deck} changed during cleanup.')
+    def owned_empty():
+        guard_deck(client, deck)
+        if as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')):
+            return None
+        if not effect_is_restored():
+            return None
+        volume = float(client.query(f'deck {deck} volume'))
+        if min(abs(volume), abs(volume-baseline['volume'])) >= .00001:
+            raise BridgeError(f'Analysis deck {deck} channel level changed after unload.')
+        return volume, as_bool(client.query(f'deck {deck} pfl','bool'))
+
+    # VirtualDJ may toggle auto headphone cue during an owned unload. Once
+    # the same deck is empty, stopped, and has its baseline effect, restore
+    # its controls without treating a harmless cue toggle as audible playback.
+    empty = owned_empty() if row['unloadRequested'] or row['restoreRequested'] else None
+    if empty is None:
+        loaded = isolated_identity()
+        current = client.query(f'deck {deck} get_effect_name 1','text')
+        if current not in (PLUGIN, baseline['effect']):
+            raise BridgeError(f'Analysis deck {deck} effect changed; cleanup will not overwrite it.')
+        if current == PLUGIN:
+            restore_effect(client, deck, expected_effect)
+        if not effect_is_restored():
+            raise BridgeError(f'Analysis deck {deck} effect cleanup was not confirmed.')
+        loaded = isolated_identity()
+        if loaded:
+            descriptor['unloadRequested'] = True
+            client.send(f'deck {deck} play ? nothing : deck {deck} unload')
+        empty = owned_empty()
+    if empty is None:
+        raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
+    if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
+        return
     descriptor['restoreRequested']=True
-    client.send(f'deck {deck} play ? nothing : deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl '+('on' if baseline['pfl'] else 'off'))
+    cue = 'on' if baseline['pfl'] else 'off'
+    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
     guard_deck(client,deck)
     if (as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')) or
             not effect_is_restored() or abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])>=.00001 or

@@ -38,3 +38,15 @@ Clones of the original Afterhours repository should use the [Afterhours Old repo
 - For video continuation, run `.venv/bin/python -m afterhours.performance_server` with a positive `--approved-h3-jobs` and a user-provided `--h3-seed-url`. The URL must refer to media on the configured provider that the operator is entitled to use. Live performer sessions require approved references supplied by the operator.
 
 The bundled posters and silent clips are synthetic fixtures. They do not supply performer identity or consent.
+
+
+### Trusted Afterhours clients
+
+A client can have its own bounded music allowance or be trusted with paid music selection and mix review until revoked. Pair only an agent you control with `--unmetered-music`. Its directions can incur provider charges without a cumulative Afterhours dollar cap, call cap, or pairing expiry. The provider's own limits still apply.
+
+```sh
+python scripts/mcp-client.py --session-file /path/to/session.json pair \
+  --name "Trusted DJ agent" --output /private/path/agent.json --unmetered-music
+```
+
+Configure the agent with the resulting owner-only credential. Existing clients keep their current permissions. Local playback and receipts use the same authorization, request identity and per-direction execution controls as other pairings. Use the management command's `list` and `revoke` actions to review and remove trusted access.

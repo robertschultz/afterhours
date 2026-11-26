@@ -16,7 +16,7 @@ from afterhours import native_settings
 from afterhours import playback_requests
 from afterhours.dj_agent import TEXT_REQUESTS, TEXT_TURN_CEILING, PREPARATION_CEILING
 from afterhours.mcp_auth import ControlError
-from afterhours.mcp_receipts import ExternalGrant, ACTIVE, TERMINAL, ID, canonical
+from afterhours.mcp_receipts import ExternalGrant, UNMETERED_MUSIC, ACTIVE, TERMINAL, ID, canonical
 
 MESSAGES = {
     'dispatching': 'Direction accepted. Execution is not yet confirmed.',
@@ -136,7 +136,8 @@ class MCPControl:
                                      'nextOffset':offset+limit if offset+limit<len(pending) else None} if pending else None),
                     'preparation':{'stage':stage,'evaluating':bool(self.agent.worker and self.agent.worker.is_alive()),
                                    'prepared':(s.get('executionPlan') or {}).get('applied') is True},
-                    'allowance':{'configured':client['allowance'],'committedCeilingUSD':client['committedCeilingUSD'],
+                    'allowance':{'configured':client['allowance'],'unmetered':UNMETERED_MUSIC in client['scopes'],
+                                 'committedCeilingUSD':client['committedCeilingUSD'],
                                  'committedProviderCalls':client['committedProviderCalls'],'billingVerified':False},
                     'context':self._token(client['id'],context),'pollAfterSeconds':2}
 

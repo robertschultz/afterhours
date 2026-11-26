@@ -41,7 +41,7 @@ def create_server(config):
 
     descriptions={
         'afterhours_state':'Read bounded current/cued/queue and allowance state plus a 60-second context guard. No chat, paths or provider bodies.',
-        'afterhours_direct':'Delegate a text direction through the same DJ engine as chat and voice. Uses only this paired client’s configured capability and bounded allowance.',
+        'afterhours_direct':'Delegate a text direction through the same DJ engine as chat and voice. Uses this paired client’s music authority and keeps per-direction execution checks.',
         'afterhours_receipt':'Read the durable outcome for this client’s original request ID. Never replays work.',
     }
     async def list_tools(ctx,params):

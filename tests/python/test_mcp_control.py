@@ -424,6 +424,32 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(allocation['costs']['selection'],2)
         self.assertEqual(row['reserved_cost'],20004)
 
+    def test_trusted_music_has_no_client_allowance_and_retains_receipts(self):
+        client=self.store.pair('Trusted DJ',unmetered_music=True)
+        for index in range(3):
+            self.now+=86400
+            receipt=self.direct(client,request_id=f'trusted-{index}')
+            settled(self.agent)
+            result=self.control.receipt(client['credential'],receipt['requestId'])
+            self.assertEqual(result['providerCallsDispatched'],1)
+        state=self.control.state(client['credential'])
+        self.assertTrue(state['allowance']['unmetered'])
+        self.assertIsNone(state['allowance']['configured'])
+        self.assertEqual(state['allowance']['committedProviderCalls'],3)
+        self.assertEqual(self.agent._operator_allowance.remaining,0)
+        self.assertCode('allowance-required',lambda:self.direct(self.local))
+        row=self.claim(client,identifier='trusted-revocation')
+        self.store.revoke(client['clientId'])
+        self.assertCode('client-revoked',lambda:self.store.consume(row['engine_id'],'selection'))
+        self.assertCode('unauthorized',lambda:self.direct(client))
+
+    def test_trusted_music_requires_its_own_explicit_pairing(self):
+        for fields in ({'read_only':True,'unmetered_music':True},
+                       {'allowance':self.allowance(),'unmetered_music':True},
+                       {'unmetered_music':'true'}):
+            with self.subTest(fields=fields):
+                self.assertCode('invalid-allowance',lambda:self.store.pair('Conflicting client',**fields))
+
     def test_dispatched_calls_keep_ceiling_and_only_unused_reservation_is_released(self):
         row=self.claim();self.store.consume(row['engine_id'],'selection')
         self.store.update(row['engine_id'],'blocked','Fixture')

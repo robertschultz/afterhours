@@ -61,10 +61,18 @@ export class LiveVoiceClient {
       if(generation!==this.generation)return;
       this.state('connecting','Connecting to GPT-Live…');
       const result=await this.request('/api/voice',{action:'start',sdp:peer.localDescription.sdp,
-        performer,requestId:crypto.randomUUID(),approveRequest:true,maxSeconds:1800});
+        performer,requestId:crypto.randomUUID(),approveRequest:true,maxSeconds:1800,clientLease:true});
       if(generation!==this.generation){await this.closeRemote(result.session.id,true);return;}
       this.sessionId=result.session.id;this.expiresAt=result.expiresAt;
       this.maxSeconds=result.maxSeconds||120;this.startedAt=result.startedAt||this.expiresAt-this.maxSeconds;
+      if(result.clientLeaseSeconds){
+        const sessionId=this.sessionId;
+        this.leaseTimer=setInterval(()=>{
+          this.request('/api/voice',{action:'heartbeat',sessionId}).catch(()=>{
+            if(this.generation===generation)this.end('Talk lost its connection to Afterhours.');
+          });
+        },8000);
+      }
       await peer.setRemoteDescription({type:'answer',sdp:result.transport.sdp});
       this.limitTimer=setTimeout(()=>this.end(this.limitDetail()),Math.max(0,this.expiresAt*1000-Date.now()));
       this.startTimer=setTimeout(()=>{if(!this.ready)this.end('Voice did not become ready.');},15000);
@@ -176,7 +184,7 @@ export class LiveVoiceClient {
     }
   }
   cleanup(){
-    clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);clearTimeout(this.dispatchTimer);
+    clearInterval(this.leaseTimer);clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);clearTimeout(this.dispatchTimer);
     this.waitingDelegation=null;
     this.microphone?.getTracks().forEach(t=>t.stop());this.microphone=null;this.ready=false;
     const channel=this.channel;this.channel=null;if(channel)channel.onclose=null;

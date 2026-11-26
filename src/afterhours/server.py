@@ -381,8 +381,9 @@ class Handler(RuntimeStaticHandler):
                         result=DJ_AGENT.fresh()
                     else:raise ValueError('Unknown conversation action.')
                 elif action=='start':
-                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'))
+                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'),client_lease=data.get('clientLease') is True)
                 elif action=='end':result=LIVE_VOICE.end(data.get('sessionId'),transport_closed=data.get('transportClosed') is True)
+                elif action=='heartbeat':result=LIVE_VOICE.heartbeat(data.get('sessionId'))
                 elif action=='usage':result=LIVE_VOICE.receipt(data.get('sessionId'),data.get('seconds'),data.get('finalized') is True)
                 else:raise ValueError('Unknown voice action.')
                 return self.reply(result)

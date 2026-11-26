@@ -2,7 +2,7 @@
 import json,threading,unittest
 from unittest.mock import Mock,patch
 from urllib.error import URLError
-from afterhours.live_voice import LiveVoice, START_CONTEXT_BYTES, startup_history
+from afterhours.live_voice import CLIENT_LEASE_SECONDS, LiveVoice, START_CONTEXT_BYTES, startup_history
 from afterhours.dj_agent import DJAgent
 from test_dj_agent import Session
 
@@ -23,6 +23,7 @@ class VoiceTests(unittest.TestCase):
         self.voice=LiveVoice(self.agent,opener=provider)
     def tearDown(self):
         if self.voice.timer:self.voice.timer.cancel()
+        self.voice.stop_lease()
         self.key.stop()
     def start(self):return self.voice.create('v=0\r\noffer','request_123','nova',True)
     def test_no_approval_and_invalid_inputs_never_call_provider(self):
@@ -111,6 +112,23 @@ class VoiceTests(unittest.TestCase):
         self.assertFalse(state['finalized'])
         self.voice.opener=provider
         self.voice.create('v=0','request_456','nova',True)
+
+    def test_missing_heartbeats_releases_an_abruptly_closed_browser(self):
+        with patch('time.monotonic',return_value=10):
+            receipt=self.voice.create('v=0','request_abc','nova',True,client_lease=True)
+            self.assertEqual(receipt['clientLeaseSeconds'],CLIENT_LEASE_SECONDS)
+        with patch('time.monotonic',return_value=15):
+            self.voice.heartbeat('voice_fixture')
+            deadline=self.voice.lease_deadline
+        provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Provider not reachable'))
+        with patch('time.monotonic',return_value=deadline+1):
+            self.voice.check_lease('voice_fixture')
+        self.assertEqual(self.voice.status()['status'],'closed')
+        self.assertFalse(self.voice.status()['finalized'])
+        self.voice.opener=provider
+        self.voice.create('v=0','request_def','nova',True,client_lease=True)
+        self.assertEqual(self.voice.status()['status'],'active')
 
     def test_final_receipt_during_failed_hangup_is_preserved(self):
         self.start()

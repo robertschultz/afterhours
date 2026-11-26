@@ -16,6 +16,7 @@ SECONDS=1800
 DECISION_REQUESTS=60
 VOICE_RATE_PER_MINUTE=.05
 START_CONTEXT_BYTES=4000
+CLIENT_LEASE_SECONDS=35
 
 
 def startup_history(profile, agent_state, music):
@@ -52,6 +53,8 @@ class LiveVoice:
         self.state={'status':'idle','sessionId':None,'expiresAt':None,'usageSeconds':None,'finalized':False}
         self.attempts={}
         self.cancel_connect=False
+        self.lease_timer=None
+        self.lease_deadline=None
 
     def status(self):
         with self.lock:
@@ -59,7 +62,7 @@ class LiveVoice:
                     'maxSeconds':self.state.get('maxSeconds') or SECONDS,'voiceUSDPerMinute':VOICE_RATE_PER_MINUTE,
                     'maxDecisionRequests':self.state.get('maxDecisionRequests') or DECISION_REQUESTS,'recording':False}
 
-    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None):
+    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None,client_lease=False):
         if approved is not True:raise ValueError('Turn on Talk before connecting.')
         # Older open pages approved only the original two-minute session.
         # A longer session must be explicitly requested by the new Talk control.
@@ -156,8 +159,43 @@ No camera or direct music audio is supplied.'''
                 raise ValueError('Voice connection was cancelled.')
             self.agent.enable(True,max_seconds,decisions)
             self.timer=threading.Timer(max_seconds,self.end,args=(sid,));self.timer.daemon=True;self.timer.start()
+            if client_lease:
+                self.lease_deadline=time.monotonic()+CLIENT_LEASE_SECONDS
+                self.schedule_lease(sid,CLIENT_LEASE_SECONDS)
         return {'session':{'id':sid},'transport':{'type':'webrtc','sdp':answer},'expiresAt':self.state['expiresAt'],
-                'startedAt':self.state['startedAt'],'maxSeconds':max_seconds}
+                'startedAt':self.state['startedAt'],'maxSeconds':max_seconds,
+                **({'clientLeaseSeconds':CLIENT_LEASE_SECONDS} if client_lease else {})}
+
+    def schedule_lease(self,sid,delay):
+        self.lease_timer=threading.Timer(delay,self.check_lease,args=(sid,))
+        self.lease_timer.daemon=True
+        self.lease_timer.start()
+
+    def check_lease(self,sid):
+        with self.lock:
+            if sid!=self.state['sessionId'] or self.state['status']!='active' or self.lease_deadline is None:return
+            remaining=self.lease_deadline-time.monotonic()
+            if remaining>0:
+                self.schedule_lease(sid,remaining)
+                return
+            self.lease_deadline=None
+        # A lost browser can no longer renew its private voice connection.
+        # Release the local slot even if the provider usage receipt is missing.
+        self.end(sid,transport_closed=True)
+
+    def heartbeat(self,sid):
+        with self.lock:
+            self.require(sid)
+            if self.lease_deadline is None or time.monotonic()>=self.lease_deadline:
+                raise ValueError('The browser Talk lease expired.')
+            self.lease_deadline=time.monotonic()+CLIENT_LEASE_SECONDS
+        return {'ok':True}
+
+    def stop_lease(self):
+        self.lease_deadline=None
+        if self.lease_timer:
+            self.lease_timer.cancel()
+            self.lease_timer=None
 
     def require(self,sid):
         with self.lock:
@@ -178,6 +216,7 @@ No camera or direct music audio is supplied.'''
                 return self.status()
             sid=self.state['sessionId'];self.state['status']='closing'
             if self.timer:self.timer.cancel()
+            self.stop_lease()
             self.agent.disable(preserve_playback=True)
         status='closed'
         if sid:
@@ -199,5 +238,6 @@ No camera or direct music audio is supplied.'''
             if finalized is True:
                 self.state.update(status='closed',finalized=True)
                 if self.timer:self.timer.cancel()
+                self.stop_lease()
                 self.agent.disable(preserve_playback=True)
             return self.status()

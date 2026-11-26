@@ -455,7 +455,9 @@ class SessionTests(unittest.TestCase):
         def telemetry(c,**kwargs):
             if late_background:
                 for deck in decks:
-                    deck.update(position=deck['beatPosition']*60/155,controls={'durationMs':180_000})
+                    # Optional native controls timed out on the final playing
+                    # deck while the next waveform was still being measured.
+                    deck.update(position=deck['beatPosition']*60/155,controls={})
             t={'decks':copy.deepcopy(decks[:4 if four else 2]),'crossfader':cross[0],'sampledAt':now[0]}
             s.update(telemetry=t);reads.append(now[0])
             if control in ('hold-go','skip') and s.state['phase']=='playing' and s.state['index']==0:

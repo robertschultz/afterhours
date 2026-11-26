@@ -22,5 +22,6 @@ jobs:
         with:
           node-version: '24'
       - run: ./setup
+      - run: .venv/bin/python scripts/test-python.py test_native_runtime
       - run: .venv/bin/python scripts/test-python.py
       - run: npm test

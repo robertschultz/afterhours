@@ -2218,8 +2218,11 @@ class DJAgent:
                 self.state.update(status='ready',message='Direction updated. Selection is ready to review.',lastEvaluation=receipt)
                 self.save()
                 audible=any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[]))
-                if (result['search'] or result['trackIds']) and (s.get('phase')!='takeover' or not audible):
+                manual_takeover=s.get('phase')=='takeover' and audible
+                if (result['search'] or result['trackIds']) and (external or not manual_takeover):
                     try:
+                        if manual_takeover:
+                            raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
                         self.apply(rev)
                         if result['search']:self.catalog_curation=curation_token
                     except (ValueError,OSError,BridgeError) as exc:
@@ -2234,7 +2237,10 @@ class DJAgent:
                         self.state.update(message='Selection held: '+str(exc));self.save()
                 if not result['search']:
                     if self.playback_request and self.playback_request['status']=='choosing' and not result['trackIds']:
-                        self.cancel_playback('No playable selection was accepted. The decks are unchanged.')
+                        no_selection='No playable selection was accepted. The decks are unchanged.'
+                        if external and self.playback_request.get('id')==external.id:
+                            external.finish('blocked',no_selection,'selection-held')
+                        self.cancel_playback(no_selection)
                     if self.text_turn and not curation_token:self.remaining=0
                     if not result['trackIds']:
                         self.state['message']=result['reply'];self.save()

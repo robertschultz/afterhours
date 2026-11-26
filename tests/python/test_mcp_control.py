@@ -88,6 +88,22 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(receipt['status'],'blocked')
         self.assertEqual(receipt['reasonCode'],'openai-key-missing')
 
+    def test_named_play_without_accepted_tracks_returns_selection_hold(self):
+        reply=self.direct(text='Play Christmas music')
+        settled(self.agent)
+        receipt=self.control.receipt(self.music['credential'],reply['requestId'])
+        self.assertEqual((receipt['status'],receipt['reasonCode']),('blocked','selection-held'))
+
+    def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):
+        self.session.update(phase='takeover',active=False,
+                            telemetry={'decks':[{'deck':1,'id':'a','playing':True}]})
+        self.provider.return_value=(decision(['a','b','c']),{})
+        reply=self.direct(text='Play Christmas music')
+        settled(self.agent)
+        receipt=self.control.receipt(self.music['credential'],reply['requestId'])
+        self.assertEqual((receipt['status'],receipt['reasonCode']),('blocked','manual-playback'))
+        self.assertEqual(self.session.calls,[])
+
     def test_default_local_does_not_borrow_active_operator_allowance(self):
         self.agent.enable(True,180,6)
         before=copy.copy(self.agent._operator_allowance)

@@ -1324,6 +1324,50 @@ class DJSession:
             self.event(self.state['message'],'queue')
             return self.snapshot()
 
+    def fit_background_tracks(self, state, queued, tracks, measured, protected):
+        tracks = copy.deepcopy(tracks)
+        observed = {t['id']: t for t in measured}
+        for track in tracks[protected:]:
+            reading = observed.get(track['id'])
+            if reading is None:
+                continue
+            key, camelot = musical_key(reading.get('camelot'))
+            track.update(bpm=reading['bpm'], key=key, camelot=camelot, engineChecked=True)
+            if reading.get('duration') is not None:
+                track['duration'] = reading['duration']
+        prepared = cue_planner.complete_background_queue(state, tracks, measured, queued['reason'], protected,
+            queued.get('mixTransitions'), queued.get('tempoTargets'), standing_style=queued.get('standingStyle'),
+            cue_choices=queued.get('cueChoices'))
+        return tracks, prepared
+
+    def publish_prepared_prefix(self, job):
+        with self.lock:
+            state = self.snapshot()
+            queued = state.get('queuedUpdate') or {}
+            if (queued.get('id') != job.revision or queued.get('status') != 'analyzing'
+                    or len(queued.get('rollingTrackIds', [])) < 2):
+                return
+            measured = {t['id']: t for t in job.result}
+            order = state['order']
+            ids = [t['id'] for t in order]
+            tracks = queued['tracks']
+            if [t['id'] for t in tracks[:len(ids)]] != ids:
+                return
+            end = len(ids)
+            while end < len(tracks) and tracks[end]['id'] in measured:
+                end += 1
+            if end <= len(ids) or end == len(tracks):
+                return
+            protected = min(len(order), max(len(queued['protectedIds']), max(0, state['index'])+2))
+            try:
+                selected, prepared = self.fit_background_tracks(state, queued, tracks[:end],
+                    [measured[t['id']] for t in tracks[len(ids):end]], protected)
+                cue_planner.verify_receipts(prepared['analysis'])
+            except (BridgeError, ValueError, OSError):
+                return  # The complete revision keeps the ordinary failure reporting.
+            self.state['queuedUpdate'].update(status='ready', partialTracks=selected, partialPrepared=prepared)
+            self.event('The immediate next track is verified. Preparing the rest of the queue continues.', 'queue-ready')
+
     def service_background(self,client,seconds_available):
         """One bounded analysis slice between clock reads, never during a mix."""
         q=self.snapshot().get('queuedUpdate');job=self.background_job
@@ -1406,7 +1450,12 @@ class DJSession:
         except (BridgeError,ValueError,OSError) as exc:job.error=str(exc);job.done=True
         progress=job.snapshot();self.update(backgroundAnalysis=progress)
         if progress['message']!=previous:self.event(progress['message'],'analysis')
-        if not job.done or seconds_available<12:return
+        if not job.done:
+            if seconds_available >= 16 and job.result:
+                self.publish_prepared_prefix(job)
+            return
+        if seconds_available < 12:
+            return
         self.analysis_cache.update(job.cache)
         cleanup_failed=False
         fitting=False
@@ -1425,24 +1474,16 @@ class DJSession:
                 s=self.snapshot();q=s.get('queuedUpdate')
                 if not q or q['id']!=job.revision:return
                 protected=min(len(s['order']),max(len(q['protectedIds']),max(0,s['index'])+2))
-                observed={t['id']:t for t in job.result}
-                for i,t in enumerate(q['tracks']):
-                    if i>=protected and t['id'] in observed:
-                        reading=observed[t['id']]
-                        key,camelot=musical_key(reading.get('camelot'))
-                        t.update(bpm=reading['bpm'],key=key,camelot=camelot,engineChecked=True)
-                        if reading.get('duration') is not None:t['duration']=reading['duration']
                 fitting=True
-                prepared=cue_planner.complete_background_queue(s,q['tracks'],job.result,q['reason'],protected,
-                    q.get('mixTransitions'),q.get('tempoTargets'),standing_style=q.get('standingStyle'),cue_choices=q.get('cueChoices'))
+                checked_tracks, prepared = self.fit_background_tracks(s, q, q['tracks'], job.result, protected)
                 fitting=False
                 cue_planner.verify_receipts(prepared['analysis'])
                 # snapshot() owns a deep copy. Publish its checked recording
                 # facts with the verified plan, or adoption keeps stale catalog
                 # tempo/key and the incoming-deck guard correctly stops playback.
-                self.state['queuedUpdate'].update(status='ready',prepared=prepared,tracks=copy.deepcopy(q['tracks']))
+                self.state['queuedUpdate'].update(status='ready',prepared=prepared,tracks=checked_tracks)
                 self.state['queuedUpdate'].pop('error',None);self.state['queuedUpdate'].pop('failure',None)
-                checked={t['id']:t for t in q['tracks']}
+                checked={t['id']:t for t in checked_tracks}
                 self.state['candidates']=[copy.deepcopy(checked.get(t['id'],t)) for t in self.state['candidates']]
                 self.event('Upcoming tracks verified. Local measured cue fitting is ready for the next safe handoff; no extra AI request.','queue-ready')
                 self.update(backgroundAnalysis={**progress,'status':'ready','message':'Upcoming tracks ready for a safe handoff.'})
@@ -1453,12 +1494,12 @@ class DJSession:
                     self.state['queuedUpdate'].update(status='blocked',error=str(exc))
                     self.state['queuedUpdate'].pop('failure',None)
                     miss=getattr(job,'catalog_miss',None)
-                    if not cleanup_failed and miss and self.state['queuedUpdate'].get('rollingTrackId')==miss:
-                        self.state['queuedUpdate']['catalogMissId']=miss
-                    if fitting and not cleanup_failed and isinstance(exc, ValueError):
-                        rejected = self.state['queuedUpdate'].get('rollingTrackId')
-                        if rejected:
-                            self.state['queuedUpdate']['measuredFitMissId'] = rejected
+                    pending = self.state['queuedUpdate']
+                    staged_ids = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
+                    if not cleanup_failed and miss and miss in staged_ids:
+                        pending['catalogMissId']=miss
+                    if fitting and not cleanup_failed and isinstance(exc, ValueError) and len(staged_ids) == 1 and staged_ids[0]:
+                        pending['measuredFitMissId'] = staged_ids[0]
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
@@ -1479,7 +1520,7 @@ class DJSession:
         with self.lock:
             q=self.state.get('queuedUpdate')
             if not q or q['status']!='ready':return None
-            old=self.state['order'];order=q['tracks'];protected=max(index+1,len(q['protectedIds']))
+            old=self.state['order'];order=q.get('partialTracks') or q['tracks'];protected=max(index+1,len(q['protectedIds']))
             try:
                 for track in order[protected:]:self.availability.require_track(track)
             except ProviderPreviewRestricted as exc:
@@ -1500,13 +1541,18 @@ class DJSession:
                                                   'trackIds':track_ids,'appliedAt':time.time()})
                 self.event('Quick queue revision adopted. Playing cue preserved.','queue-applied')
                 return copy.deepcopy(order),None
-            prepared=copy.deepcopy(q['prepared']);cue_planner.verify_receipts(prepared['analysis'])
+            prepared=copy.deepcopy(q.get('partialPrepared') or q['prepared']);cue_planner.verify_receipts(prepared['analysis'])
+            remaining = None
+            if q.get('partialTracks'):
+                remaining = {**q, 'status': 'analyzing', 'protectedIds': [t['id'] for t in order]}
+                remaining.pop('partialTracks', None)
+                remaining.pop('partialPrepared', None)
             # Which of the planner's window choices were used is a receipt, not set state.
             windows=prepared.pop('cueChoices',None)
             plan=prepared['executionPlan'];plan['applied']=True
             sources={**self.state['setlist'].get('sourceById',{}),**q.get('sourceById',{})}
             self.state['setlist']['sourceById']={t['id']:sources.get(t['id'],'planner') for t in order}
-            self.state.update(order=copy.deepcopy(order),**prepared,mixPlans=plan['transitions'],queuedUpdate=None,
+            self.state.update(order=copy.deepcopy(order),**prepared,mixPlans=plan['transitions'],queuedUpdate=remaining,
                               lastQueueApplication={'queueRevision':q['id'],'planId':plan.get('id'),
                                                     'trackIds':[t['id'] for t in order],'appliedAt':time.time(),
                                                     **({'cueChoices':windows} if windows else {})},

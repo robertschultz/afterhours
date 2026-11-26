@@ -17,14 +17,14 @@ class PreparationPool:
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
         state = session.snapshot()
-        timed = bool(state.get('entryCadence'))
+        self.timed = bool(state.get('entryCadence'))
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
             if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
-                    and bool(cached.get('timedPreparation')) == timed):
+                    and bool(cached.get('timedPreparation')) == self.timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
             self.pending.append(track)
@@ -93,7 +93,10 @@ class PreparationPool:
             self.result.sort(key=lambda t:ids[t['id']]);return
         # Prioritize the immediate next item, while letting the later decoder
         # and analysis progress every third slice.
-        job=loading or active[0 if len(active)==1 or self.slice%3 else 1]
+        if loading and (not self.timed or loading is active[0]):
+            job = loading
+        else:
+            job = active[0 if len(active)==1 or self.slice%3 else 1]
         self.slice+=1;job.step(client,seconds_available)
 
     def close(self,client):

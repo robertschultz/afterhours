@@ -1322,7 +1322,8 @@ class DJSession:
                 raise ValueError('Live queue expansion needs a measured mix plan. Prepare the set before starting an autonomous run.')
             old=[t['id'] for t in s['order']]
             policy=s.get('setlist',{})
-            if not policy.get('allowReorder',True) and ids!=old:raise ValueError('Planner reordering is off.')
+            if source!='operator' and not policy.get('allowReorder',True) and ids!=old:
+                raise ValueError('Planner reordering is off.')
             if any(i>=len(ids) or ids[i]!=tid for i,tid in enumerate(old) if tid in policy.get('lockedIds',[])):
                 raise ValueError('A locked track must keep its position.')
             prepared=cue_planner.revise_prepared_queue(s,order,mix_transitions,reason,protected,tempo_targets,cue_choices=cue_choices) if mix_transitions and not quick else None
@@ -1590,16 +1591,59 @@ class DJSession:
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
             if not staged and not (rolling and (not queued or queued.get('catalogMissId') or (self.state.get('entryCadence') and queued.get('measuredFitMissId')))):
                 return 0
-        duration_ms=(current.get('controls') or {}).get('durationMs')
+            # Native console controls can temporarily omit duration during
+            # background waveform work. Replay-verified analysis for this
+            # exact recording remains valid when that optional read drops.
+            measured=next((row.get('duration') for row in (self.state.get('analysis') or {}).get('tracks',[])
+                           if row['id']==track['id']),None)
         position=current.get('position')
-        if (type(duration_ms) not in (int,float) or not math.isfinite(duration_ms)
-                or type(position) not in (int,float) or not math.isfinite(position) or position<0):
+        if type(position) not in (int,float) or not math.isfinite(position) or position<0:
+            return 0
+        native_ms=(current.get('controls') or {}).get('durationMs')
+        native=native_ms/1000 if type(native_ms) in (int,float) else None
+        durations=[value for value in (native,measured)
+                   if type(value) in (int,float) and math.isfinite(value) and value>0]
+        if not durations:
             return 0
         # Leave a margin for tempo adjustment and the last native readbacks.
-        return max(0,(duration_ms/1000-position)/1.08-4)
+        return max(0,(min(durations)-position)/1.08-4)
+
+    def remove_from_setlist(self, track_id):
+        # Apply through the same handoff boundary as other queue revisions. The
+        # current and silent cued decks remain with the audio worker.
+        with self.lock:
+            s=self.snapshot()
+            queued=s.get('queuedUpdate') or {}
+            current=s['order']
+            planned=queued.get('tracks') or current
+            if not isinstance(track_id,str) or not any(t['id']==track_id for t in planned):
+                raise ValueError('Choose an existing recording in the queue.')
+            if track_id in s['setlist'].get('lockedIds',[]):
+                raise ValueError('Unlock the recording before removing it.')
+            audible=s['active'] or any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[]))
+            if audible:
+                protected=current[:max(0,s['index'])+2]
+                if track_id in {t['id'] for t in protected}:
+                    raise ValueError('The current and cued tracks are protected.')
+                if not s['active'] or s['phase'] not in ('playing','mixing','loading'):
+                    raise ValueError('Return to the scheduled set before changing its upcoming tracks.')
+            retained=[t['id'] for t in planned if t['id']!=track_id]
+            if len(retained)<2:
+                raise ValueError('Keep at least two tracks in the set.')
+            reason='Operator removed a future recording from the set.'
+            self.revise_queue(retained,reason=reason,source='operator')
+            if audible:
+                revision=self.state['queuedUpdate']
+                revision.setdefault('sourceById',{}).update({tid:src for tid,src in queued.get('sourceById',{}).items() if tid in retained})
+                if queued.get('startId') in retained:
+                    revision['startId']=queued['startId']
+            self.event(reason,'setlist')
+            return self.snapshot()
 
     def edit_setlist(self, operation, track_id=None, value=None, ids=None):
-        """Edit preparation state only; never issue audio commands."""
+        """Edit the queue without issuing audio commands."""
+        if operation=='remove':
+            return self.remove_from_setlist(track_id)
         with self.lock:
             if self.state['active'] or any(d.get('playing') for d in (self.state.get('telemetry') or {}).get('decks',[])):
                 raise ValueError('Stop the set before editing its order or locks.')

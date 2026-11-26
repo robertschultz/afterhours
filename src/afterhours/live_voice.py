@@ -10,12 +10,40 @@ import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from afterhours import ai_mix
-from afterhours.dj_agent import music_context
 
 MODEL='gpt-live-1.1'
 SECONDS=1800
 DECISION_REQUESTS=60
 VOICE_RATE_PER_MINUTE=.05
+START_CONTEXT_BYTES=4000
+
+
+def startup_history(profile, agent_state, music):
+    """Send a small operator briefing. The DJ planner retains full history and crate facts."""
+    order=music.get('order') or []
+    index=max(0,music.get('index',0))
+    tracks=[{key:str(track.get(key) or '')[:96] for key in ('title','artist')}
+            for track in order[index:index+3]]
+    recent=[{'role':m['role'],'text':m['text'][:220]}
+            for m in (agent_state.get('messages') or [])[-4:]
+            if m.get('role') in ('user','assistant') and isinstance(m.get('text'),str)]
+    facts={'direction':str(agent_state.get('direction') or '')[:300],
+           'playbackPhase':music.get('phase'),
+           'playing':any(deck.get('playing') for deck in (music.get('telemetry') or {}).get('decks',[])),
+           'queue':tracks,
+           'profile':{key:str(profile[key])[:140] for key in ('name','genres','rules','memory') if profile.get(key)},
+           'recentMessages':recent}
+    prefix='Local application facts and previous conversation for reference. Delegate every new music request. '
+    while True:
+        content=prefix+json.dumps(facts,ensure_ascii=False,separators=(',',':'))
+        history=[{'type':'message','role':'developer','content':[{'type':'input_text','text':content}]}]
+        # Measure the escaped wire representation, including non-ASCII history.
+        if len(json.dumps(history).encode())<=START_CONTEXT_BYTES:
+            return history
+        if recent:recent.pop(0)
+        elif facts['profile']:facts['profile'].popitem()
+        elif tracks:tracks.pop()
+        else:facts['direction']=''
 
 
 class LiveVoice:
@@ -70,7 +98,7 @@ class LiveVoice:
             self.state.update(status='connecting',sessionId=None,expiresAt=None,usageSeconds=None,finalized=False,
                               maxSeconds=max_seconds,maxDecisionRequests=decisions)
             self.cancel_connect=False
-        a=self.agent.snapshot();context=music_context(self.agent.session.snapshot())
+        history=startup_history(profile,self.agent.snapshot(),self.agent.session.snapshot())
         instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. Use a relaxed, concise,
 knowledgeable DJ voice. You are an AI persona, not the human operator and not their cloned voice.
 Listen naturally and accept interruptions. Delegate any musical direction, track request, change to
@@ -103,9 +131,6 @@ Talk continues until the operator stops it or the {max_seconds//60}-minute sessi
 Stopping Talk closes the microphone. An explicitly started DJ set can keep choosing music
 within this same decision allowance and original deadline; it does not buy more time or calls.
 No camera or direct music audio is supplied.'''
-        history=[{'type':'message','role':'developer','content':[{'type':'input_text','text':
-            'Application facts and operator-owned DJ preferences. Safety and execution constraints above take precedence. Past sets are reference only, not the current direction: '+json.dumps({'djProfile':profile,'direction':a['direction'],'music':context,'pastSets':self.agent.past_context()},ensure_ascii=True)}]}]
-        history += [{'type':'message','role':m['role'],'content':[{'type':'input_text' if m['role']=='user' else 'output_text','text':m['text']}]} for m in a['messages'][-8:]]
         body={'session':{'model':MODEL,'instructions':instructions,'input':history,'store':False,
                          'audio':{'output':{'voice':selected_voice}},
                          'delegation':{'type':'client'}},'transport':{'type':'webrtc','sdp':sdp}}

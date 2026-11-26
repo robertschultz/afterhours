@@ -2,7 +2,7 @@
 import json,threading,unittest
 from unittest.mock import Mock,patch
 from urllib.error import URLError
-from afterhours.live_voice import LiveVoice
+from afterhours.live_voice import LiveVoice, START_CONTEXT_BYTES, startup_history
 from afterhours.dj_agent import DJAgent
 from test_dj_agent import Session
 
@@ -40,6 +40,21 @@ class VoiceTests(unittest.TestCase):
         body=json.loads(self.requests[0].data)
         self.assertEqual(body['session']['audio']['output']['voice'],'gleam')
         self.assertEqual(self.voice.status()['voice'],'gleam')
+
+    def test_startup_history_keeps_useful_facts_and_bounds_escaped_text(self):
+        messages=[{'role':'user','text':'🪩'*5000} for _ in range(10)]
+        messages.append({'role':'assistant','text':'The next blend is scheduled.'})
+        room={'phase':'playing','index':1,'order':[{'title':'Previous'},{'title':'Current favorite'}],
+              'candidates':[{'title':'Unrelated candidate'}]*200}
+        history=startup_history({'name':'Dot','rules':'🎵'*1000},
+                                {'direction':'House tonight','messages':messages},room)
+        wire=json.dumps(history).encode()
+        self.assertLessEqual(len(wire),START_CONTEXT_BYTES)
+        self.assertEqual([m['role'] for m in history],['developer'])
+        self.assertIn(b'Current favorite',wire)
+        self.assertIn(b'House tonight',wire)
+        self.assertIn(b'next blend is scheduled',wire)
+        self.assertNotIn(b'Unrelated candidate',wire)
 
     def test_one_session_and_duplicate_attempt_guard(self):
         self.start()

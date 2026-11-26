@@ -184,6 +184,20 @@ class QueuePlanningTests(unittest.TestCase):
         state['executionPlan']['selections'][1]['replayVerified'] = False
         self.assertIsNone(queue_planning.runway(state, 101))
 
+    def test_voice_artist_start_rolls_the_queue_unless_the_request_is_finite(self):
+        agent=dj_agent.DJAgent(self.session, evaluator=Mock())
+        self.session.start=Mock()
+        state=self.session.snapshot()
+        request={'status':'preparing','source':'voice','sessionId':state['id'],
+                 'revision':agent.state['revision'],'orderIds':[t['id'] for t in state['order']],
+                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk'}
+        for scope in (None,'finite'):
+            with self.subTest(scope=scope):
+                agent.playback_request={**request,'scope':scope}
+                self.session.start.reset_mock()
+                self.assertTrue(agent.advance_playback())
+                self.assertEqual(self.session.start.call_args.kwargs.get('rolling_queue',False),scope is None)
+
     def test_next_track_prefers_a_verified_cue_between_key_matches(self):
         rows = [track('out'), track('close'), track('ready', bpm=126)]
         book = Lookups({'executionPlan':{'selections':[{'trackId':'ready','replayVerified':True}]}}, rows)

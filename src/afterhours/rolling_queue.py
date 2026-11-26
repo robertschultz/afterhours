@@ -13,7 +13,7 @@ class RollingQueue:
     def tick(self, session, slack):
         with session.lock:
             state = session.snapshot()
-            if (not state['active'] or state['phase'] != 'playing' or dj_settings.lead(state) != 'all'
+            if (not state.get('rollingQueue') or not state['active'] or state['phase'] != 'playing' or dj_settings.lead(state) != 'all'
                     or not state['setlist']['allowReorder'] or state['copilot'].get('held')):
                 return
             if slack < 4 or session.cancel.is_set():

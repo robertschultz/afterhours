@@ -1700,7 +1700,7 @@ class DJSession:
         self._launch(work,'reviewing')
         return self.snapshot()
 
-    def measure_cues(self,client,track,evidence,target_bpm,seconds,deck=1,isolated=None):
+    def measure_cues(self,client,track,evidence,target_bpm,seconds,deck=1,isolated=None, *, timed=False):
         isolated=deck in (3,4) if isolated is None else isolated is True
         if deck not in ((1,2,3,4) if isolated else (1,)):raise ValueError('Cue analysis uses paused deck A or an isolated spare deck.')
         def guard():
@@ -1731,7 +1731,8 @@ class DJSession:
                     number(self.q(client,f'deck {deck} get_time elapsed absolute'),
                            -6000 if grid_anchor else 0,1200000)/1000)
         anchor,anchor_time=at(0,grid_anchor=True)
-        policy=cue_planner.propose_offsets(evidence,rows,anchor_time,track['bpm'],target_bpm,seconds)
+        policy=cue_planner.propose_offsets(evidence,rows,anchor_time,track['bpm'],target_bpm,seconds,
+                                          limit=10 if timed else 8,timed=timed)
         result=[]
         for offset in policy['offsets']:
             entry,entry_time=at(offset)

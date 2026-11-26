@@ -71,7 +71,7 @@ def excerpt_beats(seconds, target_bpm):
     return min((32,64,128,256,512,1024,2048), key=lambda n: abs(n-desired))
 
 
-def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8):
+def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8, *, timed=False):
     """Rank candidate grid offsets locally; native seek/readback follows."""
     span = excerpt_beats(seconds, target_bpm)
     blend = min(32 if seconds <= 30 else 64, span//2)
@@ -105,9 +105,10 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
     # Keep early eligible exits available alongside the highest-scoring
     # windows. A live opener cannot seek to a better-scoring late entrance.
     ranked=[]
+    early_count, early_spacing = (7, 16) if timed else (2, 32)
     for _,offset in possibilities:
-        if len(ranked)>=min(2,limit):break
-        if all(abs(offset-other)>=32 for other in ranked):
+        if len(ranked)>=min(early_count,limit):break
+        if all(abs(offset-other)>=early_spacing for other in ranked):
             ranked.append(offset)
     for _,offset in sorted(possibilities,reverse=True):
         if len(ranked)>=limit:break
@@ -365,6 +366,11 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                 best_error = min(map(cadence_error, candidates))
                 if math.isfinite(best_error):
                     candidates = [c for c in candidates if cadence_error(c) <= best_error + 4]
+                    # Prefer a nearby alternative exit when the next load
+                    # clears the exact target by only a few bars.
+                    flexible = [c for c in candidates if any(4 <= beat-c['entryBeat']-target <= bpm/6 for beat in exits)]
+                    if flexible:
+                        candidates = flexible
             elif snapshot.get('rollingQueue'):
                 usable=[c for c in candidates if c['maxBlendBeats']>=8]
                 if usable:

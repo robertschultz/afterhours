@@ -54,6 +54,16 @@ class CueTests(unittest.TestCase):
         for row in rows:row.update(rmsDb=-120)
         with self.assertRaisesRegex(ValueError,'no usable signal'):cp.propose_offsets(t,rows,.2,155,155,30)
 
+    def test_timed_cue_policy_keeps_nearby_early_alternatives(self):
+        rows, report, _ = fixture()
+        track = report['tracks'][0]
+        standard = cp.propose_offsets(track, rows, .2, 126, 126, 30)
+        timed = cp.propose_offsets(track, rows, .2, 126, 126, 30, limit=10, timed=True)
+        self.assertEqual(timed['offsets'][:7], list(range(0, 112, 16)))
+        self.assertNotIn(16, standard['offsets'])
+        self.assertLessEqual(len(timed['offsets']), 10)
+        self.assertEqual(timed['spanBeats'], standard['spanBeats'])
+
     def test_native_readbacks_cannot_move_into_silence_or_outside_track(self):
         rows,report,_=fixture();t=report['tracks'][0];native=t['cueCandidates'][0]
         policy={'spanBeats':64,'blendBeats':32,'medianRmsDb':-14}

@@ -367,7 +367,9 @@ class BackgroundAnalysis:
                 self.session.availability.require_track(track)
                 self.check();self.status='analyzing';self.message='Analyzing upcoming track · '+track['title']
                 cached=self.cache.get(track['id'])
-                if cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']:
+                timed = bool(s.get('entryCadence'))
+                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']
+                        and bool(cached.get('timedPreparation')) == timed):
                     try:
                         from afterhours import cue_planner
                         cue_planner.measured_rows(cached);self.result.append(cached);continue
@@ -384,8 +386,11 @@ class BackgroundAnalysis:
                     self.message='Preparing waveform · '+track['title']
                     scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
-                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],deck=self.deck,isolated=True)
+                timed_option = {'timed': True} if timed else {}
+                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],
+                                                              deck=self.deck,isolated=True,**timed_option)
                 evidence['preparationSeconds']=s['secondsPerTrack']
+                if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
                 self.session.availability.verified(track['id'])
             self.status='complete';self.message='Upcoming recordings analyzed; validating their handoffs.'

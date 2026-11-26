@@ -3,6 +3,7 @@
 import math
 
 from afterhours import session_curation
+from afterhours.dj_discovery import credit, normalized
 from afterhours.program_timeline import BeatTime
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import validate_order
@@ -23,6 +24,27 @@ def transition_cost(outgoing, incoming, cues):
         if finite(exit_window.get(field)) and finite(entry_window.get(field)):
             cost += abs(exit_window[field] - entry_window[field]) * weight
     return cost
+
+
+def quick_opening(session, query, found):
+    """Use an exact live match and a feasible next slot before audio analysis."""
+    wanted=normalized(query)
+    blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
+    candidates=[row for row in session.get('candidates',[])
+                if row['id'] in found and row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
+    for first in candidates:
+        if wanted!=normalized(first.get('title')) and wanted not in credit(first.get('artist')):
+            continue
+        followups=sorted((row for row in candidates if row['id']!=first['id']),
+                         key=lambda row: abs(first['bpm']-row['bpm']))
+        for second in followups:
+            pair=[first['id'],second['id']]
+            try:
+                validate_order(pair,candidates,session.get('maxTempoShift',8),session.get('secondsPerTrack',30))
+            except ValueError:
+                continue
+            return pair
+    return None
 
 
 def placement(session, track_id):

@@ -862,9 +862,10 @@ class AgentIntegrationTests(unittest.TestCase):
             for _ in range(20):agent.last_request=0;agent.tick();settled(agent)
         self.assertLessEqual(len(provider.requests)-base,dj_agent.OVERTAKEN_LIMIT+1)
 
-    def test_discovery_off_also_stops_the_engine_digging_on_its_own(self):
+    def test_planner_discovery_does_not_enable_unprompted_cache_digging(self):
         agent,session=self.agent(Provider(ready(),decides()))
-        agent.tick(force=True);self.assertTrue(session.dig_allowed)
+        session.dig_allowed=False
+        agent.tick(force=True);self.assertFalse(session.dig_allowed)
         agent.settings.state['discover']=False
         agent.tick(force=True);self.assertFalse(session.dig_allowed)
 

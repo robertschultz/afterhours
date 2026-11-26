@@ -189,12 +189,13 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         return (-score,distance)
     identity_order=sorted(candidates.values(),key=relevance) if terms else list(candidates.values())
     style=dj_discovery.style_for(request)
+    set_slot=dj_discovery.set_slot(request)
     order=s.get('order') or []
     cursor=max(0,s.get('index',0))
     anchors=order[max(0,cursor-1):cursor+2]
     recent=list(heard_tracks)[-6:]+order[max(0,cursor-3):cursor+1] if order else list(heard_tracks)[-6:]
     recent=list({track['id']:track for track in recent}.values())
-    ranked,discovery_facts=dj_discovery.rank_candidates(candidates.values(),style,anchors,recent,relevance)
+    ranked,discovery_facts=dj_discovery.rank_candidates(candidates.values(),style,anchors,recent,relevance,set_slot=set_slot)
     requested=[t['id'] for t in ranked if relevance(t)[0]<0 and t['id'] not in unavailable][:4]
     ordered.update({tid:candidates[tid] for tid in requested if tid in candidates})
     ordered.update({tid:candidates[tid] for tid in list(guest_ids)[:8] if tid in candidates})
@@ -244,8 +245,10 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         # full=True is the lookup book: every eligible row, never sent whole to the provider.
         'catalog':[catalog_track(t) for t in list(ordered.values())[:None if full else 32]],
         'requestedIds':requested,
+        'setSlot':set_slot,
         'discoveryHints':dj_discovery.DISCOVERY.hints(style, list(candidates.values())),
-        'discoveryPolicy':'Genre popularity is a community signal. Report only supplied chart ranks with their source and scope. Favor artist and label variety, use hints as search leads, and choose only verified catalog IDs.',
+        'discoveryPolicy':'Search the live catalog for a fresh direction or thin queue. Start with requested releases or artists, then use credited collaborators, labels, and sourced genre leads. Keep the selected direction current; cached matches support lookups only. Choose compatible, varied recordings around the set slot. Respect measured BPM, key and cues.',
+        'popularityPolicy':'Report chart ranks with their source and scope. Genre popularity is a community signal. Choose only verified catalog IDs.',
         'pinnedIds':list(s.get('setPins',[])),
         'fulfilledPinnedIds':set_plan.played_pins(s),
         'catalogScope':'Bounded selection context, prioritized for the latest operator request; omitted records are not evidence of absence.',
@@ -1702,6 +1705,7 @@ class DJAgent:
                         self.fail_planning('Catalog search could not start: '+str(exc))
                         return self.snapshot()
                     self.searches.add(query);self.search_rounds=1
+                    self.playback_request['fastOpeningQuery']=query
                     self.awaiting_catalog=True;self.search_from_turn=True
                     summary='Searching the crate for '+query+'.'
                     self.playback_request['message']=summary
@@ -1740,8 +1744,6 @@ class DJAgent:
                     external.finish('blocked',str(exc))
                     self.state.update(status='held',message=str(exc));self.save();return
             s=self.session.snapshot()
-            # Discovery off means the engine does not browse the catalog on its own either.
-            self.session.dig_allowed=bool(self.settings.state['discover'])
             self.curation.reconcile(s,self.playback_request,dj_settings.lead(s))
             if self.remember_played_pins(s):
                 self.save();s=self.session.snapshot()
@@ -1792,6 +1794,25 @@ class DJAgent:
             catalog=s.get('catalogSearch') or {}
             if self.awaiting_catalog and catalog.get('status') in ('queued','searching'):return
             catalog_ready=self.awaiting_catalog and (catalog.get('status') in ('complete','error') or s.get('phase')=='catalog-ready')
+            request=self.playback_request or {}
+            if (catalog_ready and catalog.get('status')=='complete' and request.get('fastOpeningQuery')
+                    and dj_discovery.normalized(catalog.get('query'))==dj_discovery.normalized(request['fastOpeningQuery'])
+                    and request.get('status')=='choosing' and request.get('sessionId')==s.get('id')
+                    and request.get('revision')==self.state['revision'] and self.clock()<request['expiresAt']
+                    and not s.get('active') and not s.get('order') and not mixing_only
+                    and not any(deck.get('playing') for deck in (s.get('telemetry') or {}).get('decks',[]))):
+                pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])))
+                if pair:
+                    try:
+                        self.session.plan(pair,s.get('secondsPerTrack',30),0,s.get('maxTempoShift',8),'phrase')
+                    except (ValueError,OSError,BridgeError):
+                        pass  # The main planner can choose another safe opening.
+                    else:
+                        self.awaiting_catalog=False
+                        self.state['direction']=request['intent']
+                        self.bind_playback()
+                        self.advance_playback()
+                        return
             if catalog_ready and catalog.get('status')=='error':
                 self.awaiting_catalog=False;self.catalog_curation=None
                 message='Catalog search stopped. '+catalog.get('message','Try another artist or check the music connection.')
@@ -1874,8 +1895,8 @@ class DJAgent:
                     if value['reason']:row['preferenceReason']=value['reason']
             packet['music']['catalog']=working_rows[:32]
             packet['canInsertTrack']=bool(queued and not mixing_only and not external)
-            # Lookups also read everything the crate has ever stored. A stored
-            # recording joins the working set only if the decision chooses it.
+            # The cache answers named lookups. The current set and live searches
+            # supply recommendations, so arbitrary cached artists cannot steer digging.
             crate=getattr(self.session,'crate',None)
             availability=getattr(self.session,'availability',None)
             anchor=packet['music']['tempoPolicy']['targetBpm']
@@ -1883,11 +1904,8 @@ class DJAgent:
             blocked=availability.blocked if availability else (lambda tid:None)
             retrieve=None
             if crate:
-                seed=crate.planner_facts(ranking_text,anchor,shift)
-                stored=crate_rows(seed,s.get('candidates',[]),anchor,shift,blocked)
                 retrieve=lambda text, known: crate_rows(crate.search(text,limit=24),known,anchor,shift,blocked)
-            else:stored=[]
-            book=agent_loop.Lookups(planning,working_rows+stored,s.get('analysis'),retrieve=retrieve)
+            book=agent_loop.Lookups(planning,working_rows,s.get('analysis'),retrieve=retrieve)
             # The operator's turn shares one request budget across its direction
             # and search follow-ups; one request is held back while another
             # search may still follow. An automatic decision stands alone.

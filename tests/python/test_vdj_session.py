@@ -328,7 +328,10 @@ class SessionTests(unittest.TestCase):
             s.plan(['0','1','3','2'],mix_style='quick');s.start()
             launch.assert_called_once()
 
-    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False):
+    def test_quick_playback_adopts_an_insertion_during_a_fade_and_extends_its_final_track(self):
+        self.simulate_run(15,8,104,quick_insert=True)
+
+    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False):
         """Deterministic peer simulation; this does not play or assess music."""
         s=DJSession(threading.Lock());pool=[{'id':str(i),'title':str(i),'bpm':155,'genre':'Drum & Bass','camelot':'2A'} for i in range(4)]
         s.update(candidates=pool);s.plan([t['id'] for t in pool],seconds=seconds)
@@ -357,7 +360,9 @@ class SessionTests(unittest.TestCase):
             response=copy.deepcopy(response);response['selections']=response['selections'][:2];response['transitions']=response['transitions'][:1]
             review=ai_mix.validate_plan(response,report,seconds);plan=cue_planner.compile_plan(review,report,pool[:2],seconds);plan['applied']=True
             s.update(order=pool[:2],analysis=report,aiReview=review,executionPlan=plan)
+        if quick_insert:s.plan(['0','1'],seconds=seconds,excerpt_bars=0,mix_style='quick')
         now=[0.0];cross=[0.0];fade=[None];sent=[];reads=[];ramps={};revised=[False];steered=[];loads=[]
+        insertions=[]
         master=[selected_spare or 1];sync_sources=[]
         from afterhours import deck_rotation
         numbers=deck_rotation.FOUR if four else deck_rotation.TWO
@@ -411,16 +416,29 @@ class SessionTests(unittest.TestCase):
                 s.revise_queue(ids,mix_transitions=[{'fromId':a,'toId':b,'technique':'short-handoff',
                     'blendBeats':blend,'reason':'Synthetic live steer.'} for a,b in zip(ids,ids[1:])])
                 self.assertEqual([t['id'] for t in s.state['order']],['0','1','2','3'])
+            if quick_insert and not insertions and s.state['phase']=='mixing' and s.state['activeHandoff']:
+                staged=s.revise_queue(['0','1','2'])
+                self.assertEqual(staged['queuedUpdate']['protectedIds'],['0','1'])
+                insertions.append('2')
+            if (quick_insert and insertions==['2'] and s.state['phase']=='playing'
+                    and s.state['index']==2 and s.state['fadeBeats']==0):
+                staged=s.revise_queue(['0','1','2','3'])
+                self.assertEqual(staged['queuedUpdate']['protectedIds'],['0','1','2'])
+                insertions.append('3')
             if background and not revised[0] and s.state['phase']=='playing':
                 revised[0]=True;ids=['0','1','2','3']
                 s.revise_queue(ids,mix_transitions=[{'fromId':a,'toId':b,'technique':'short-handoff',
                     'blendBeats':blend,'reason':'Synthetic new selections.'} for a,b in zip(ids,ids[1:])])
                 self.assertEqual(s.state['queuedUpdate']['status'],'needs-analysis')
             return t
-        def prepare(c,track,deck,target,cue=None):
+        def prepare(c,track,deck,target,cue=None,checked=None):
+            if quick_insert and track['id']=='3' and checked is None:
+                from afterhours.vdj_session import TrackMetadataChanged
+                raise TrackMetadataChanged({**track,'camelot':'1A'})
             loads.append((track['id'],deck))
             s.wait_observed(c,5)
-            self.assertEqual(cue['trackId'],track['id'])
+            if cue:self.assertEqual(cue['trackId'],track['id'])
+            else:self.assertTrue(quick_insert)
             decks[deck-1].update(id=track['id'],bpm=target,playing=False,beatPosition=cue['entryBeat'] if cue else 64)
         def send(c,script):
             sent.append((script,now[0],copy.deepcopy(decks)))
@@ -445,7 +463,7 @@ class SessionTests(unittest.TestCase):
                 clock_deck,name,a,b,beats,deck,key=re.fullmatch(r"(?:deck (\d) )?repeat_start_fade '([^']+)' ([\d.]+) ([\d.]+) (\d+)bt & deck (\d) ([\w ]+)",script).groups()
                 self.assertEqual(clock_deck,deck)
                 ramps[name]=(now[0],int(deck),key,float(a),float(b),int(beats)*60/decks[int(deck)-1]['bpm'])
-            elif script.startswith('repeat_stop'):
+            elif 'repeat_stop ' in script:
                 for command in script.split(' & '):
                     name=command.split("'")[1]
                     if name=='afterhours_crossfade':fade[0]=None
@@ -488,6 +506,16 @@ class SessionTests(unittest.TestCase):
                 provider.assert_not_called()
             else:s.start(resume=control=='resume')
         result=s.snapshot();self.assertEqual(result['phase'],'completed')
+        if quick_insert:
+            self.assertEqual(insertions,['2','3'])
+            self.assertEqual(loads,[('0',1),('1',2),('2',1),('3',2)])
+            self.assertEqual([(t['from'],t['to']) for t in result['transitions']],[('0','1'),('1','2'),('2','3')])
+            self.assertTrue(all(t['timing']['basis']=='native-beat-grid' and t['timing']['fadeBeats']==8
+                                for t in result['transitions']))
+            self.assertIsNone(result['queuedUpdate'])
+            self.assertEqual(result['order'][3]['camelot'],'1A')
+            self.assertFalse(any(d['playing'] for d in decks))
+            return
         if revise:
             self.assertEqual([t['id'] for t in result['order']],['0','1','3','2'])
             self.assertEqual([(t['from'],t['to']) for t in result['transitions']],[('0','1'),('1','3'),('3','2')])

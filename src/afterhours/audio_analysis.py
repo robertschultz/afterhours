@@ -186,6 +186,11 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                     fresh = True
                     if current[0].get('bufferReadComplete') is True:
                         break
+                if not fresh and str(label or '').startswith('Buffer read finished'):
+                    raise AudioAnalysisTimeout(
+                        'VirtualDJ finished scanning, but Afterhours could not read a new report. '
+                        'Check that Afterhours and the installed analysis bridge use the same report folder.'
+                    )
                 if label and not any(s in label for s in ('scanned', 'incomplete', 'Buffer read finished')):
                     raise BridgeError('The analysis bridge could not scan this recording. ' + str(label)[:192])
                 wait(.15)
@@ -216,7 +221,7 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                 last, last_time = digest, clock()
                 last_reason = 'Waiting for two matching whole-track scans.'
             wait(1.05)
-        raise BridgeError('Audio analysis remains unverified: '+last_reason)
+        raise AudioAnalysisTimeout('Audio analysis remains unverified: '+last_reason)
     finally:
         # Do not overwrite an operator's newly selected effect. Cleanup never
         # sends Play, Pause, Load, gain, EQ or seek; it only removes our plugin.

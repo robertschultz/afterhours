@@ -53,6 +53,7 @@ def queue_intent(value):
 def normalized_intent(text):
     if not isinstance(text, str):return None
     value=' '.join(text.casefold().replace('’',"'").strip().split()).rstrip('.!?')
+    value=re.sub(r'^(?:hey )?dot[, ]+', '', value)
     value=re.sub(r'^(?:ok(?:ay)?[, ]+|yes[, ]+)', '', value)
     value=re.sub(r'^(?:can|could|would|will) (?:you|we) (?:please )?', '', value)
     value=re.sub(r'^please |[, ]+please$', '', value).strip()
@@ -82,7 +83,8 @@ def intent(text):
                  "what's happening",'what is happening','why are you still analyzing',
                  "why aren't you playing",'why are you not playing','how is it going',
                  'are you starting','when will the music start'}:return 'status'
-    if value in {'stop', 'stop playing', 'stop the music', 'stop music', 'stop the set',
+    stop_value=re.sub(r',? (?:right now|now)$', '', value)
+    if stop_value in {'stop', 'stop playing', 'stop the music', 'stop music', 'stop the set',
                  'pause the music', 'pause music', 'cancel playback', 'cancel start',
                  'pause', 'pause it', 'pause playback', 'pause the set', 'pause the track', 'pause this',
                  'stop it', 'stop the track', 'stop playback', 'stop this', 'hold the music'}:return 'stop'

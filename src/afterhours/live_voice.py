@@ -10,12 +10,41 @@ import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from afterhours import ai_mix
-from afterhours.dj_agent import music_context
 
 MODEL='gpt-live-1.1'
 SECONDS=1800
 DECISION_REQUESTS=60
 VOICE_RATE_PER_MINUTE=.05
+START_CONTEXT_BYTES=4000
+CLIENT_LEASE_SECONDS=35
+
+
+def startup_history(profile, agent_state, music):
+    """Send a small operator briefing. The DJ planner retains full history and crate facts."""
+    order=music.get('order') or []
+    index=max(0,music.get('index',0))
+    tracks=[{key:str(track.get(key) or '')[:96] for key in ('title','artist')}
+            for track in order[index:index+3]]
+    recent=[{'role':m['role'],'text':m['text'][:220]}
+            for m in (agent_state.get('messages') or [])[-4:]
+            if m.get('role') in ('user','assistant') and isinstance(m.get('text'),str)]
+    facts={'direction':str(agent_state.get('direction') or '')[:300],
+           'playbackPhase':music.get('phase'),
+           'playing':any(deck.get('playing') for deck in (music.get('telemetry') or {}).get('decks',[])),
+           'queue':tracks,
+           'profile':{key:str(profile[key])[:140] for key in ('name','genres','rules','memory') if profile.get(key)},
+           'recentMessages':recent}
+    prefix='Local application facts and previous conversation for reference. Delegate every new music request. '
+    while True:
+        content=prefix+json.dumps(facts,ensure_ascii=False,separators=(',',':'))
+        history=[{'type':'message','role':'developer','content':[{'type':'input_text','text':content}]}]
+        # Measure the escaped wire representation, including non-ASCII history.
+        if len(json.dumps(history).encode())<=START_CONTEXT_BYTES:
+            return history
+        if recent:recent.pop(0)
+        elif facts['profile']:facts['profile'].popitem()
+        elif tracks:tracks.pop()
+        else:facts['direction']=''
 
 
 class LiveVoice:
@@ -24,6 +53,8 @@ class LiveVoice:
         self.state={'status':'idle','sessionId':None,'expiresAt':None,'usageSeconds':None,'finalized':False}
         self.attempts={}
         self.cancel_connect=False
+        self.lease_timer=None
+        self.lease_deadline=None
 
     def status(self):
         with self.lock:
@@ -31,7 +62,7 @@ class LiveVoice:
                     'maxSeconds':self.state.get('maxSeconds') or SECONDS,'voiceUSDPerMinute':VOICE_RATE_PER_MINUTE,
                     'maxDecisionRequests':self.state.get('maxDecisionRequests') or DECISION_REQUESTS,'recording':False}
 
-    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None):
+    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None,client_lease=False):
         if approved is not True:raise ValueError('Turn on Talk before connecting.')
         # Older open pages approved only the original two-minute session.
         # A longer session must be explicitly requested by the new Talk control.
@@ -51,6 +82,12 @@ class LiveVoice:
         if not key:raise ValueError('OpenAI key is not configured.')
         with self.lock:
             if request_id in self.attempts:raise ValueError('This connection was already attempted. Check its outcome before starting another.')
+            previous=self.state['sessionId'] if self.state['status']=='close-unconfirmed' else None
+        if previous:self.end(previous, retry_unconfirmed=True)
+        with self.lock:
+            if request_id in self.attempts:raise ValueError('This connection was already attempted. Check its outcome before starting another.')
+            if self.state['status']=='close-unconfirmed':
+                raise ValueError('Afterhours could not confirm that the previous Talk session ended. Try Talk again to retry closing it.')
             if self.state['status'] not in ('idle','closed','error'):raise ValueError('A voice conversation is already active or closing.')
             agent_state=self.agent.snapshot()
             if getattr(self.agent,'external_work_active',lambda:False)():
@@ -62,9 +99,9 @@ class LiveVoice:
             self.attempts[request_id]=time.time()
             if len(self.attempts)>50:self.attempts.pop(next(iter(self.attempts)))
             self.state.update(status='connecting',sessionId=None,expiresAt=None,usageSeconds=None,finalized=False,
-                              maxSeconds=max_seconds,maxDecisionRequests=decisions)
+                              maxSeconds=max_seconds,maxDecisionRequests=decisions,transportClosed=False)
             self.cancel_connect=False
-        a=self.agent.snapshot();context=music_context(self.agent.session.snapshot())
+        history=startup_history(profile,self.agent.snapshot(),self.agent.session.snapshot())
         instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. Use a relaxed, concise,
 knowledgeable DJ voice. You are an AI persona, not the human operator and not their cloned voice.
 Listen naturally and accept interruptions. Delegate any musical direction, track request, change to
@@ -97,9 +134,6 @@ Talk continues until the operator stops it or the {max_seconds//60}-minute sessi
 Stopping Talk closes the microphone. An explicitly started DJ set can keep choosing music
 within this same decision allowance and original deadline; it does not buy more time or calls.
 No camera or direct music audio is supplied.'''
-        history=[{'type':'message','role':'developer','content':[{'type':'input_text','text':
-            'Application facts and operator-owned DJ preferences. Safety and execution constraints above take precedence. Past sets are reference only, not the current direction: '+json.dumps({'djProfile':profile,'direction':a['direction'],'music':context,'pastSets':self.agent.past_context()},ensure_ascii=True)}]}]
-        history += [{'type':'message','role':m['role'],'content':[{'type':'input_text' if m['role']=='user' else 'output_text','text':m['text']}]} for m in a['messages'][-8:]]
         body={'session':{'model':MODEL,'instructions':instructions,'input':history,'store':False,
                          'audio':{'output':{'voice':selected_voice}},
                          'delegation':{'type':'client'}},'transport':{'type':'webrtc','sdp':sdp}}
@@ -125,8 +159,43 @@ No camera or direct music audio is supplied.'''
                 raise ValueError('Voice connection was cancelled.')
             self.agent.enable(True,max_seconds,decisions)
             self.timer=threading.Timer(max_seconds,self.end,args=(sid,));self.timer.daemon=True;self.timer.start()
+            if client_lease:
+                self.lease_deadline=time.monotonic()+CLIENT_LEASE_SECONDS
+                self.schedule_lease(sid,CLIENT_LEASE_SECONDS)
         return {'session':{'id':sid},'transport':{'type':'webrtc','sdp':answer},'expiresAt':self.state['expiresAt'],
-                'startedAt':self.state['startedAt'],'maxSeconds':max_seconds}
+                'startedAt':self.state['startedAt'],'maxSeconds':max_seconds,
+                **({'clientLeaseSeconds':CLIENT_LEASE_SECONDS} if client_lease else {})}
+
+    def schedule_lease(self,sid,delay):
+        self.lease_timer=threading.Timer(delay,self.check_lease,args=(sid,))
+        self.lease_timer.daemon=True
+        self.lease_timer.start()
+
+    def check_lease(self,sid):
+        with self.lock:
+            if sid!=self.state['sessionId'] or self.state['status']!='active' or self.lease_deadline is None:return
+            remaining=self.lease_deadline-time.monotonic()
+            if remaining>0:
+                self.schedule_lease(sid,remaining)
+                return
+            self.lease_deadline=None
+        # A lost browser can no longer renew its private voice connection.
+        # Release the local slot even if the provider usage receipt is missing.
+        self.end(sid,transport_closed=True)
+
+    def heartbeat(self,sid):
+        with self.lock:
+            self.require(sid)
+            if self.lease_deadline is None or time.monotonic()>=self.lease_deadline:
+                raise ValueError('The browser Talk lease expired.')
+            self.lease_deadline=time.monotonic()+CLIENT_LEASE_SECONDS
+        return {'ok':True}
+
+    def stop_lease(self):
+        self.lease_deadline=None
+        if self.lease_timer:
+            self.lease_timer.cancel()
+            self.lease_timer=None
 
     def require(self,sid):
         with self.lock:
@@ -134,25 +203,32 @@ No camera or direct music audio is supplied.'''
                     or time.time()>=self.state['expiresAt']):
                 raise ValueError('This voice conversation is no longer active.')
 
-    def end(self,sid=None):
+    def end(self,sid=None,*,retry_unconfirmed=False,transport_closed=False):
         with self.lock:
+            if retry_unconfirmed and (sid!=self.state['sessionId'] or self.state['status']!='close-unconfirmed'):
+                return self.status()
             if sid and sid!=self.state['sessionId']:raise ValueError('Unknown voice session.')
-            if self.state['status'] in ('idle','closed'):return self.status()
+            if transport_closed and sid:
+                self.state['transportClosed']=True
+            if self.state['status'] in ('idle','closing','closed'):return self.status()
             if self.state['status']=='connecting':
                 self.cancel_connect=True
                 return self.status()
             sid=self.state['sessionId'];self.state['status']='closing'
             if self.timer:self.timer.cancel()
+            self.stop_lease()
             self.agent.disable(preserve_playback=True)
+        status='closed'
         if sid:
             try:
                 with self.opener(Request('https://api.openai.com/v1/live/sessions/'+sid+'/hangup',data=b'',
                     headers={'Authorization':'Bearer '+ai_mix.api_key()}),timeout=10) as r:r.read(1024)
             except (HTTPError,OSError,URLError):
-                with self.lock:self.state.update(status='close-unconfirmed')
-                return self.status()
-        with self.lock:self.state['status']='closed'
-        return self.status()
+                status='close-unconfirmed'
+        with self.lock:
+            if self.state['sessionId']==sid and self.state['status']=='closing':
+                self.state['status']='closed' if self.state.get('transportClosed') else status
+            return self.status()
 
     def receipt(self,sid,seconds,finalized):
         with self.lock:
@@ -162,5 +238,6 @@ No camera or direct music audio is supplied.'''
             if finalized is True:
                 self.state.update(status='closed',finalized=True)
                 if self.timer:self.timer.cancel()
+                self.stop_lease()
                 self.agent.disable(preserve_playback=True)
             return self.status()

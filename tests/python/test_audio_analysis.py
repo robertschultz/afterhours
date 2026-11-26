@@ -5,7 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from afterhours.audio_analysis import scan_track, validate_scan, verified_energy, read_scan, PLUGIN, restore_effect
+from afterhours.audio_analysis import (
+    AudioAnalysisTimeout, PLUGIN, read_scan, restore_effect, scan_track, validate_scan, verified_energy,
+)
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_catalog import identity
 
@@ -134,6 +136,20 @@ class AudioAnalysisTests(unittest.TestCase):
                 scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait, timeout=.9)
             self.assertFalse(peer.active); self.assertEqual(peer.effect, 'Flanger')
             self.assertFalse((root/(SID+'.verified.json')).exists())
+
+    def test_completed_native_scan_reports_split_storage_without_waiting(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            native = root / 'bridge-reports'
+            native.mkdir()
+            peer = Peer(native)
+            with self.assertRaisesRegex(AudioAnalysisTimeout, 'same report folder'):
+                scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait)
+            self.assertTrue((native/(SID+'.json')).is_file())
+            self.assertFalse((root/(SID+'.verified.json')).exists())
+            self.assertLess(peer.now, 1)
+            self.assertEqual(peer.effect, 'Flanger')
+            self.assertFalse(peer.active)
 
     def test_legacy_identity_mismatch_and_symlink_are_not_trusted(self):
         with tempfile.TemporaryDirectory() as d:

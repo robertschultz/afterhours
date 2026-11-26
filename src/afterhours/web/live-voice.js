@@ -40,7 +40,7 @@ export class LiveVoiceClient {
       mic.getAudioTracks().forEach(t=>peer.addTrack(t,mic));
       const channel=this.channel=peer.createDataChannel('oai-events');
       channel.addEventListener('message',e=>{if(generation!==this.generation)return;try{this.event(JSON.parse(e.data));}catch{this.end('An unreadable voice event was received.');}});
-      channel.addEventListener('close',()=>{if(generation===this.generation&&!this.finalized){const detail=this.closedDetail(false,'Voice disconnected.');this.closeRemote();this.cleanup();this.state('closed',detail);}});
+      channel.addEventListener('close',()=>{if(generation===this.generation&&!this.finalized){const detail=this.closedDetail(false,'Voice disconnected.');this.disconnect();this.state('closed',detail);}});
       peer.addEventListener('connectionstatechange',()=>{if(generation===this.generation&&peer.connectionState==='failed')this.end('Voice connection failed.');});
       await peer.setLocalDescription(await peer.createOffer());
       if(generation!==this.generation)return;
@@ -53,7 +53,7 @@ export class LiveVoiceClient {
       this.state('connecting','Connecting to GPT-Live…');
       const result=await this.request('/api/voice',{action:'start',sdp:peer.localDescription.sdp,
         performer,requestId:crypto.randomUUID(),approveRequest:true,maxSeconds:1800});
-      if(generation!==this.generation){await this.closeRemote(result.session.id);return;}
+      if(generation!==this.generation){await this.closeRemote(result.session.id,true);return;}
       this.sessionId=result.session.id;this.expiresAt=result.expiresAt;
       this.maxSeconds=result.maxSeconds||120;this.startedAt=result.startedAt||this.expiresAt-this.maxSeconds;
       await peer.setRemoteDescription({type:'answer',sdp:result.transport.sdp});
@@ -61,7 +61,7 @@ export class LiveVoiceClient {
       this.startTimer=setTimeout(()=>{if(!this.ready)this.end('Voice did not become ready.');},15000);
     }catch(error){
       if(generation!==this.generation)return;
-      await this.closeRemote();this.cleanup();
+      await this.disconnect();
       const message={NotAllowedError:'Microphone access was denied. Allow it in your browser, then try again.',
         NotFoundError:'No microphone found. Connect a microphone or headset, then select Refresh inputs.',
         DevicesNotFoundError:'No microphone found. Connect a microphone or headset, then select Refresh inputs.',
@@ -142,7 +142,15 @@ export class LiveVoiceClient {
     this.state(value?'muted':'listening',value?'Microphone muted · session time continues':'Microphone live · AI voice');
   }
   async hear(){await this.audio?.play();this.state(this.isMuted?'muted':'listening',this.isMuted?'Microphone muted · session time continues':'Microphone live · AI voice');}
-  async closeRemote(sessionId=this.sessionId){if(sessionId)return this.request('/api/voice',{action:'end',sessionId}).catch(()=>{});}
+  async closeRemote(sessionId=this.sessionId,transportClosed=false){
+    if(sessionId)return this.request('/api/voice',{action:'end',sessionId,transportClosed}).catch(()=>{});
+  }
+  disconnect(){
+    const id=this.sessionId;
+    this.send({type:'session.close'});
+    this.cleanup();
+    return this.closeRemote(id,true);
+  }
   limitDetail(){return `${Math.round(this.maxSeconds/60)}-minute talk limit reached.`;}
   closedDetail(confirmed=true,fallback='Talk stopped.'){
     const expired=this.expiresAt&&Date.now()/1000>=this.expiresAt-1;
@@ -152,9 +160,9 @@ export class LiveVoiceClient {
     if(['closed','idle','closing'].includes(this.phase))return;
     this.endDetail=detail;this.state('closing',`${detail} Closing voice…`);this.microphone?.getTracks().forEach(t=>t.stop());
     if(this.send({type:'session.close'})){
-      this.closeTimer=setTimeout(()=>{const message=this.closedDetail(false);this.closeRemote();this.cleanup();this.state('closed',message);},8000);
+      this.closeTimer=setTimeout(()=>{const message=this.closedDetail(false);this.disconnect();this.state('closed',message);},8000);
     }else{
-      ++this.generation;this.closeRemote();this.cleanup();
+      this.disconnect();
       if(!this.startPending)this.state('closed',this.closedDetail(false));
     }
   }

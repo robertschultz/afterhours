@@ -96,7 +96,7 @@ class LiveVoice:
             self.attempts[request_id]=time.time()
             if len(self.attempts)>50:self.attempts.pop(next(iter(self.attempts)))
             self.state.update(status='connecting',sessionId=None,expiresAt=None,usageSeconds=None,finalized=False,
-                              maxSeconds=max_seconds,maxDecisionRequests=decisions)
+                              maxSeconds=max_seconds,maxDecisionRequests=decisions,transportClosed=False)
             self.cancel_connect=False
         history=startup_history(profile,self.agent.snapshot(),self.agent.session.snapshot())
         instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. Use a relaxed, concise,
@@ -165,11 +165,13 @@ No camera or direct music audio is supplied.'''
                     or time.time()>=self.state['expiresAt']):
                 raise ValueError('This voice conversation is no longer active.')
 
-    def end(self,sid=None,*,retry_unconfirmed=False):
+    def end(self,sid=None,*,retry_unconfirmed=False,transport_closed=False):
         with self.lock:
             if retry_unconfirmed and (sid!=self.state['sessionId'] or self.state['status']!='close-unconfirmed'):
                 return self.status()
             if sid and sid!=self.state['sessionId']:raise ValueError('Unknown voice session.')
+            if transport_closed and sid:
+                self.state['transportClosed']=True
             if self.state['status'] in ('idle','closing','closed'):return self.status()
             if self.state['status']=='connecting':
                 self.cancel_connect=True
@@ -186,7 +188,7 @@ No camera or direct music audio is supplied.'''
                 status='close-unconfirmed'
         with self.lock:
             if self.state['sessionId']==sid and self.state['status']=='closing':
-                self.state['status']=status
+                self.state['status']='closed' if self.state.get('transportClosed') else status
             return self.status()
 
     def receipt(self,sid,seconds,finalized):

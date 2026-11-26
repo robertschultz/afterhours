@@ -102,6 +102,16 @@ class VoiceTests(unittest.TestCase):
         state=self.voice.end();self.assertEqual(state['status'],'close-unconfirmed');self.assertFalse(state['finalized'])
         with self.assertRaises(ValueError):self.voice.create('v=0','request_456','nova',True)
 
+    def test_closed_local_transport_releases_talk_after_a_failed_remote_hangup(self):
+        self.start()
+        provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Temporary connection loss'))
+        state=self.voice.end('voice_fixture',transport_closed=True)
+        self.assertEqual(state['status'],'closed')
+        self.assertFalse(state['finalized'])
+        self.voice.opener=provider
+        self.voice.create('v=0','request_456','nova',True)
+
     def test_final_receipt_during_failed_hangup_is_preserved(self):
         self.start()
         def interrupted_hangup(request,**kwargs):

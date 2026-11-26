@@ -1,10 +1,22 @@
 // GPT-Live's protocol is deliberately separate from music transport.
 const boundedContext=content=>new TextDecoder().decode(new TextEncoder().encode(String(content)).slice(0,480));
+// A complete, explicit transport request can go straight to Afterhours even
+// when GPT-Live does not create a delegation for it. Purely conversational
+// requests and incomplete/qualified stop phrases still use normal delegation.
+export function explicitStop(text){
+  const words=String(text||'').toLowerCase().trim()
+    .replace(/^(?:hey\s+)?dot[, ]+/,'')
+    .replace(/^(?:can|could|would|will) you (?:please )?/,'')
+    .replace(/^please /,'').replace(/[.!?]+$/,'')
+    .replace(/[, ]+(?:please|now|right now)$/,'').trim();
+  return /^(?:stop|pause)(?: (?:playing|it|this|playback|the (?:set|track|music)|music))?$/.test(words)
+    || /^(?:hold the music|cancel playback|cancel start)$/.test(words);
+}
 export class LiveVoiceClient {
-  constructor({request,onState=()=>{},onTranscript=()=>{},onDelegate=()=>{},
+  constructor({request,onState=()=>{},onTranscript=()=>{},onDelegate=()=>{},operatorSpeaking=()=>false,
                mediaDevices=globalThis.navigator?.mediaDevices,Peer=globalThis.RTCPeerConnection,
                audio=typeof Audio==='function'?new Audio():null}={}){
-    Object.assign(this,{request,onState,onTranscript,onDelegate,mediaDevices,Peer,audio});
+    Object.assign(this,{request,onState,onTranscript,onDelegate,operatorSpeaking,mediaDevices,Peer,audio});
     this.phase='idle';this.generation=0;this.input=[];this.pendingInput=[];this.latestContext='';this.seen=new Set();this.delegations=new Set();
     if(audio){audio.autoplay=true;audio.setAttribute('playsinline','');}
   }
@@ -17,7 +29,7 @@ export class LiveVoiceClient {
   async start(performer,deviceId=''){
     if(this.startPending||!['idle','error','closed'].includes(this.phase))return;
     this.startPending=true;this.sessionId=null;this.expiresAt=null;this.startedAt=null;this.maxSeconds=1800;this.isMuted=false;this.endDetail='';
-    const generation=++this.generation;this.finalized=false;this.ready=false;this.input=[];this.pendingInput=[];this.latestContext='';this.seen.clear();this.delegations.clear();
+    const generation=++this.generation;this.finalized=false;this.ready=false;this.input=[];this.pendingInput=[];this.latestContext='';this.seen.clear();this.delegations.clear();this.waitingDelegation=null;
     this.state('connecting','Requesting microphone…');
     try{
       if(!this.mediaDevices?.getUserMedia||!this.Peer)throw Error('Voice needs a browser with microphone access on localhost or HTTPS.');
@@ -70,18 +82,23 @@ export class LiveVoiceClient {
       if(typeof event.delta!=='string')return;
       const role=event.type.includes('input_transcript')?'user':'assistant';
       const fragment={role,text:event.delta,startMs:event.start_ms,endMs:event.end_ms};
-      if(role==='user'){this.input.push(fragment);this.input=this.input.slice(-160);this.pendingInput.push(fragment);this.pendingInput=this.pendingInput.slice(-160);}
+      if(role==='user'){
+        this.input.push(fragment);this.input=this.input.slice(-160);
+        const previous=this.pendingInput.at(-1);
+        if(previous&&fragment.startMs-previous.endMs>950)this.pendingInput=[];
+        this.pendingInput.push(fragment);this.pendingInput=this.pendingInput.slice(-160);
+        this.scheduleDelegation();
+      }
       this.onTranscript(fragment);
     }else if(event.type==='session.delegation.created'&&event.delegation?.target==='client'){
       const id=event.delegation.id;if(this.delegations.has(id))return;this.delegations.add(id);
-      // A new delegation ID is not a new musical request. Sending the complete
-      // transcript again restarted discovery each time the voice checked in.
-      const text=this.pendingInput.map(f=>f.text).join('');this.pendingInput=[];
-      if(!text.trim()){
-        this.result('No new operator direction. Do not restart discovery. Report the current status and wait for the backend or new speech. '+this.latestContext,id);
-        return;
+      this.send({type:'session.thinking.append',delegation_id:id,content:''});
+      if(this.waitingDelegation){
+        this.result('Another task is already handling the current request. Wait for its result.',id);
+      }else{
+        this.waitingDelegation={id,offsetMs:event.offset_ms};
+        this.scheduleDelegation();
       }
-      this.onDelegate({id,offsetMs:event.offset_ms,text,sessionId:this.sessionId});
     }else if(event.type==='session.usage.updated'){
       this.request('/api/voice',{action:'usage',sessionId:this.sessionId,seconds:event.usage?.seconds,finalized:false}).catch(()=>{});
     }else if(event.type==='session.closed'){
@@ -91,6 +108,29 @@ export class LiveVoiceClient {
     }else if(event.type==='error'){
       this.end('Voice reported a session error. Check the connection before retrying.');
     }
+  }
+  scheduleDelegation(){
+    clearTimeout(this.dispatchTimer);
+    const text=this.pendingInput.map(part=>part.text).join('').trim();
+    if(!this.waitingDelegation&&!explicitStop(text))return;
+    this.dispatchTimer=setTimeout(()=>this.flushDelegation(),text?720:1050);
+  }
+  flushDelegation(){
+    clearTimeout(this.dispatchTimer);
+    if(!this.ready||this.phase==='closing')return;
+    if(this.operatorSpeaking()){this.scheduleDelegation();return;}
+    const waiting=this.waitingDelegation;
+    const text=this.pendingInput.map(part=>part.text).join('').trim();
+    const stop=explicitStop(text);
+    this.waitingDelegation=null;
+    if(!waiting&&!stop)return;
+    if(!text){
+      this.result('No new operator direction. Do not restart discovery. Wait for the backend or new speech. '+this.latestContext,waiting.id);
+      return;
+    }
+    this.pendingInput=[];
+    this.onDelegate({id:waiting?.id??null,offsetMs:waiting?.offsetMs,
+      text:stop?'stop the music':text,sessionId:this.sessionId});
   }
   context(content){this.latestContext=boundedContext(content);this.send({type:'session.thinking.append',delegation_id:null,content:this.latestContext});}
   result(content,delegationId=null){this.send({type:'session.commentary.append',delegation_id:delegationId,content:boundedContext(content)});}
@@ -119,7 +159,8 @@ export class LiveVoiceClient {
     }
   }
   cleanup(){
-    clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);
+    clearTimeout(this.limitTimer);clearTimeout(this.startTimer);clearTimeout(this.closeTimer);clearTimeout(this.dispatchTimer);
+    this.waitingDelegation=null;
     this.microphone?.getTracks().forEach(t=>t.stop());this.microphone=null;this.ready=false;
     const channel=this.channel;this.channel=null;if(channel)channel.onclose=null;
     ++this.generation;channel?.close();this.peer?.close();this.peer=null;

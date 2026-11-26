@@ -31,20 +31,20 @@ test('delegations consume new speech once; status checks never resubmit the seed
   const {client,captions,delegations}=fixture();await client.start('nova');client.event({type:'session.started'});
   const first={type:'session.input_transcript.delta',event_id:'f1',delta:'Play house',start_ms:0,end_ms:500};
   client.event(first);client.event(first);client.event({type:'session.input_transcript.delta',event_id:'f2',delta:' around 125 BPM.',start_ms:500,end_ms:1200});
-  const delegated={type:'session.delegation.created',delegation:{id:'d1',target:'client'},offset_ms:1300};client.event(delegated);client.event(delegated);
+  const delegated={type:'session.delegation.created',delegation:{id:'d1',target:'client'},offset_ms:1300};client.event(delegated);client.event(delegated);client.flushDelegation();
   assert.equal(captions.length,2);assert.equal(delegations.length,1);assert.equal(delegations[0].text,'Play house around 125 BPM.');
   client.context('Three tracks selected. Preparing their audio.');
-  client.event({...delegated,delegation:{id:'d2',target:'client'}});
+  client.event({...delegated,delegation:{id:'d2',target:'client'}});client.flushDelegation();
   assert.equal(delegations.length,1);
   assert.match(client.channel.sent.at(-1).content,/Do not restart discovery/);
   assert.match(client.channel.sent.at(-1).content,/Three tracks selected/);
   assert.equal(client.channel.sent.at(-1).delegation_id,'d2');
   client.event({type:'session.input_transcript.delta',delta:'Make it deeper, less vocal.'});
-  client.event({...delegated,delegation:{id:'d3',target:'client'}});
+  client.event({...delegated,delegation:{id:'d3',target:'client'}});client.flushDelegation();
   assert.equal(delegations.length,2);assert.equal(delegations[1].text,'Make it deeper, less vocal.');
   client.event({type:'session.closed',usage:{seconds:2}});
   await client.start('nova');client.event({type:'session.started'});
-  client.event({...delegated,delegation:{id:'new-session',target:'client'}});
+  client.event({...delegated,delegation:{id:'new-session',target:'client'}});client.flushDelegation();
   assert.equal(delegations.length,2);assert.doesNotMatch(client.channel.sent.at(-1).content,/Three tracks/);
   client.event({type:'session.closed',usage:{seconds:0}});
 });
@@ -104,4 +104,33 @@ test('an explicit end cause survives finalization and does not leak into a new s
   assert.match(states.at(-1).detail,/tab was hidden/);
   await client.start('nova');client.event({type:'session.started'});client.end();client.event({type:'session.closed',usage:{seconds:2}});
   assert.doesNotMatch(states.at(-1).detail,/tab was hidden/);assert.match(states.at(-1).detail,/Talk stopped/);
+});
+
+test('an explicit Stop can dispatch once from live transcription without model delegation',async()=>{
+  const {client,delegations}=fixture();await client.start('nova');client.event({type:'session.started'});
+  const phrase=(delta,start_ms,end_ms)=>client.event({type:'session.input_transcript.delta',delta,start_ms,end_ms});
+  phrase('That is great.',0,300);
+  phrase('Dot, stop',2000,2300);
+  phrase(' the music now.',2300,2900);
+  client.flushDelegation();
+  assert.deepEqual(delegations.map(d=>[d.id,d.text]),[[null,'stop the music']]);
+  client.event({type:'session.delegation.created',delegation:{id:'late-stop',target:'client'}});
+  client.flushDelegation();
+  assert.equal(delegations.length,1);
+  phrase("Don’t stop the music.",4000,4700);client.flushDelegation();
+  assert.equal(delegations.length,1);
+  client.event({type:'session.closed',usage:{seconds:2}});
+});
+
+test('delegation arriving before the transcript waits for the actual words',async()=>{
+  let stillSpeaking=true;
+  const {client,delegations}=fixture({operatorSpeaking:()=>stillSpeaking});
+  await client.start('nova');client.event({type:'session.started'});
+  client.event({type:'session.delegation.created',delegation:{id:'early',target:'client'}});
+  client.event({type:'session.input_transcript.delta',delta:'Find a disco record.'});
+  client.flushDelegation();
+  assert.equal(delegations.length,0);
+  stillSpeaking=false;client.flushDelegation();
+  assert.deepEqual(delegations.map(d=>[d.id,d.text]),[['early','Find a disco record.']]);
+  client.event({type:'session.closed',usage:{seconds:2}});
 });

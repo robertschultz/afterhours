@@ -122,6 +122,20 @@ class MixerTests(unittest.TestCase):
         m.tick(None,4.9)
         self.assertEqual(sum('afterhours_in_low' in script for script in sent),1)
 
+    def test_short_handoff_starts_treble_early_enough_to_settle(self):
+        mixer, values, commands = self.mixer(stems=False)
+        recipe = {**transition_recipe(track(), track(key='7B')), 'fadeBeats': 8}
+        mixer.arm(None, 1, 2, recipe)
+        mixer.begin(None)
+        mixer.tick(None, 2.2)
+        values[1].update(eq_low_freq=0, eq_mid_freq=0)
+        mixer.tick(None, 4.7)
+        self.assertFalse(any('afterhours_out_high' in command for command in commands))
+        mixer.tick(None, 5.4)
+        high = [command for command in commands if 'afterhours_out_high' in command]
+        self.assertEqual(len(high), 1)
+        self.assertIn('2bt & deck 1 eq_high_freq', high[0])
+
     def test_short_handoff_dependency_deadline_remains_bounded(self):
         m,v,sent=self.mixer()
         recipe={**transition_recipe(track(),track(key='7B')),'fadeBeats':8}

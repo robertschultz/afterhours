@@ -127,6 +127,22 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(replacement['protectedIds'],['a','b'])
         self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
 
+    def test_timed_refill_starts_when_seven_upcoming_slots_remain(self):
+        tracks = [track(chr(97+i)) for i in range(11)]
+        self.session.update(candidates=tracks)
+        self.session.plan([row['id'] for row in tracks[:9]])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.update(row['id'] for row in tracks)
+        roller.tick(self.session, 35)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+        self.session.update(index=1)
+        roller.tick(self.session, 35)
+        update = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(update['rollingTrackIds'], ['j', 'k'])
+        self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
+
     def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

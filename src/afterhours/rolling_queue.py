@@ -43,7 +43,10 @@ class RollingQueue:
                 return
 
             order = state['order']
-            if not order or len(order) - state['index'] > (5 if timed_set else 3):
+            # Two spare decks still prepare at most two recordings at once.
+            # Start replenishing timed sets earlier so a slow decode or search
+            # does not consume all of the upcoming 30-second slots.
+            if not order or len(order) - state['index'] > (8 if timed_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):

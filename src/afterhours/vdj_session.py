@@ -1252,24 +1252,27 @@ class DJSession:
             if isinstance(ids,list):self.require_available(ids[protected:])
             old_plan=s.get('executionPlan') or {}
             frozen=(old_plan.get('tempoSchedule') or [])[:protected]
+            quick=s['mixStyle']=='quick'
+            opening=s['order'][0]['bpm'] if quick and s['order'] else old_plan.get('targetBpm')
             order=validate_order(ids,s['candidates'],s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
-                                 frozen or None,old_plan.get('targetBpm') if audible else None,
+                                 frozen or None,opening if audible else None,fixed=quick,
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
                 return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
             if audible and s['phase'] not in ('playing','mixing','loading'):
                 raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
-            if not old_plan.get('applied'):
+            if not quick and not old_plan.get('applied'):
                 raise ValueError('Live queue expansion needs a measured mix plan. Prepare the set before starting an autonomous run.')
             old=[t['id'] for t in s['order']]
             policy=s.get('setlist',{})
             if not policy.get('allowReorder',True) and ids!=old:raise ValueError('Planner reordering is off.')
             if any(i>=len(ids) or ids[i]!=tid for i,tid in enumerate(old) if tid in policy.get('lockedIds',[])):
                 raise ValueError('A locked track must keep its position.')
-            prepared=cue_planner.revise_prepared_queue(s,order,mix_transitions,reason,protected,tempo_targets,cue_choices=cue_choices) if mix_transitions else None
+            prepared=cue_planner.revise_prepared_queue(s,order,mix_transitions,reason,protected,tempo_targets,cue_choices=cue_choices) if mix_transitions and not quick else None
             self.state['queuedUpdate']={'id':uuid.uuid4().hex,'tracks':order,'protectedIds':old[:protected],
-                'status':'ready' if prepared else 'needs-analysis','reason':reason,'prepared':prepared,
+                'status':'ready' if prepared or quick else 'needs-analysis','reason':reason,'prepared':prepared,
+                **({'quick':True} if quick else {}),
                 'mixTransitions':copy.deepcopy(mix_transitions),'tempoTargets':copy.deepcopy(tempo_targets),
                 'cueChoices':copy.deepcopy(cue_choices) if cue_choices else None,
                 'standingStyle':copy.deepcopy(getattr(self,'standing_style',None))}
@@ -1277,6 +1280,8 @@ class DJSession:
             self.state['message']=('Upcoming queue updated. The prepared change will join after the current handoff.'+
                 (f" The DJ chose where {entries} record{'s' if entries!=1 else ''} come{'s' if entries==1 else ''} in." if entries else '') if prepared else
                 'Upcoming tracks queued for background analysis. The playing and cued tracks are unchanged.')
+            if quick:
+                self.state['message']='Upcoming tracks queued at the set tempo. The playing and cued tracks are unchanged.'
             self.event(self.state['message'],'queue')
             return self.snapshot()
 
@@ -1291,7 +1296,7 @@ class DJSession:
                 self.remember_cleanup_failure('background',job)
                 raise
             self.background_job=None;job=None
-        if not q or q['status'] not in ('needs-analysis','analyzing','ready'):return
+        if not q or q.get('quick') or q['status'] not in ('needs-analysis','analyzing','ready'):return
         restriction=preview_failure(self.availability,q['tracks'])
         if (restriction and job and job.error
                 and preview_failure(self.availability,q['tracks'],job.error) is None):
@@ -1435,6 +1440,17 @@ class DJSession:
                 return None
             if [t['id'] for t in order[:protected]]!=[t['id'] for t in old[:protected]]:
                 q['status']='needs-review';return None
+            if q.get('quick'):
+                if self.state['mixStyle']!='quick':
+                    q['status']='needs-review';return None
+                track_ids=[t['id'] for t in order]
+                sources=self.state['setlist'].get('sourceById',{})
+                self.state['setlist']['sourceById']={tid:sources.get(tid,'operator') for tid in track_ids}
+                self.update(order=copy.deepcopy(order),queuedUpdate=None,
+                            lastQueueApplication={'queueRevision':q['id'],'planId':None,
+                                                  'trackIds':track_ids,'appliedAt':time.time()})
+                self.event('Quick queue revision adopted. Playing cue preserved.','queue-applied')
+                return copy.deepcopy(order),None
             prepared=copy.deepcopy(q['prepared']);cue_planner.verify_receipts(prepared['analysis'])
             # Which of the planner's window choices were used is a receipt, not set state.
             windows=prepared.pop('cueChoices',None)
@@ -2349,6 +2365,14 @@ class DJSession:
                                 self.update(copilotTargets=self.mixer.targets())
                         self.update(targetBeat=goal, timing=dict(window), segmentBeats=window['segmentBeats'], fadeBeats=window['fadeBeats'])
                         continue  # fresh observation after preparation or retiming
+                    if final and snapshot['mixStyle']=='quick':
+                        revised=self.adopt_queue(index)
+                        if revised:
+                            order,planned=revised
+                            if index+1<len(order):
+                                ready(client,order[index+1],incoming,target,index+1)
+                                t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
+                                revised_final=True;break
                     if self.snapshot()['copilot']['held']:
                         # Current music continues. Do not invent a loop, seek,
                         # substitute cue, or implicit handoff when Hold expires.
@@ -2373,6 +2397,10 @@ class DJSession:
                             if control['held'] or (control.get('command') or {}).get('status') == 'pending':
                                 continue
                             if not final:self.state['phase'] = 'mixing'
+                            elif snapshot['mixStyle']=='quick':
+                                if (self.state.get('queuedUpdate') or {}).get('status')=='ready':
+                                    continue  # adopt an insertion received as the last window ended
+                                self.state['phase']='stopping'
                         break
                     slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
                     self.service_background(client,slack)

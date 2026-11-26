@@ -40,6 +40,28 @@ class QueuePlanningTests(unittest.TestCase):
             queue_planning.placement(self.session.snapshot(), 'a')
         self.assertEqual([row['id'] for row in self.session.snapshot()['order']], ['a', 'b', 'c', 'd'])
 
+    def test_quick_set_adopts_future_tracks_without_a_measured_plan(self):
+        self.session.plan(['a', 'b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='mixing')
+        placement=queue_planning.placement(self.session.snapshot(),'x')
+        staged=self.session.revise_queue(placement['ids'])
+        self.assertEqual([t['id'] for t in staged['order']],['a','b'])
+        self.assertEqual(staged['queuedUpdate']['status'],'ready')
+        self.assertEqual(staged['queuedUpdate']['protectedIds'],['a','b'])
+        with patch('afterhours.cue_planner.verify_receipts',side_effect=AssertionError('No measured plan')):
+            adopted,plan=self.session.adopt_queue(1)
+        self.assertEqual([t['id'] for t in adopted],['a','b','x'])
+        self.assertIsNone(plan)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_quick_live_insertion_enforces_the_running_fixed_tempo(self):
+        self.session.update(candidates=self.tracks+[track('far',bpm=150)])
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=1,active=True,phase='playing')
+        with self.assertRaisesRegex(ValueError,'No safe slot'):
+            queue_planning.placement(self.session.snapshot(),'far')
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})

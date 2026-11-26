@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from afterhours import dj_agent, queue_planning
 from afterhours.agent_loop import Lookups
+from afterhours.rolling_queue import RollingQueue
 from afterhours.vdj_session import DJSession
 from test_dj_agent import decision, settled
 
@@ -61,6 +62,50 @@ class QueuePlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'No safe slot'):
             queue_planning.placement(self.session.snapshot(),'far')
         self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_rolling_quick_set_appends_as_each_track_starts(self):
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        roller=RollingQueue()
+        roller.tick(self.session, 12)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual([t['id'] for t in staged['tracks']],['a','b','c'])
+        self.session.adopt_queue(1)
+        self.assertEqual(self.session.snapshot()['setlist']['sourceById']['c'],'planner')
+        self.session.update(index=1)
+        roller.tick(self.session, 12)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b','c'])
+        self.assertEqual([t['id'] for t in staged['tracks']],['a','b','c','d'])
+
+    def test_rolling_queue_search_is_bounded_and_only_for_auto_playback(self):
+        rows=[{**track('a'),'artist':'One Artist'},{**track('b'),'artist':'One Artist'},track('far',bpm=200)]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        roller=RollingQueue()
+        roller.tick(self.session, 3)
+        self.assertIsNone(self.session.catalog_job)
+        roller.tick(self.session, 12)
+        self.assertEqual(self.session.catalog_job.terms,['One Artist'])
+        self.assertTrue(self.session.catalog_job.rolling)
+        self.session.catalog_job.done=True
+        roller.tick(self.session, 12)
+        self.assertEqual(self.session.snapshot()['rollingQueue']['status'],'held')
+        self.session.update(phase='takeover')
+        self.session.update(candidates=rows+[track('c')])
+        roller.tick(self.session, 20)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_rolling_measured_set_uses_existing_background_verification(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session, 22)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual(staged['status'],'needs-analysis')
 
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',

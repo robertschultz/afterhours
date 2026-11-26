@@ -11,8 +11,9 @@ from unittest.mock import patch
 from afterhours import native_runtime as runtime
 
 SERVICE='''import argparse,json
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from afterhours.web_runtime import LoopbackHTTPServer
 p=argparse.ArgumentParser();p.add_argument('--port',type=int);args,_=p.parse_known_args()
 kind='music' if Path(__file__).name=='server.py' else 'performance'
 class H(BaseHTTPRequestHandler):
@@ -24,7 +25,9 @@ class H(BaseHTTPRequestHandler):
             '/api/performance':{'director':{},'mode':'paused','segments':[]}}
         body=json.dumps(values.get(self.path,{})).encode()
         self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-ThreadingHTTPServer(('127.0.0.1',args.port),H).serve_forever()
+with LoopbackHTTPServer(('127.0.0.1',args.port),H) as server:
+    print(f'{kind} fixture listening on {server.server_address}',flush=True)
+    server.serve_forever()
 '''
 
 
@@ -43,9 +46,18 @@ class RuntimeTests(unittest.TestCase):
         real_launch=runtime.launch
         def launch(config,name):
             child=real_launch(config,name);self.children.append(child);return child
-        self.launcher=patch.object(runtime,'launch',side_effect=launch).start()
-        self.addCleanup(patch.stopall)
+        launcher = patch.object(runtime, 'launch', side_effect=launch)
+        launcher.start()
+        self.addCleanup(launcher.stop)
         self.addCleanup(self.stop_children)
+
+    def start_services(self):
+        result = runtime.ensure(self.config)
+        if not result['ready']:
+            logs = {name: log.read_text() for name in ('music', 'performance')
+                    if (log := self.root / f'{name}.log').is_file()}
+            self.fail(f'{result["message"]}\nFixture logs: {logs}')
+        return result
 
     def stop_children(self):
         for child in self.children:
@@ -53,7 +65,7 @@ class RuntimeTests(unittest.TestCase):
             child.wait(timeout=3)
 
     def test_cold_launch_then_reuse_never_restarts_a_healthy_process(self):
-        result=runtime.ensure(self.config)
+        result=self.start_services()
         self.assertEqual(result['services'],{'music':'started','performance':'started'})
         self.assertTrue(result['ready']);pids=[c.pid for c in self.children]
         result=runtime.ensure(self.config)
@@ -65,7 +77,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.root/'music.log').stat().st_mode&0o777,0o600)
 
     def test_starts_only_the_missing_service(self):
-        runtime.ensure(self.config)
+        self.start_services()
         music,audience=self.children;music.terminate();music.wait(timeout=3)
         result=runtime.ensure(self.config)
         self.assertEqual(result['services'],{'music':'started','performance':'reused'})
@@ -79,7 +91,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual({r['services']['music'] for r in results},{'started','reused'})
 
     def test_port_conflict_is_reported_without_replacing_its_owner(self):
-        runtime.ensure(self.config)
+        self.start_services()
         music,audience=self.children;music.terminate();music.wait(timeout=3)
         with socket.socket() as occupied:
             occupied.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -90,7 +102,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(audience.poll())
 
     def test_failed_child_is_not_retried_and_does_not_stop_existing_service(self):
-        runtime.ensure(self.config)
+        self.start_services()
         music,audience=self.children;music.terminate();music.wait(timeout=3)
         (self.root/'server.py').write_text('raise SystemExit(9)')
         result=runtime.ensure(self.config)
@@ -99,7 +111,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(audience.poll())
 
     def test_unready_new_child_is_stopped_on_timeout(self):
-        runtime.ensure(self.config)
+        self.start_services()
         music,audience=self.children;music.terminate();music.wait(timeout=3)
         (self.root/'server.py').write_text('import time;time.sleep(30)')
         result=runtime.ensure(self.config,startup_timeout=.15)

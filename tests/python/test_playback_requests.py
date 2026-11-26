@@ -13,7 +13,7 @@ from test_dj_agent import decision,settled
 
 
 class PlaybackSession(ScenarioSession):
-    def start(self,initialize_mixer=False,immediate=False):
+    def start(self,initialize_mixer=False,immediate=False,rolling_queue=False):
         assert immediate is True
         assert initialize_mixer is True
         self.calls.append(('start',))

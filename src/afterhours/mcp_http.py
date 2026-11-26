@@ -35,8 +35,9 @@ def handle(handler, control, operator_token):
             raise ControlError('invalid-request','Use a JSON object of at most 8192 bytes.') from None
         if management:
             action=data.get('action')
-            if action=='pair' and not set(data)-{'action','name','readOnly','allowance'}:
-                result=control.store.pair(data.get('name'),read_only=data.get('readOnly',False),allowance=data.get('allowance'))
+            if action=='pair' and not set(data)-{'action','name','readOnly','allowance','unmeteredMusic'}:
+                result=control.store.pair(data.get('name'),read_only=data.get('readOnly',False),
+                                          allowance=data.get('allowance'),unmetered_music=data.get('unmeteredMusic',False))
             elif action=='list' and set(data)=={'action'}:
                 result={'clients':control.store.clients()}
             elif action=='revoke' and set(data)=={'action','clientId'} and isinstance(data['clientId'],str):

@@ -14,7 +14,7 @@ ERRORS = {
     'busy':'The DJ is handling an earlier direction. Read its receipt first.',
     'request-conflict':'This request ID already belongs to another payload. Read its original receipt.',
     'unknown-request':'This client has no receipt with that request ID.',
-    'allowance-required':'Configure a bounded music allowance at pairing before requesting music selection.',
+    'allowance-required':'Pair this client with an explicit music allowance or trusted unmetered music access.',
     'allowance-exhausted':'This client has no remaining allowance for that operation.',
     'unsupported-operation':'This connection controls music, not devices, characters or services.',
     'storage-unavailable':'MCP control storage is unavailable. No new direction was dispatched.',

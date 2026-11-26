@@ -23,6 +23,7 @@ from afterhours.mcp_auth import ControlError
 ACTIVE = {'dispatching', 'pending', 'uncertain'}
 TERMINAL = {'confirmed', 'blocked', 'superseded'}
 ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
+UNMETERED_MUSIC = "dj:music:unmetered"
 MAX_REQUESTS = 10000  # Never evict identities and accidentally authorize replay.
 REASONS = {'accepted','engine-confirmed','engine-guard','newer-direction','outcome-unconfirmed',
            'control-failed','control-blocked','control-cancelled','client-revoked','grant-expired',
@@ -127,13 +128,17 @@ class ReceiptStore:
                 os.close(self.owner_fd)
                 self.owner_fd = None
 
-    def pair(self, name, *, read_only=False, allowance=None):
+    def pair(self, name, *, read_only=False, allowance=None, unmetered_music=False):
         if (not isinstance(name, str) or not 1 <= len(name.strip()) <= 48
                 or any(not c.isprintable() for c in name)):
             raise ControlError('invalid-client', 'Use a printable client name of 1–48 characters.')
         if type(read_only) is not bool:
             raise ControlError('invalid-client', 'Read-only must be a boolean.')
+        if type(unmetered_music) is not bool or (unmetered_music and (read_only or allowance is not None)):
+            raise ControlError('invalid-allowance', 'Unmetered music requires an explicit, writable pairing without a bounded allowance.')
         scopes = ['state:read'] if read_only else ['state:read', 'dj:local']
+        if unmetered_music:
+            scopes.extend(('dj:music', UNMETERED_MUSIC))
         if allowance is not None:
             if read_only or not isinstance(allowance, dict) or set(allowance) != {'maxCostUSD', 'maxProviderCalls', 'expiresAt', 'prepare'}:
                 raise ControlError('invalid-allowance', 'Music needs an explicit cost, call limit, expiry and preparation setting.')
@@ -222,16 +227,19 @@ class ReceiptStore:
                 raise ValueError('Selection call count must be positive')
             costs = {'selection': (units(selection_cost) + selection_calls - 1) // selection_calls,
                      'review': units(preparation_cost), 'discovery': 0}
+            limit = current['allowance']
+            unmetered = UNMETERED_MUSIC in current['scopes']
             if music:
-                limit = current['allowance']
-                if 'dj:music' not in current['scopes'] or not limit or self.clock() >= limit['expiresAt']:
+                if not unmetered and ('dj:music' not in current['scopes'] or not limit or self.clock() >= limit['expiresAt']):
                     raise ControlError('allowance-required', 'This client has no current music allowance. Local controls remain available.')
-                prepare = limit['prepare']
+                prepare = unmetered or limit['prepare']
                 allocation = {'selection': selection_calls, 'review': int(prepare), 'discovery': 2}
-                expires = min(self.clock() + 900, limit['expiresAt'])
+                expires = self.clock() + 900
+                if not unmetered:
+                    expires = min(expires, limit['expiresAt'])
             cost = sum(allocation[k] * costs[k] for k in allocation)
             calls = allocation['selection'] + allocation['review']
-            if music and (row['reserved_cost'] + cost > units(limit['maxCostUSD']) or row['reserved_calls'] + calls > limit['maxProviderCalls']):
+            if music and not unmetered and (row['reserved_cost'] + cost > units(limit['maxCostUSD']) or row['reserved_calls'] + calls > limit['maxProviderCalls']):
                 raise ControlError('allowance-exhausted', 'The client allowance cannot reserve another bounded turn.')
             engine_id = 'mcp-' + hashlib.sha256((client['id'] + '\0' + request_id).encode()).hexdigest()[:40]
             self.db.execute('''INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',

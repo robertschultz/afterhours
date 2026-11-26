@@ -122,6 +122,17 @@ test('an explicit Stop can dispatch once from live transcription without model d
   client.event({type:'session.closed',usage:{seconds:2}});
 });
 
+test('Next and Transition Now dispatch the native handoff only for explicit requests',async()=>{
+  const {client,delegations}=fixture();await client.start('nova');client.event({type:'session.started'});
+  const phrase=(delta,start_ms)=>client.event({type:'session.input_transcript.delta',delta,start_ms,end_ms:start_ms+400});
+  phrase('Please play the next track.',1000);client.flushDelegation();
+  phrase('Dot, transition right now, please.',3000);client.flushDelegation();
+  phrase('Do not mix now.',5000);client.flushDelegation();
+  phrase('What is the next track?',7000);client.flushDelegation();
+  assert.deepEqual(delegations.map(d=>d.text),['transition now','transition now']);
+  client.event({type:'session.closed',usage:{seconds:2}});
+});
+
 test('delegation arriving before the transcript waits for the actual words',async()=>{
   let stillSpeaking=true;
   const {client,delegations}=fixture({operatorSpeaking:()=>stillSpeaking});

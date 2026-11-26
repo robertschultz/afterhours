@@ -1,16 +1,25 @@
 // GPT-Live's protocol is deliberately separate from music transport.
 const boundedContext=content=>new TextDecoder().decode(new TextEncoder().encode(String(content)).slice(0,480));
 // A complete, explicit transport request can go straight to Afterhours even
-// when GPT-Live does not create a delegation for it. Purely conversational
-// requests and incomplete/qualified stop phrases still use normal delegation.
-export function explicitStop(text){
-  const words=String(text||'').toLowerCase().trim()
+// when GPT-Live does not create a delegation for it.
+function transportWords(text){
+  return String(text||'').toLowerCase().trim()
     .replace(/^(?:hey\s+)?dot[, ]+/,'')
     .replace(/^(?:can|could|would|will) you (?:please )?/,'')
     .replace(/^please /,'').replace(/[.!?]+$/,'')
-    .replace(/[, ]+(?:please|now|right now)$/,'').trim();
+    .replace(/[, ]+please$/,'').trim();
+}
+export function explicitStop(text){
+  const words=transportWords(text).replace(/[, ]+(?:right )?now$/,'');
   return /^(?:stop|pause)(?: (?:playing|it|this|playback|the (?:set|track|music)|music))?$/.test(words)
     || /^(?:hold the music|cancel playback|cancel start)$/.test(words);
+}
+function directTransport(text){
+  if(explicitStop(text))return 'stop the music';
+  const words=transportWords(text);
+  if(/^(?:mix|transition) (?:right )?now$/.test(words) ||
+     /^(?:next(?: track| song)?|play next|(?:play|go to|skip to) the next (?:track|song)|bring in the next track|mix (?:it in|into the next track)|transition(?: to| into) the next track)$/.test(words))return 'transition now';
+  return null;
 }
 export class LiveVoiceClient {
   constructor({request,onState=()=>{},onTranscript=()=>{},onDelegate=()=>{},operatorSpeaking=()=>false,
@@ -112,7 +121,7 @@ export class LiveVoiceClient {
   scheduleDelegation(){
     clearTimeout(this.dispatchTimer);
     const text=this.pendingInput.map(part=>part.text).join('').trim();
-    if(!this.waitingDelegation&&!explicitStop(text))return;
+    if(!this.waitingDelegation&&!directTransport(text))return;
     this.dispatchTimer=setTimeout(()=>this.flushDelegation(),text?720:1050);
   }
   flushDelegation(){
@@ -121,16 +130,16 @@ export class LiveVoiceClient {
     if(this.operatorSpeaking()){this.scheduleDelegation();return;}
     const waiting=this.waitingDelegation;
     const text=this.pendingInput.map(part=>part.text).join('').trim();
-    const stop=explicitStop(text);
+    const transport=directTransport(text);
     this.waitingDelegation=null;
-    if(!waiting&&!stop)return;
+    if(!waiting&&!transport)return;
     if(!text){
       this.result('No new operator direction. Do not restart discovery. Wait for the backend or new speech. '+this.latestContext,waiting.id);
       return;
     }
     this.pendingInput=[];
     this.onDelegate({id:waiting?.id??null,offsetMs:waiting?.offsetMs,
-      text:stop?'stop the music':text,sessionId:this.sessionId});
+      text:transport||text,sessionId:this.sessionId});
   }
   context(content){this.latestContext=boundedContext(content);this.send({type:'session.thinking.append',delegation_id:null,content:this.latestContext});}
   result(content,delegationId=null){this.send({type:'session.commentary.append',delegation_id:delegationId,content:boundedContext(content)});}

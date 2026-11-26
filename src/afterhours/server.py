@@ -1,5 +1,5 @@
 """Local DJ services and the client command API."""
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen, Request
@@ -11,7 +11,7 @@ import time
 import os
 import signal
 import sqlite3
-from afterhours import ai_mix, playback_requests, queue_planning
+from afterhours import ai_mix, dj_discovery, playback_requests, queue_planning
 from afterhours.planner_policy import track_seconds
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_api import request as vdj_request
@@ -31,7 +31,7 @@ from afterhours.guest_coordinator import GuestCoordinator
 from afterhours.guest_protocol import GuestProtocol
 from afterhours.guest_polls import GuestPolls
 from afterhours.guest_poll_coordinator import PollCoordinator
-from afterhours.web_runtime import RuntimeStaticHandler
+from afterhours.web_runtime import LoopbackHTTPServer, RuntimeStaticHandler
 from afterhours import mcp_http
 from afterhours.mcp_control import MCPControl
 from afterhours.mcp_receipts import ReceiptStore
@@ -139,15 +139,16 @@ class Handler(RuntimeStaticHandler):
             return self.reply({"error":"VirtualDJ is busy; inspect state before retrying."},409)
         try:
             if DJ_SESSION.active and data.get('execute') and data.get('action') in {'play', 'pause'}:
-                return self.reply({'error':'Take over the scheduled set before using individual deck transport.'},409)
-            result = vdj_request(data, port=getattr(self.server, 'vdj_port', 7474))
-            return self.reply(result)
+                result,status={'error':'Take over the scheduled set before using individual deck transport.'},409
+            else:
+                result,status=vdj_request(data,port=getattr(self.server,'vdj_port',7474)),200
         except ValueError as exc:
-            return self.reply({"error":str(exc)},400)
+            result,status={"error":str(exc)},400
         except (BridgeError, OSError) as exc:
-            return self.reply({"connected":False,"error":str(exc)},503)
+            result,status={"connected":False,"error":str(exc)},503
         finally:
             VDJ_LOCK.release()
+        return self.reply(result,status)
 
     def agent_video_request(self,path,data=None):
         base='http://127.0.0.1:8768'
@@ -381,8 +382,9 @@ class Handler(RuntimeStaticHandler):
                         result=DJ_AGENT.fresh()
                     else:raise ValueError('Unknown conversation action.')
                 elif action=='start':
-                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'))
-                elif action=='end':result=LIVE_VOICE.end(data.get('sessionId'))
+                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'),client_lease=data.get('clientLease') is True)
+                elif action=='end':result=LIVE_VOICE.end(data.get('sessionId'),transport_closed=data.get('transportClosed') is True)
+                elif action=='heartbeat':result=LIVE_VOICE.heartbeat(data.get('sessionId'))
                 elif action=='usage':result=LIVE_VOICE.receipt(data.get('sessionId'),data.get('seconds'),data.get('finalized') is True)
                 else:raise ValueError('Unknown voice action.')
                 return self.reply(result)
@@ -416,9 +418,15 @@ class Handler(RuntimeStaticHandler):
                 if action == 'discover':
                     result = DJ_SESSION.discover(data.get('query'), data.get('artist',''),data.get('genre',''),data.get('bpmMin',40),data.get('bpmMax',300))
                 elif action == 'plan':
-                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'))
+                    result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'))
                 elif action == 'start':
-                    result = DJ_SESSION.start()
+                    options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
+                    if data.get('prepareWhilePlaying') is True:
+                        if DJ_SESSION.snapshot().get('mixStyle') != 'phrase':
+                            raise ValueError('Preparing while playing requires a phrase-mixing set.')
+                        result = DJ_SESSION.start(immediate=True,initialize_mixer=True,**options)
+                    else:
+                        result = DJ_SESSION.start(**options)
                 elif action in ('insert-track','preview-insertion'):
                     track_id=data.get('trackId')
                     if not isinstance(track_id,str) or not track_id:raise ValueError('Choose an exact recording to insert.')
@@ -549,7 +557,7 @@ def main():
                 message='The saved queue could not be restored. A fresh set is ready; the saved record was retained.')
             print('Queue recovery unavailable; saved data retained. Playback remains off.',flush=True)
     DJ_AGENT.restore_settings()
-    httpd=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
+    httpd=LoopbackHTTPServer(('127.0.0.1',args.port),Handler)
     try:
         mcp_store=ReceiptStore(RUNTIME/'mcp'/'receipts.sqlite3')
         MCP_CONTROL=MCPControl(DJ_AGENT,mcp_store)
@@ -563,6 +571,7 @@ def main():
         DJ_SESSION.factory=lambda *a,**kwargs:VirtualDJ(*a,reply_port=args.vdj_reply_port,**kwargs)
     if recovery:recovery.start(DJ_SESSION)
     TRACK_ARTWORK.start()
+    dj_discovery.DISCOVERY.start()
     start_guest_requests()
     threading.Thread(target=DJ_SESSION.observe,daemon=True).start()
     threading.Thread(target=DJ_AGENT.run,daemon=True).start()
@@ -580,6 +589,7 @@ def main():
         ROOM_REQUESTS.close()
         if GUEST_COORDINATOR:GUEST_COORDINATOR.close()
         TRACK_ARTWORK.close()
+        dj_discovery.DISCOVERY.close()
         LIVE_VOICE.end()
         if recovery:
             try:recovery.close(DJ_SESSION)

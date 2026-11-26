@@ -102,11 +102,17 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         change=abs(b['rmsDb']-before['rmsDb'])+abs(b['bassDb']-before['bassDb'])*.4
         score=change*.6-a['levelVariationDb']*.4-abs(a['rmsDb']-median)*.15
         possibilities.append((score, offset))
+    # Keep early eligible exits available alongside the highest-scoring
+    # windows. A live opener cannot seek to a better-scoring late entrance.
     ranked=[]
-    for _,offset in sorted(possibilities,reverse=True):
+    for _,offset in possibilities:
+        if len(ranked)>=min(2,limit):break
         if all(abs(offset-other)>=32 for other in ranked):
             ranked.append(offset)
+    for _,offset in sorted(possibilities,reverse=True):
         if len(ranked)>=limit:break
+        if all(abs(offset-other)>=32 for other in ranked):
+            ranked.append(offset)
     return {'offsets':sorted(ranked), 'spanBeats':span, 'blendBeats':blend,
             'medianRmsDb':round(median,2)}
 

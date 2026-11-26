@@ -12,7 +12,7 @@ from afterhours.dj_bridge import BridgeError
 from afterhours.background_analysis import merge_cleanup_pending
 
 FIELDS=('candidates','order','setlist','secondsPerTrack','excerptBars','maxTempoShift',
-        'mixStyle','tempoTargets','query','artistFilter','genreFilter','bpmMin','bpmMax',
+        'mixStyle','quickBlendSeconds','tempoTargets','query','artistFilter','genreFilter','bpmMin','bpmMax',
         'analysis','aiReview','resumeBlocked','cleanupPending','recoveryHistory','recoveryRemainder')
 MAX_BYTES=2_000_000
 

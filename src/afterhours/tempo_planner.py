@@ -161,5 +161,5 @@ class TempoRamp:
     def cancel(self,client):
         if self.running:
             # Cleanup must work even after the session cancellation flag is set.
-            client.send(f"repeat_stop '{self.NAME}'")
+            client.send(f"deck {self.deck} repeat_stop '{self.NAME}'")
             self.running=False

@@ -150,12 +150,16 @@ class TempoRamp:
             self.cancel(client);raise BridgeError('Native tempo diverged from its ramp. Scheduling stopped for manual control.')
         self.samples.append({'beat':beat,'bpm':current['bpm']});self.samples=self.samples[-64:]
         if beat>=self.start+row['durationBeats']:
-            if abs(current['bpm']-row['toBpm'])>.03:
-                if beat>self.start+row['durationBeats']+2:
-                    self.cancel(client);raise BridgeError('Tempo ramp endpoint was not confirmed. No transition was started.')
-            else:
+            error = abs(current['bpm']-row['toBpm'])
+            settled = beat>self.start+row['durationBeats']+2
+            # Native pitch ramp quantization can settle a few hundredths of
+            # a BPM from target. Keep the tight early readback, then accept
+            # the settled endpoint only inside the handoff's matching budget.
+            if error <= .03 or (settled and error <= .10):
                 self.cancel(client);self.done=True
                 self.event(f'Tempo confirmed at {current["bpm"]:.2f} BPM.','tempo-complete')
+            elif settled:
+                self.cancel(client);raise BridgeError('Tempo ramp endpoint was not confirmed. No transition was started.')
         return {'status':'complete' if self.done else 'ramping','fromBpm':row['fromBpm'],
                 'targetBpm':row['toBpm'],'progress':progress,'observedBpm':current['bpm']}
     def cancel(self,client):

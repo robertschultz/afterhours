@@ -112,6 +112,18 @@ class NativeRamp(unittest.TestCase):
         self.assertFalse(self.ramp.done);self.assertEqual(len(self.sent),1)
         self.tick(37.5,126)
         self.assertTrue(self.ramp.done);self.assertEqual(len(self.sent),2)
+    def test_small_native_pitch_quantization_is_only_accepted_after_settling(self):
+        self.setup_ramp()
+        self.tick(4,125)
+        self.tick(36,125.94)
+        self.assertFalse(self.ramp.done)
+        self.tick(38.1,125.94)
+        self.assertTrue(self.ramp.done)
+        self.setup_ramp()
+        self.tick(4,125)
+        with self.assertRaisesRegex(BridgeError, 'endpoint'):
+            self.tick(38.1,125.85)
+
     def test_missed_window_bad_range_and_linked_pitch_send_no_ramp(self):
         for field,value in [('pitch_lock',True),('deck 1 get_filepath','swapped'),('deck 1 pitch_range',.001)]:
             self.setup_ramp();self.readings[field]=value

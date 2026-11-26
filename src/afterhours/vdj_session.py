@@ -260,11 +260,13 @@ class DJSession:
         protected.update(t.get('id') for t in (self.state.get('telemetry') or {}).get('decks', []) if t.get('loaded'))
         records = self.state['candidates']
         kept = {t['id'] for t in records if t['id'] in protected}
-        room = max(0, WORKING_LIMIT - len(kept))
+        listened = {t['id'] for t in self.state.get('order', [])[:max(0, self.state.get('index', -1))]}
+        limit = WORKING_LIMIT + len(listened & kept) if self.state.get('rollingQueue') else WORKING_LIMIT
+        room = max(0, limit - len(kept))
         available = {t['id'] for t in records}
         preferred = [tid for tid in dict.fromkeys(preferred) if tid in available and tid not in kept]
         kept.update(preferred[:room])
-        room = max(0, WORKING_LIMIT - len(kept))
+        room = max(0, limit - len(kept))
         extras = [t['id'] for t in records if t['id'] not in kept]
         kept.update(extras[-room:] if room else [])
         self.state['candidates'] = [t for t in records if t['id'] in kept]
@@ -809,18 +811,20 @@ class DJSession:
 
     def remember_cleanup_failure(self, kind, owner):
         """Retain bounded owned ramps and exact analysis-deck cleanup evidence."""
-        names=[];analysis=[]
+        names=[];analysis=[];loops=[]
         if kind in ('mixer','handoff'):
             ramps=getattr(owner,'ramps',None)
             if isinstance(ramps,dict):
                 names=[f'{deck}:afterhours_{name}' for name,deck in ramps.items()]
         elif kind=='tempo' and isinstance(getattr(owner,'NAME',None),str):
             names=[f'{owner.deck}:{owner.NAME}']
+        elif kind=='loop' and getattr(owner, 'loop', None):
+            loops = [copy.deepcopy(owner.loop)]
         elif kind=='background':
             describe=getattr(owner,'cleanup_descriptors',None)
             if callable(describe):analysis=describe()
         with self.lock:
-            sources=[{'ramps':names,'analysis':analysis,'unknown':not (names or analysis)}]
+            sources=[{'ramps':names,'analysis':analysis,'loops':loops,'unknown':not (names or analysis or loops)}]
             if self.state.get('resumeBlocked'):sources.insert(0,self.state.get('cleanupPending'))
             self.state.update(resumeBlocked=True,cleanupPending=merge_cleanup_pending(*sources))
 
@@ -847,9 +851,18 @@ class DJSession:
             try:cleanup_analysis_deck(client,descriptor)
             except (BridgeError,OSError,ValueError) as exc:
                 descriptor['error']=str(exc)[:300];remaining.append(descriptor);errors.append(str(exc))
+        retained_loops = []
+        for descriptor in pending.get('loops', []):
+            handoff = NativeHandoff(self.q, self.send, self.sleep)
+            handoff.loop = descriptor
+            try:handoff.release_loop(client)
+            except (BridgeError, OSError, ValueError) as exc:
+                retained_loops.append(descriptor)
+                errors.append(str(exc))
         unknown=bool(pending.get('unknown'))
         result={'ramps':[],'unknown':unknown}
         if remaining:result['analysis']=remaining
+        if retained_loops:result['loops']=retained_loops
         # A final read timeout must retain the updated restoration stage, so a
         # later explicit Stop can verify success without overwriting controls.
         self.update(resumeBlocked=True,cleanupPending=pending)
@@ -857,9 +870,9 @@ class DJSession:
             result['unknown']=True
             self.update(resumeBlocked=True,cleanupPending=result)
             raise BridgeError('A deck started during automation cleanup; recovery remains blocked.')
-        blocked=unknown or bool(remaining)
+        blocked=unknown or bool(remaining or retained_loops)
         self.update(resumeBlocked=blocked,cleanupPending=result if blocked else None)
-        if errors:raise BridgeError('Analysis cleanup remains unconfirmed: '+'; '.join(errors))
+        if errors:raise BridgeError('Native automation cleanup remains unconfirmed: '+'; '.join(errors))
 
     def _work(self, fn):
         client = None
@@ -881,6 +894,11 @@ class DJSession:
                             cleanup_failed=True
                             self.remember_cleanup_failure('handoff',self.handoff)
                             self.event('Native crossfade cancellation unconfirmed; inspect the mixer.','error')
+                        try:self.handoff.release_loop(client)
+                        except (BridgeError,OSError,ValueError):
+                            cleanup_failed=True
+                            self.remember_cleanup_failure('loop',self.handoff)
+                            self.event('Outgoing loop cleanup unconfirmed; inspect the deck.','error')
                     if self.mixer:
                         try:
                             self.mixer.cancel_ramps(client)
@@ -1390,6 +1408,7 @@ class DJSession:
         if not job.done or seconds_available<12:return
         self.analysis_cache.update(job.cache)
         cleanup_failed=False
+        fitting=False
         try:
             try:job.close(client)
             except (BridgeError,OSError,ValueError):
@@ -1412,8 +1431,10 @@ class DJSession:
                         key,camelot=musical_key(reading.get('camelot'))
                         t.update(bpm=reading['bpm'],key=key,camelot=camelot,engineChecked=True)
                         if reading.get('duration') is not None:t['duration']=reading['duration']
+                fitting=True
                 prepared=cue_planner.complete_background_queue(s,q['tracks'],job.result,q['reason'],protected,
                     q.get('mixTransitions'),q.get('tempoTargets'),standing_style=q.get('standingStyle'),cue_choices=q.get('cueChoices'))
+                fitting=False
                 cue_planner.verify_receipts(prepared['analysis'])
                 # snapshot() owns a deep copy. Publish its checked recording
                 # facts with the verified plan, or adoption keeps stale catalog
@@ -1433,6 +1454,10 @@ class DJSession:
                     miss=getattr(job,'catalog_miss',None)
                     if not cleanup_failed and miss and self.state['queuedUpdate'].get('rollingTrackId')==miss:
                         self.state['queuedUpdate']['catalogMissId']=miss
+                    if fitting and not cleanup_failed and isinstance(exc, ValueError):
+                        rejected = self.state['queuedUpdate'].get('rollingTrackId')
+                        if rejected:
+                            self.state['queuedUpdate']['measuredFitMissId'] = rejected
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
@@ -1498,7 +1523,7 @@ class DJSession:
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
-            if not staged and not (rolling and (not queued or queued.get('catalogMissId'))):
+            if not staged and not (rolling and (not queued or queued.get('catalogMissId') or (self.state.get('entryCadence') and queued.get('measuredFitMissId')))):
                 return 0
         duration_ms=(current.get('controls') or {}).get('durationMs')
         position=current.get('position')
@@ -1906,7 +1931,9 @@ class DJSession:
             if not loaded:
                 return {'deck': deck, 'loaded': False, 'playing': False}
             beat_position = number(q(client, f'deck {deck} get_beatpos'), -10000, 100000)
+            phase_start = time.monotonic()
             phase = number(q(client, f'deck {deck} get_beat_bar'), 0, 1)
+            phase_clock = (phase_start + time.monotonic()) / 2
             reading = {'deck': deck, 'loaded': True,
                           'id': 'virtualdj:' + identity(str(q(client, f'deck {deck} get_filepath', 'text'))),
                           'title': q(client, f'deck {deck} get_title', 'text'),
@@ -1920,6 +1947,7 @@ class DJSession:
                           'position': number(q(client, f'deck {deck} get_time elapsed absolute'), -3_600_000, 3_600_000) / 1000,
                           'beatPosition': beat_position,
                           'phase': (phase * 4) % 1,
+                          'phaseClock': phase_clock,
                           'level': number(q(client, f'deck {deck} get_vu_meter'), 0, 1),
                           'sync': as_bool(q(client, f'deck {deck} is_sync', 'bool')),
                           'sampledAt': time.time()}
@@ -2177,11 +2205,17 @@ class DJSession:
         return order,prepared
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None, rolling_queue=False):
+              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
         snapshot = self.snapshot()
+        if entry_cadence is not None and (
+                not isinstance(entry_cadence, list) or not 1 <= len(entry_cadence) <= 8
+                or any(type(seconds) is not int or not 30 <= seconds <= 180 for seconds in entry_cadence)):
+            raise ValueError('Choose one to eight entry intervals between 30 and 180 seconds.')
+        if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
+            raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
         rolling = RollingQueue() if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
@@ -2252,7 +2286,8 @@ class DJSession:
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
         def work(client):
             nonlocal order,planned
-            self.update(rollingQueue={'status': 'ready'} if rolling else None)
+            self.update(rollingQueue={'status': 'ready'} if rolling else None,
+                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs)
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -2398,6 +2433,14 @@ class DJSession:
                     resume_window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
                     resume_window['basis']='measured-continuation-exit'
                     self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
+                if entry_cadence and planned and not final and not resume:
+                    try:
+                        resume_window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
+                            entry_interval=entry_cadence[index % len(entry_cadence)],
+                            actual_entry=resume_window if immediate and index == 0 else None)
+                    except ValueError as exc:
+                        if resume_window is None:
+                            raise BridgeError(str(exc)) from exc
                 return_to_verified_exit=False
                 window = resume_window or (cue_planner.execution_window(planned['selections'][index],current['beatPosition'],0 if final else recipe['fadeBeats'],final)
                           if planned else segment_window(entries[active], t['decks'][active-1]['beatPosition'],
@@ -2529,14 +2572,22 @@ class DJSession:
                 self.availability.require_track(expected)
                 self.update(phase='mixing', message=f"Mixing {track['title']} → {expected['title']}")
                 self.event(f"{fade_beats//4}-bar blend · {track['title']} → {expected['title']}", 'mix')
+                dispatch_at = time.time()
                 self.handoff=NativeHandoff(self.q,self.send,self.sleep)
-                self.handoff.dispatch(client,active,incoming,fade_beats,**({'decks':self.decks} if len(self.decks)>2 else {}))
+                handoff_options = {'decks': self.decks} if len(self.decks)>2 else {}
+                if loop_handoffs:
+                    handoff_options['loop_recording'] = track['engine']['selection_id']
+                self.handoff.dispatch(client,active,incoming,fade_beats,**handoff_options)
                 if self.mixer:
                     self.mixer.begin(client)
                 deadline = time.monotonic() + fade_beats*60/target + 8
-                evidence = {'from': track['id'], 'to': expected['id'], 'at': time.time(), 'samples': [],
+                evidence = {'from': track['id'], 'to': expected['id'], 'at': dispatch_at, 'samples': [],
                             'timing': copy.deepcopy(window), 'observedStartBeat':current['beatPosition'],
                             'incomingCueBeat':entries[incoming], 'recipe':recipe, 'mixerSamples':[]}
+                if self.handoff.loop:
+                    evidence['loop'] = {'deck': active, 'beats': self.handoff.loop['beats'],
+                                        'startMs': self.handoff.loop['startMs'], 'wraps': 0}
+                last_outgoing_beat = None
                 if tempo_row:evidence.update(tempoPlan=copy.deepcopy(tempo_row),tempoSamples=copy.deepcopy(self.tempo_ramp.samples))
                 self.update(activeHandoff={k:evidence[k] for k in ('from','to','observedStartBeat','incomingCueBeat','timing')})
                 while time.monotonic() < deadline:
@@ -2549,11 +2600,20 @@ class DJSession:
                     # The pair in deck order, so A/B samples read as before.
                     a,b = (t['decks'][deck-1] for deck in sorted((active,incoming)))
                     if a.get('playing') and b.get('playing'):
-                        delta = abs(a['phase']-b['phase'])
+                        raw_delta = abs(a['phase']-b['phase'])
+                        phase_elapsed = b.get('phaseClock', 0) - a.get('phaseClock', 0)
+                        delta = (a['phase'] + phase_elapsed*a['bpm']/60 - b['phase']) % 1
                         evidence['samples'].append({'bpmA': a['bpm'], 'bpmB': b['bpm'],
-                            'phaseDifference': min(delta,1-delta), 'syncA':a['sync'],'syncB':b['sync'],
+                            'phaseDifference': min(delta,1-delta), 'rawPhaseDifference': min(raw_delta,1-raw_delta),
+                            'phaseReadOffsetSeconds': phase_elapsed, 'syncA':a['sync'],'syncB':b['sync'],
                             'crossfader':t['crossfader'], 'levelA':a['level'],'levelB':b['level']})
-                    self.update(segmentProgress=max(0, min(1, (t['decks'][active-1]['beatPosition']-start_beat)/(window['endBeat']-start_beat))))
+                    if 'loop' in evidence:
+                        outgoing_beat = t['decks'][active-1]['beatPosition']
+                        if last_outgoing_beat is not None and outgoing_beat < last_outgoing_beat - 1:
+                            evidence['loop']['wraps'] += 1
+                        last_outgoing_beat = outgoing_beat
+                    incoming_progress = max(0, t['decks'][incoming-1]['beatPosition']-entries[incoming])
+                    self.update(segmentProgress=max(0, min(1, (goal-start_beat+incoming_progress)/(window['endBeat']-start_beat))))
                     endpoint = abs(t['crossfader']-deck_rotation.crossfader_end(incoming)) <= .001
                     if endpoint and t['decks'][incoming-1]['playing']:
                         break
@@ -2564,15 +2624,19 @@ class DJSession:
                     self.mixer.verify_handoff(client)
                 evidence['completedAt'] = time.time()
                 evidence['syncObserved'] = any(s['syncA'] or s['syncB'] for s in evidence['samples'])
-                with self.lock:
-                    self.state['transitions'].append(evidence)
-                self.archive_call('transition',evidence)
                 self.event(f"Handoff confirmed · {expected['title']}", 'transition', syncObserved=evidence['syncObserved'])
                 self.send(client, f'deck {active} pause')
                 self.sleep(.15)
                 if as_bool(self.q(client, f'deck {active} play', 'bool')):
                     raise BridgeError('Outgoing deck did not pause. Scheduling stopped.')
                 self.handoff.cancel_ramps(client)
+                loop_release = self.handoff.release_loop(client)
+                if 'loop' in evidence:
+                    evidence['loop']['releaseStatus'] = loop_release
+                    evidence['loop']['released'] = loop_release == 'released'
+                with self.lock:
+                    self.state['transitions'].append(evidence)
+                self.archive_call('transition',evidence)
                 if self.mixer:
                     self.mixer.cancel_ramps(client)
                     self.mixer.reset_paused(client,active)

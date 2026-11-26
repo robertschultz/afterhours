@@ -421,6 +421,10 @@ class Handler(RuntimeStaticHandler):
                     result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'))
                 elif action == 'start':
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
+                    if 'entryCadence' in data:
+                        options['entry_cadence'] = data['entryCadence']
+                    if data.get('loopHandoffs') is True:
+                        options['loop_handoffs'] = True
                     if data.get('prepareWhilePlaying') is True:
                         if DJ_SESSION.snapshot().get('mixStyle') != 'phrase':
                             raise ValueError('Preparing while playing requires a phrase-mixing set.')

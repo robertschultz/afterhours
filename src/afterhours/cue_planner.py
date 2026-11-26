@@ -344,7 +344,28 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         if not candidates:raise ValueError('No replay-verified cue for a queued recording.')
         cue=next((c for c in candidates if previous and c['id']==previous['candidateId']),None)
         if cue is None:
-            if snapshot.get('rollingQueue'):
+            cadence = snapshot.get('entryCadence')
+            if cadence:
+                bpm = report['targetBpm']
+                target = cadence[i % len(cadence)] * bpm / 60
+                exits = [c['exitBeat'] for c in candidates if c['maxBlendBeats'] >= 8]
+                if exits and snapshot.get('rollingQueue'):
+                    # The first eligible exit targets the cadence. Keep a
+                    # second measured exit available if discovery or decoding
+                    # needs most of the early track's runway.
+                    last_exit = max(exits)
+                    reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + bpm * .75]
+                    if not reserve:
+                        reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + 16]
+                    if reserve:
+                        candidates = reserve
+                def cadence_error(c):
+                    return min((abs(exit_beat-c['entryBeat']-target) for exit_beat in exits
+                                if exit_beat-c['entryBeat'] >= 16), default=math.inf)
+                best_error = min(map(cadence_error, candidates))
+                if math.isfinite(best_error):
+                    candidates = [c for c in candidates if cadence_error(c) <= best_error + 4]
+            elif snapshot.get('rollingQueue'):
                 usable=[c for c in candidates if c['maxBlendBeats']>=8]
                 if usable:
                     last_exit=max(c['exitSeconds'] for c in usable)
@@ -370,10 +391,20 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         # Conservative one-lead transition. Do not represent signal energy as
         # proof of instrumental/vocal sections or a listening judgment.
         max_beats=min(cues[i]['maxBlendBeats'],cues[i+1]['maxBlendBeats'],preferred_beats)
-        beats=max((n for n in (8,16) if n<=max_beats),default=0)
+        choices = (8, 16)
+        reason_detail = ''
+        if snapshot.get('entryCadence'):
+            outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
+            level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
+            bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
+            gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
+            choices = (8, 16) if gradual else (8,)
+            reason_detail = (f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
+                             + (' Both support a longer blend.' if gradual else ' Use a shorter overlap.'))
+        beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
         pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':'restrained-bass-swap',
-            'reason':'Local measured transition for an AI-selected track. '+recipe['reason']})
+            'reason':'Local measured transition. '+recipe['reason']+reason_detail})
     report['tracks']=[evidence[i] for i in ids];report['fingerprint']=fingerprint(report['tracks'])
     report.update(tempoVersion=tempo_planner.VERSION,tempoTargets=tempo_targets,
                   maxPitchPercent=snapshot.get('maxTempoShift',8))

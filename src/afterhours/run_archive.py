@@ -215,7 +215,7 @@ class RunArchive:
             if not self.active:return
             run=self.active;tid=evidence.get('to')
             track=next((r for r in reversed(run['played']) if r['id']==tid),None)
-            if not track or len(run['landed'])>=16:return
+            if not track or len(run['landed'])>=MAX_INTERVALS:return
             key=str(evidence.get('from'))+':'+str(tid)+':'+str(evidence.get('completedAt'))
             identifier=hashlib.sha256(key.encode()).hexdigest()[:24]
             if any(row['id']==identifier for row in run['landed']):return
@@ -329,7 +329,7 @@ class RunArchive:
                         or not valid_effect(lesson['effect']) or not isinstance(lesson['title'],str)
                         or len(lesson['title'])>300 or not isinstance(lesson['detail'],str) or len(lesson['detail'])>800):raise ValueError()
             if record['trackCount']!=len({r['id'] for r in played}) or record['intervalCount']!=len(played):raise ValueError()
-            if not isinstance(record['moments'],list) or len(record['moments'])>16 or not isinstance(record['landed'],list) or len(record['landed'])>16:raise ValueError()
+            if not isinstance(record['moments'],list) or len(record['moments'])>16 or not isinstance(record['landed'],list) or len(record['landed'])>MAX_INTERVALS:raise ValueError()
             if record['room'] is not None or record['capabilities']!={'copyTracklist':True,'keepLesson':bool(lessons),'exportRecording':False,'previewMoment':False,'makeClips':False}:raise ValueError()
             if record['tracklist']['format']!='text/plain' or len(record['tracklist']['text'].encode('utf-8'))>65536:raise ValueError()
         except (KeyError,TypeError,ValueError,AttributeError):raise ValueError('The archived run is malformed or unsupported.') from None

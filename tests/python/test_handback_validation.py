@@ -108,6 +108,22 @@ class HandbackTimingValidation(unittest.TestCase):
                 self.assertEqual(bool(s.snapshot().get('resumeBlocked')), outcome != 'confirmed')
                 self.assertFalse(s.active)
 
+    def test_explicit_paused_cleanup_recovers_a_known_owned_loop(self):
+        from afterhours.vdj_catalog import identity
+        s = DJSession(threading.Lock())
+        path = '/fixture/outgoing.wav'
+        active = [True]
+        client = Mock()
+        query = {'deck 1 get_filepath': path, 'deck 1 get_active_loop': 4,
+                 'deck 1 get_loop_in_time': 8000.0}
+        client.query.side_effect = lambda action, kind=None: active[0] if action == 'deck 1 loop' else query.get(action, False)
+        client.send.side_effect = lambda action: active.__setitem__(0, False)
+        s.update(resumeBlocked=True, cleanupPending={'loops': [
+            {'deck':1,'recording':identity(path),'beats':4,'startMs':8000.0}]})
+        s.retry_paused_cleanup(client)
+        client.send.assert_called_once_with('deck 1 loop_exit')
+        self.assertFalse(s.snapshot()['resumeBlocked'])
+
     def test_recovered_cleanup_cannot_supply_an_arbitrary_engine_command(self):
         s = DJSession(threading.Lock())
         s.update(resumeBlocked=True,

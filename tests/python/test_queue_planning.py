@@ -127,6 +127,22 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(replacement['protectedIds'],['a','b'])
         self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
 
+    def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.tick(self.session, 30)
+        pending = self.session.state['queuedUpdate']
+        miss = pending['rollingTrackId']
+        pending.update(status='blocked', error='Native load remains unconfirmed.')
+        roller.tick(self.session, 30)
+        self.assertEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
+        pending['measuredFitMissId'] = miss
+        roller.tick(self.session, 30)
+        self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
+        self.assertEqual(self.session.state['queuedUpdate']['protectedIds'], ['a','b'])
+
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})

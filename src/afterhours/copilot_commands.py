@@ -165,7 +165,7 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
-def retime(snapshot, current, fade_beats, final=False):
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None):
     """Earliest verified exit with lead time, preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
@@ -192,11 +192,19 @@ def retime(snapshot, current, fade_beats, final=False):
              and c['maxBlendBeats'] >= (0 if final else fade_beats)]
     if not valid:
         raise ValueError('No verified handoff remains ahead. The current track keeps playing; take over or prepare another exit.')
-    selected = min(valid, key=lambda c: c['exitBeat'])
+    entry = actual_entry or cue
+    if entry_interval is None:
+        selected = min(valid, key=lambda c: c['exitBeat'])
+    else:
+        target = entry['entryBeat'] + entry_interval * current['bpm'] / 60
+        selected = min(valid, key=lambda c: (abs(c['exitBeat'] - target), c['exitBeat']))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
-    window.update(entryBeat=cue['entryBeat'], entrySeconds=cue['entrySeconds'],
-                  segmentBeats=window['endBeat']-cue['entryBeat'],
+    window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
+                  segmentBeats=window['endBeat']-entry['entryBeat'],
                   basis='operator-steered-measured-exit', originalCandidateId=cue['id'])
+    if entry_interval is not None:
+        window.update(basis='cadence-measured-exit', requestedEntryInterval=entry_interval,
+                      plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'])
     return window
 
 

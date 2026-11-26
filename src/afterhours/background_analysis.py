@@ -17,6 +17,7 @@ from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_l
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
 from afterhours.native_analysis import track_analysis
+from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
@@ -72,7 +73,7 @@ def cleanup_descriptor(value):
 
 def merge_cleanup_pending(*sources):
     """Keep known cleanup and any independent unknown latch through recovery."""
-    names=[];decks={};conflicts=set();unknown=False
+    names=[];decks={};loops={};conflicts=set();loop_conflicts=set();unknown=False
     for source in sources:
         if not isinstance(source,dict):unknown=True;continue
         ramps=source.get('ramps',[])
@@ -91,10 +92,27 @@ def merge_cleanup_pending(*sources):
                     for field in ('unloadRequested','restoreRequested'):row[field]=row[field] or before[field]
                     row['loadPending']=row['loadPending'] and before['loadPending']
                 decks[deck]=row
+        retained_loops = source.get('loops', [])
+        if not isinstance(retained_loops, list):
+            unknown = True
+            retained_loops = []
+        for value in retained_loops:
+            try:row = loop_cleanup_descriptor(value)
+            except BridgeError:
+                unknown = True
+                continue
+            deck = row['deck']
+            if deck in loops and row != loops[deck]:
+                loop_conflicts.add(deck)
+                unknown = True
+            else:
+                loops[deck] = row
         unknown=unknown or bool(source.get('unknown'))
     analysis=[row for deck,row in sorted(decks.items()) if deck not in conflicts]
-    result={'ramps':sorted(set(names)),'unknown':unknown or not (names or analysis)}
+    retained_loops = [row for deck, row in sorted(loops.items()) if deck not in loop_conflicts]
+    result={'ramps':sorted(set(names)),'unknown':unknown or not (names or analysis or retained_loops)}
     if analysis:result['analysis']=analysis
+    if retained_loops:result['loops']=retained_loops
     return result
 
 def cleanup_analysis_deck(client, descriptor):
@@ -313,6 +331,7 @@ class BackgroundAnalysis:
                         or epoch==self.browser_epoch or attempt==2):raise
                 self.check()
         deadline=self.clock()+20
+        sid = None
         while self.clock()<deadline:
             self.wait(.15)
             try:
@@ -328,6 +347,9 @@ class BackgroundAnalysis:
                 self.loaded=sid
                 self.request('isolate-loaded','',sid)
                 return
+        if sid is not None:
+            raise BridgeError('VirtualDJ loaded a different recording identity on the muted analysis deck. '
+                              'No repeat load or handoff was sent.')
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable

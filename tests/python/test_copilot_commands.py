@@ -156,6 +156,25 @@ class CopilotControlTests(unittest.TestCase):
         later['replayVerified']=False
         with self.assertRaisesRegex(ValueError,'No verified'):cc.retime(s.snapshot(),current,32)
 
+    def test_timed_exit_uses_nearest_verified_option_and_reports_interval(self):
+        s = running()
+        current = s.state['telemetry']['decks'][0]
+        original = s.state['executionPlan']['selections'][0]
+        candidates = s.state['analysis']['tracks'][0]['cueCandidates']
+        for beat in (140, 220, 280):
+            candidates.append({**original, 'id': f'candidate-{beat}', 'exitBeat': beat,
+                               'exitSeconds': beat*60/155, 'replayVerified': beat != 280})
+        first = cc.retime(s.snapshot(), current, 16, entry_interval=30)
+        second = cc.retime(s.snapshot(), current, 16, entry_interval=60)
+        self.assertEqual(first['mixAtBeat'], 140)
+        self.assertEqual(second['mixAtBeat'], 220)
+        self.assertEqual(second['requestedEntryInterval'], 60)
+        self.assertAlmostEqual(second['plannedEntryInterval'], (220-64)*60/155)
+        opening = cc.retime(s.snapshot(), current, 16, entry_interval=60,
+                           actual_entry={'entryBeat':0, 'entrySeconds':0})
+        self.assertEqual(opening['entryBeat'], 0)
+        self.assertEqual(opening['mixAtBeat'], 140)
+
     def test_go_failure_keeps_hold_and_does_not_seek_or_mix(self):
         s=running(); self.command(s,'hold')
         s.state['telemetry']['decks'][0]['beatPosition']=140

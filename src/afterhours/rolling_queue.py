@@ -53,7 +53,8 @@ class RollingQueue:
                 if session.cancel.is_set():
                     return
                 try:
-                    session.revise_queue(ids + [track['id']], reason=f"Continuing the set with {track['title']}.")
+                    session.revise_queue(ids + [track['id']], reason=f"Continuing the set with {track['title']}.",
+                                         source='planner')
                 except (ValueError, BridgeError):
                     continue
                 session.update(rollingQueue={'status': 'preparing', 'next': track['title']})

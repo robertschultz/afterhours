@@ -1255,10 +1255,12 @@ class DJSession:
         except (BridgeError,ValueError,OSError) as exc:
             job.done=True;job.publish('error',str(exc));self.event(str(exc),'catalog')
 
-    def revise_queue(self,ids,reason='',mix_transitions=None,tempo_targets=None,preserve_prefix=0,cue_choices=None):
+    def revise_queue(self,ids,reason='',mix_transitions=None,tempo_targets=None,preserve_prefix=0,cue_choices=None, *, source=None):
         """Stage a future revision without touching the playing/cued prefix."""
         with self.lock:
             s=self.snapshot()
+            if source not in (None,'operator','planner'):
+                raise ValueError('Unknown setlist source.')
             if type(preserve_prefix) is not int or not 0<=preserve_prefix<=len(s['order']):
                 raise ValueError('Invalid protected queue prefix.')
             audible=s['active'] or any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[]))
@@ -1276,7 +1278,7 @@ class DJSession:
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
-                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
+                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],source=source or 'planner',tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
             if audible and s['phase'] not in ('playing','mixing','loading'):
                 raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
             if not quick and not old_plan.get('applied'):
@@ -1290,6 +1292,7 @@ class DJSession:
             self.state['queuedUpdate']={'id':uuid.uuid4().hex,'tracks':order,'protectedIds':old[:protected],
                 'status':'ready' if prepared or quick else 'needs-analysis','reason':reason,'prepared':prepared,
                 **({'quick':True} if quick else {}),
+                **({'sourceById':{tid:source for tid in ids if tid not in old}} if source else {}),
                 'mixTransitions':copy.deepcopy(mix_transitions),'tempoTargets':copy.deepcopy(tempo_targets),
                 'cueChoices':copy.deepcopy(cue_choices) if cue_choices else None,
                 'standingStyle':copy.deepcopy(getattr(self,'standing_style',None))}
@@ -1461,7 +1464,7 @@ class DJSession:
                 if self.state['mixStyle']!='quick':
                     q['status']='needs-review';return None
                 track_ids=[t['id'] for t in order]
-                sources=self.state['setlist'].get('sourceById',{})
+                sources={**self.state['setlist'].get('sourceById',{}),**q.get('sourceById',{})}
                 self.state['setlist']['sourceById']={tid:sources.get(tid,'operator') for tid in track_ids}
                 self.update(order=copy.deepcopy(order),queuedUpdate=None,
                             lastQueueApplication={'queueRevision':q['id'],'planId':None,

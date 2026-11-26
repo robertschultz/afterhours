@@ -72,6 +72,7 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual([t['id'] for t in staged['tracks']],['a','b','c'])
         self.session.adopt_queue(1)
+        self.assertEqual(self.session.snapshot()['setlist']['sourceById']['c'],'planner')
         self.session.update(index=1)
         roller.tick(self.session, 12)
         staged=self.session.snapshot()['queuedUpdate']

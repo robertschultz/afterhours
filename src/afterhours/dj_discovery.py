@@ -76,6 +76,19 @@ def style_for(request):
     return ''
 
 
+def set_slot(request):
+    text=normalized(request)
+    for name, pattern, target in (
+        ('closing',r'\b(closing set|last track|wind down|after hours|afterhours set)\b',.40),
+        ('warm-up',r'\b(warm up|warmup|opening set|early evening)\b',.38),
+        ('peak hour',r'\b(peak hour|peak time|midnight set|main room peak)\b',.86),
+        ('build',r'\b(build up|build the energy|build toward|build the set)\b',.64),
+    ):
+        if re.search(pattern,text):
+            return {'name':name,'targetEnergy':target}
+    return None
+
+
 class Discovery:
     def __init__(self, fetch=read_json, clock=time.time):
         self.fetch, self.clock = fetch, clock
@@ -198,13 +211,24 @@ def relationships(track, anchors, played):
     return facts
 
 
-def rank_candidates(tracks, requested_style, anchors, recent, preferred, discovery=DISCOVERY):
+def rank_candidates(tracks, requested_style, anchors, recent, preferred, discovery=DISCOVERY, set_slot=None):
     """Weigh evidence and diversify supply without claiming that a candidate is loadable."""
+    tracks=list(tracks)
+    graph={}
+    for record in tracks:
+        artists=credit(record.get('artist'))
+        for artist in artists:
+            graph.setdefault(artist,set()).update(artists-{artist})
+    seed_artists=set().union(*(credit(anchor.get('artist')) for anchor in anchors))
+    related=set().union(*(graph.get(artist,set()) for artist in seed_artists))-seed_artists
     facts = {}
     ranked = []
     for track in tracks:
         track_id = track['id']
         edges = relationships(track, anchors, recent)
+        related_credit=credit(track.get('artist')) & related
+        if related_credit:
+            edges['collaborationLinks']=sorted(related_credit)[:4]
         evidence = discovery.evidence(track)
         facts[track_id] = {**edges, **evidence}
         genre = style_for(track.get('genre'))
@@ -213,6 +237,10 @@ def rank_candidates(tracks, requested_style, anchors, recent, preferred, discove
             score += 1.25
         score += 1.2 if edges.get('sharedLabel') else 0
         score += .7 if edges.get('sharedArtists') else 0
+        score += .8 if related_credit else 0
+        energy=track.get('energy')
+        if set_slot and type(energy) in (int,float) and 0<=energy<=1:
+            score += 1.5*(1-abs(energy-set_slot['targetEnergy']))
         score -= 3.5 * edges.get('recentArtistAppearances', 0)
         chart = evidence.get('danceChart')
         if chart:

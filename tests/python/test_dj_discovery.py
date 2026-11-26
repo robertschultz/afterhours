@@ -1,6 +1,6 @@
 import unittest
 
-from afterhours import dj_discovery
+from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -37,3 +37,24 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in ranked], ['requested', 'fresh', 'same'])
         self.assertEqual(facts['fresh']['sharedLabel'], ['playing'])
         self.assertEqual(facts['same']['recentArtistAppearances'], 1)
+
+    def test_exact_live_match_can_start_with_a_feasible_followup(self):
+        first={'id':'a','title':'Opening','artist':'Daft Punk','bpm':125}
+        nearby={'id':'b','title':'Follower','artist':'Other','bpm':126}
+        unavailable={'id':'c','title':'Also fine','artist':'Other','bpm':125}
+        room={'candidates':[unavailable,first,nearby],
+              'recordingAvailability':[{'trackId':'c'}]}
+        self.assertEqual(queue_planning.quick_opening(room,'Daft Punk',{'a','b','c'}),['a','b'])
+        self.assertIsNone(queue_planning.quick_opening(room,'Daft Punk',{'a','c'}))
+        self.assertIsNone(queue_planning.quick_opening(room,'A mood',{'a','b','c'}))
+
+    def test_peak_slot_prefers_energy_and_credited_collaborators(self):
+        anchor={'id':'anchor','artist':'Alex','genre':'House'}
+        collab={'id':'collab','artist':'Alex, Jules','energy':.4,'genre':'House'}
+        related={'id':'related','artist':'Jules','energy':.9,'genre':'House'}
+        filler={'id':'filler','artist':'Other','energy':.3,'genre':'House'}
+        slot=dj_discovery.set_slot('a peak-hour House set')
+        ranked,facts=dj_discovery.rank_candidates([collab,related,filler],'house',[anchor],[anchor],
+                                                   lambda _: (0,0),set_slot=slot)
+        self.assertEqual(ranked[0]['id'],'related')
+        self.assertEqual(facts['related']['collaborationLinks'],['jules'])

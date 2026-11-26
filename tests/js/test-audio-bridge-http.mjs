@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path.cwd() / 'scripts'))
 from test_isolation import test_environment
 with test_environment():
     from afterhours import server
-    httpd = server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), server.Handler)
+    from afterhours.web_runtime import LoopbackHTTPServer
+    httpd = LoopbackHTTPServer(('127.0.0.1', int(sys.argv[1])), server.Handler)
     def stop(*_): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     print(f'HTTP fixture ready: http://127.0.0.1:{httpd.server_port}', flush=True)
@@ -33,9 +34,10 @@ test('real HTTP process restart renews token and accepts sequence one again',{ti
   async function launch(port){
     child=spawn(python,['-u','-c',fixture,String(port)],{cwd:new URL("../../", import.meta.url),stdio:['ignore','pipe','pipe']});
     base=await new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>reject(new Error('Isolated server startup timed out')),4000);
+      let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk;});
+      const timer=setTimeout(()=>reject(new Error(`Isolated server startup timed out\n${stderr}`)),4000);
       let output='';child.stdout.on('data',chunk=>{output+=chunk;const match=output.match(/http:\/\/127\.0\.0\.1:\d+/);if(match){clearTimeout(timer);resolve(match[0]);}});
-      child.once('exit',code=>{clearTimeout(timer);reject(new Error(`Isolated server exited: ${code}`));});
+      child.once('close',code=>{clearTimeout(timer);reject(new Error(`Isolated server exited: ${code}\n${stderr}`));});
     });
   }
   async function halt(){if(!child||child.exitCode!==null)return;await new Promise(resolve=>{child.once('exit',resolve);child.kill('SIGTERM');});}

@@ -105,7 +105,7 @@ class NativeRamp(unittest.TestCase):
         self.assertTrue(self.ramp.done);self.assertEqual(len(self.sent),2)
         self.assertIn('32bt & deck 1 pitch',self.sent[0]);self.assertIn('0.550000000',self.sent[0])
         self.assertTrue(self.sent[0].startswith('deck 1 repeat_start_fade'))
-        self.assertTrue(self.sent[1].startswith('repeat_stop'))
+        self.assertTrue(self.sent[1].startswith('deck 1 repeat_stop'))
         self.tick(38,126);self.assertEqual(len(self.sent),2)
     def test_near_endpoint_does_not_stop_native_ramp_early(self):
         self.setup_ramp();self.tick(4,125);self.tick(36,125.88)
@@ -123,10 +123,10 @@ class NativeRamp(unittest.TestCase):
     def test_operator_pitch_change_cancels_instead_of_catching_up(self):
         self.setup_ramp();self.tick(4,125)
         with self.assertRaises(BridgeError):self.tick(20,128)
-        self.assertEqual(len(self.sent),2);self.assertTrue(self.sent[-1].startswith('repeat_stop'))
+        self.assertEqual(len(self.sent),2);self.assertTrue(self.sent[-1].startswith('deck 1 repeat_stop'))
     def test_cancellation_survives_session_cancel_flag(self):
         self.setup_ramp();self.tick(4,125);self.ramp.send=Mock(side_effect=AssertionError('session stopped'))
         self.ramp.cancel(self.client);self.assertFalse(self.ramp.running)
-        self.assertTrue(self.sent[-1].startswith('repeat_stop'))
+        self.assertTrue(self.sent[-1].startswith('deck 1 repeat_stop'))
 
 if __name__=='__main__':unittest.main()

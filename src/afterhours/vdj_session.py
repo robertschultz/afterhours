@@ -2084,7 +2084,7 @@ class DJSession:
                 continue
         raise BridgeError('Track load remains unconfirmed. No repeat load or Play was sent.')
 
-    def telemetry(self, client, observing=False, preloading=False):
+    def telemetry(self, client, observing=False, preloading=False, *, clock_only=False):
         q = (lambda client,script,kind=None: client.query(script,kind)) if observing else self.q
         def read_deck(deck):
             loaded = as_bool(q(client, f'deck {deck} loaded', 'bool'))
@@ -2145,7 +2145,7 @@ class DJSession:
             cached = self.eq_readings.get(deck)
             if cached and cached['trackId'] != d.get('id'):
                 cached = None
-            if not mixing and not preloading and not d.get('unavailable') and not d.get('standby') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and not d.get('standby') and (
                     not cached or time.time() - cached['sampledAt'] >= .75):
                 try:
                     values = {name: number(q(client, f'deck {deck} {name}'), 0, 1)
@@ -2165,7 +2165,7 @@ class DJSession:
             cached = self.console_readings.get(d['deck'])
             if cached and cached['trackId'] != d.get('id'): cached = None
             if d.get('standby'): continue
-            if not preloading and not d.get('unavailable') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and (
                     not cached or time.time()-cached['values']['sampledAt'] >= .5):
                 values = bounded_controls(client, d['deck'], d.get('loaded') is True)
                 # A load from hardware while reading cannot attach old metadata
@@ -2178,7 +2178,8 @@ class DJSession:
                 cached={'trackId':d.get('id'),'values':values}
                 self.console_readings[d['deck']]=cached
             if cached:
-                d['controls']=live_controls(client,d['deck'],cached['values']) if not preloading else cached['values']
+                d['controls'] = (cached['values'] if mixing or clock_only or preloading
+                                 else live_controls(client,d['deck'],cached['values']))
         result = {'decks': decks, 'crossfader': crossfader, 'sampledAt': time.time()}
         self.update(telemetry=result)
         return result
@@ -2611,8 +2612,14 @@ class DJSession:
                 revised_final=False
                 waiting_for_continuation=False
                 stems_check_at=0
+                retried_mixer_window=False
                 while True:
-                    t = self.telemetry(client)
+                    # A near-boundary sample still reads identity, transport,
+                    # tempo, meter and phase. Defer only console UI readbacks.
+                    if not final and current['beatPosition'] >= goal-12:
+                        t = self.telemetry(client, clock_only=True)
+                    else:
+                        t = self.telemetry(client)
                     current = t['decks'][active-1]
                     if current['id'] != track['id'] or not current['playing']:
                         raise BridgeError('A deck changed or was paused. Scheduling stopped for manual control.')
@@ -2666,6 +2673,28 @@ class DJSession:
                         waiting_for_continuation=True
                         self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
                     if current['beatPosition'] >= goal and runway<16:
+                        if self.mixer and not final and entry_cadence:
+                            # Assess mixer state before committing to the
+                            # handoff. A delayed reply can consume this bar.
+                            self.mixer.validate_armed(client)
+                            observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
+                            if observed<goal:
+                                raise MixerControlChanged('The outgoing beat clock moved before the handoff. No transition was sent.')
+                            current={**current,'beatPosition':observed}
+                            if observed-goal>1:
+                                if retried_mixer_window:
+                                    raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
+                                try:
+                                    window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'],
+                                        entry_interval=entry_cadence[index % len(entry_cadence)],actual_entry=window,
+                                        latest_beat=goal+min(16,current['bpm']*8/60))
+                                except ValueError as exc:
+                                    raise BridgeError('Mixer checks missed the transition window. '+str(exc)) from exc
+                                retried_mixer_window=True
+                                start_beat,goal=window['entryBeat'],window['mixAtBeat']
+                                self.update(targetBeat=goal,timing=dict(window),segmentBeats=window['segmentBeats'])
+                                self.event('Mixer readback arrived late. Waiting for a nearby verified bar.', 'timing')
+                                continue
                         if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:
                                 raise BridgeError('The analyzed transition window was missed. Scheduling stopped; no substitute cue was used.')
@@ -2737,7 +2766,7 @@ class DJSession:
                 if tempo_row and not self.tempo_ramp.done:
                     raise BridgeError('Tempo ramp was not confirmed before the handoff. No transition was started.')
                 fade_beats = window['fadeBeats']
-                if self.mixer:
+                if self.mixer and not entry_cadence:
                     self.mixer.validate_armed(client)
                     observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
                     if observed-goal>1:

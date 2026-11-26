@@ -128,9 +128,9 @@ def start_and_prepare(session,client,requested):
     first=order[0]
     if any(as_bool(s.q(client,f'deck {deck} play','bool')) for deck in (1,2)):
         raise BridgeError('A deck started manually. The opening start was cancelled.')
-    s.send(client,'deck 1 master_tempo on & deck 1 goto_first_beat')
-    target=number(s.q(client,'deck 1 get_bpm absolute'),40,300)
-    s.match_tempo(client,first,1,target)
+    # The opening is the only audible deck. Start at native speed and use
+    # the running deck's measured tempo when preparing the first handoff.
+    s.send(client,'deck 1 pitch 100% & deck 1 master_tempo on & deck 1 goto_first_beat')
     s.send(client,'crossfader 0%')
     s.mixer=TransitionMixer(s.q,s.send);s.mixer.initialize_opening(client)
     before=s.telemetry(client)
@@ -138,14 +138,15 @@ def start_and_prepare(session,client,requested):
         raise BridgeError('The opening recording and paused mixer could not be confirmed.')
     duration=number(s.q(client,'deck 1 get_time total absolute'),1000,86_400_000)/1000
     startup.update(entryBeat=before['decks'][0]['beatPosition'],entrySeconds=before['decks'][0]['position'],
-                   openingId=first['id'],targetBpm=target,status='starting')
+                   openingId=first['id'],targetBpm=number(before['decks'][0]['bpm'],40,300),status='starting')
     s.update(order=order,startup=copy.deepcopy(startup),mixerBaselines=copy.deepcopy(s.mixer.baselines))
     s.availability.require_track(first)
     s.send(client,'deck 1 play')
     try:t=confirm_started(s,client,1,first['id'],startup['entryBeat'])
     except BridgeError:
         startup['status']='blocked';s.update(startup=copy.deepcopy(startup));raise
-    startup.update(status='analyzing',playingAt=time.time(),skipped=copy.deepcopy(skipped))
+    target=number(t['decks'][0]['bpm'],40,300)
+    startup.update(status='analyzing',playingAt=time.time(),targetBpm=target,skipped=copy.deepcopy(skipped))
     s.update(startup=copy.deepcopy(startup),startedAt=startup['playingAt'],endedAt=None,phase='playing',
              message=f'Playing {first["title"]}. Preparing the next handoff on muted spare decks.')
     with s.lock:

@@ -80,6 +80,14 @@ class MCPTests(unittest.TestCase):
             preparation_cost=.02,selection_calls=2)
         return row
 
+    def test_openai_setup_failure_has_a_safe_reason_in_the_receipt(self):
+        self.provider.side_effect=ValueError('OpenAI key is not configured.')
+        reply=self.direct()
+        settled(self.agent)
+        receipt=self.control.receipt(self.music['credential'],reply['requestId'])
+        self.assertEqual(receipt['status'],'blocked')
+        self.assertEqual(receipt['reasonCode'],'openai-key-missing')
+
     def test_default_local_does_not_borrow_active_operator_allowance(self):
         self.agent.enable(True,180,6)
         before=copy.copy(self.agent._operator_allowance)

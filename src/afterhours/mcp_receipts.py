@@ -26,7 +26,8 @@ ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
 MAX_REQUESTS = 10000  # Never evict identities and accidentally authorize replay.
 REASONS = {'accepted','engine-confirmed','engine-guard','newer-direction','outcome-unconfirmed',
            'control-failed','control-blocked','control-cancelled','client-revoked','grant-expired',
-           'grant-inactive','allowance-exhausted','preparation-held','selection-held','discovery-failed'}
+           'grant-inactive','allowance-exhausted','preparation-held','selection-held','discovery-failed',
+           'openai-key-missing','openai-authorization','openai-quota','playback-start-failed','native-tempo-unsettled'}
 
 
 def canonical(value):

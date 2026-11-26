@@ -2243,7 +2243,15 @@ class DJAgent:
                         external.finish(outcome,'The engine recorded this direction outcome.')
                 guest_confirmed=not result['search'] and (not result['trackIds'] or (self.state.get('proposal') or {}).get('status')=='applied')
         except (ValueError,TypeError,KeyError,OSError,BridgeError) as e:
-            if external:external.finish('blocked','The external evaluation could not complete.',getattr(e,'code','selection-held'))
+            if external:
+                message=str(e)
+                reason=getattr(e,'code',None)
+                if reason is None:
+                    if message=='OpenAI key is not configured.':reason='openai-key-missing'
+                    elif message.startswith(('OpenAI did not accept','OpenAI could not authorize')):reason='openai-authorization'
+                    elif message.startswith('AI request failed (HTTP 429)'):reason='openai-quota'
+                    else:reason='selection-held'
+                external.finish('blocked','The external evaluation could not complete.',reason)
             with self.lock:
                 if rev==self.state['revision'] and generation==self.generation:
                     self.planner.close(round_id,'failed',str(e))

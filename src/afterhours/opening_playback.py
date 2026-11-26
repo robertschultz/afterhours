@@ -16,7 +16,12 @@ from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, ski
 from afterhours.recording_availability import PREVIEW_ONLY
 
 
-def measured_plan(snapshot, order, measured, current, lead_seconds=45):
+class OpeningHandoffHeld(BridgeError):
+    """The opening is confirmed playing, but its next handoff needs evidence."""
+    pass
+
+
+def measured_plan(snapshot, order, measured, current, lead_seconds=28):
     """Fit a future verified exit while leaving the already playing audio alone."""
     evidence={row['id']:copy.deepcopy(row) for row in measured}
     first=evidence[order[0]['id']]
@@ -24,6 +29,13 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=45):
     first['cueCandidates']=[c for c in first['cueCandidates'] if c.get('replayVerified') and c['exitBeat']>=earliest]
     if not first['cueCandidates']:
         raise ValueError('The opening track is playing, but no verified exit remains with enough time to prepare the next deck.')
+    # The first deck has been playing since its first beat. Its candidate
+    # supplies the exit only, so a tighter entrance six minutes in has no
+    # value. Prefer the earliest verified exit with a supported blend.
+    usable=[c for c in first['cueCandidates'] if c['maxBlendBeats']>=8]
+    if not usable:
+        raise ValueError('The opening track is playing, but no verified exit supports a handoff.')
+    opening=min(usable,key=lambda c:c['exitBeat'])
     tracks=[evidence[t['id']] for t in order]
     report=cue_planner.attach_candidates({'tracks':tracks},
         {t['id']:t['cueCandidates'] for t in tracks},snapshot['secondsPerTrack'],current['bpm'],
@@ -34,7 +46,9 @@ def measured_plan(snapshot, order, measured, current, lead_seconds=45):
     seed={**snapshot,'analysis':report,
           'executionPlan':{'applied':True,'orderIds':[order[0]['id']],'targetBpm':current['bpm'],'tempoSchedule':[fixed]},
           'aiReview':{'decision':'propose','secondsBetweenEntries':snapshot['secondsPerTrack'],
-                      'selections':[],'transitions':[]}}
+                      'selections':[{'trackId':order[0]['id'],'candidateId':opening['id'],
+                                     'reason':'Earliest verified exit with time to prepare the incoming deck.'}],
+                      'transitions':[]}}
     prepared=cue_planner.complete_background_queue(seed,order,tracks,
         'Opening music started first; the upcoming handoff uses verified spare-deck measurements.',1,
         tempo_targets=snapshot.get('tempoTargets'))
@@ -146,6 +160,11 @@ def start_and_prepare(session,client,requested):
                 s.sleep(.04)
             s.analysis_cache.update(job.cache);job.close(client);s.background_job=None
             if not job.error:break
+            if job.analysis_timed_out:
+                t=s.telemetry(client)
+                if (t['decks'][0].get('id')==first['id'] and t['decks'][0].get('playing')
+                        and t['crossfader']<=.02 and not any(deck.get('playing') for deck in t['decks'][1:])):
+                    raise OpeningHandoffHeld(job.error)
             # Only this exact conclusive preparation failure can omit a pick.
             # A new preview restriction on the protected opening pair holds;
             # it cannot mask another uncertain Load or authorize a replay.
@@ -200,5 +219,7 @@ def start_and_prepare(session,client,requested):
             s.state['candidates']=[copy.deepcopy(checked.get(t['id'],t)) for t in s.state['candidates']]
         s.event('Opening handoff verified without stopping or seeking the playing deck.','queue-ready')
         return pair,plan,t,window
+    except OpeningHandoffHeld:
+        startup['status']='handoff-held';s.update(startup=copy.deepcopy(startup));raise
     except Exception:
         startup['status']='blocked';s.update(startup=copy.deepcopy(startup));raise

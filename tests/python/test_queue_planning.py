@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from afterhours import dj_agent, queue_planning
 from afterhours.agent_loop import Lookups
+from afterhours.rolling_queue import RollingQueue
 from afterhours.vdj_session import DJSession
 from test_dj_agent import decision, settled
 
@@ -39,6 +40,72 @@ class QueuePlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already'):
             queue_planning.placement(self.session.snapshot(), 'a')
         self.assertEqual([row['id'] for row in self.session.snapshot()['order']], ['a', 'b', 'c', 'd'])
+
+    def test_quick_set_adopts_future_tracks_without_a_measured_plan(self):
+        self.session.plan(['a', 'b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='mixing')
+        placement=queue_planning.placement(self.session.snapshot(),'x')
+        staged=self.session.revise_queue(placement['ids'])
+        self.assertEqual([t['id'] for t in staged['order']],['a','b'])
+        self.assertEqual(staged['queuedUpdate']['status'],'ready')
+        self.assertEqual(staged['queuedUpdate']['protectedIds'],['a','b'])
+        with patch('afterhours.cue_planner.verify_receipts',side_effect=AssertionError('No measured plan')):
+            adopted,plan=self.session.adopt_queue(1)
+        self.assertEqual([t['id'] for t in adopted],['a','b','x'])
+        self.assertIsNone(plan)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_quick_live_insertion_enforces_the_running_fixed_tempo(self):
+        self.session.update(candidates=self.tracks+[track('far',bpm=150)])
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=1,active=True,phase='playing')
+        with self.assertRaisesRegex(ValueError,'No safe slot'):
+            queue_planning.placement(self.session.snapshot(),'far')
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_rolling_quick_set_appends_as_each_track_starts(self):
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        roller=RollingQueue()
+        roller.tick(self.session, 12)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual([t['id'] for t in staged['tracks']],['a','b','c'])
+        self.session.adopt_queue(1)
+        self.assertEqual(self.session.snapshot()['setlist']['sourceById']['c'],'planner')
+        self.session.update(index=1)
+        roller.tick(self.session, 12)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b','c'])
+        self.assertEqual([t['id'] for t in staged['tracks']],['a','b','c','d'])
+
+    def test_rolling_queue_search_is_bounded_and_only_for_auto_playback(self):
+        rows=[{**track('a'),'artist':'One Artist'},{**track('b'),'artist':'One Artist'},track('far',bpm=200)]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        roller=RollingQueue()
+        roller.tick(self.session, 3)
+        self.assertIsNone(self.session.catalog_job)
+        roller.tick(self.session, 12)
+        self.assertEqual(self.session.catalog_job.terms,['One Artist'])
+        self.assertTrue(self.session.catalog_job.rolling)
+        self.session.catalog_job.done=True
+        roller.tick(self.session, 12)
+        self.assertEqual(self.session.snapshot()['rollingQueue']['status'],'held')
+        self.session.update(phase='takeover')
+        self.session.update(candidates=rows+[track('c')])
+        roller.tick(self.session, 20)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_rolling_measured_set_uses_existing_background_verification(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session, 22)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual(staged['status'],'needs-analysis')
 
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
@@ -75,6 +142,33 @@ class QueuePlanningTests(unittest.TestCase):
             agent.message('Start a fresh queue', message_id='fresh', approved=True)
         self.assertEqual(self.session.snapshot()['id'], session_id)
         agent.evaluator.assert_not_called()
+
+    def test_idle_voice_play_builds_new_queue_without_replenishing_talk_budget(self):
+        from afterhours import playback_requests
+        old=self.session.snapshot()['id']
+        self.session.start=Mock()
+        provider=Mock(return_value=({**decision(['c','d']), 'reply':'Opening pair selected.'}, {}))
+        agent=dj_agent.DJAgent(self.session, evaluator=provider)
+        agent.enable(True,seconds=120,requests=6)
+        self.session.discover_more=Mock(side_effect=lambda _: self.session.update(
+            phase='discovering',catalogSearch={'status':'searching'}))
+        deadline=agent.deadline
+        result=agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
+        self.session.discover_more.assert_called_once_with('daft punk')
+        self.assertEqual(result['status'],'searching')
+        provider.assert_not_called()
+        self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','matched':2})
+        agent.tick(force=True)
+        settled(agent)
+        provider.assert_called_once()
+        self.assertEqual(provider.call_args.args[0]['reason'],'choose from catalog results')
+        self.assertNotEqual(self.session.snapshot()['id'],old)
+        self.assertEqual(agent.state['messages'][0]['queueMode'],'fresh-start')
+        self.assertTrue(agent.playback_request['freshQueue'])
+        self.assertEqual(agent.deadline,deadline)
+        self.assertLessEqual(agent.remaining,6)
+        self.assertFalse(playback_requests.fresh_voice_request('Play the current queue',self.session.snapshot()))
+        self.assertFalse(playback_requests.fresh_voice_request('Play Daft Punk',{'telemetry':{'decks':[{'playing':True}]}}))
 
     def test_runway_uses_fresh_clock_and_verified_cues(self):
         state = self.session.snapshot()

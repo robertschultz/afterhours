@@ -2,7 +2,7 @@
 import json,threading,unittest
 from unittest.mock import Mock,patch
 from urllib.error import URLError
-from afterhours.live_voice import LiveVoice
+from afterhours.live_voice import CLIENT_LEASE_SECONDS, LiveVoice, START_CONTEXT_BYTES, startup_history
 from afterhours.dj_agent import DJAgent
 from test_dj_agent import Session
 
@@ -23,6 +23,7 @@ class VoiceTests(unittest.TestCase):
         self.voice=LiveVoice(self.agent,opener=provider)
     def tearDown(self):
         if self.voice.timer:self.voice.timer.cancel()
+        self.voice.stop_lease()
         self.key.stop()
     def start(self):return self.voice.create('v=0\r\noffer','request_123','nova',True)
     def test_no_approval_and_invalid_inputs_never_call_provider(self):
@@ -35,6 +36,27 @@ class VoiceTests(unittest.TestCase):
         self.assertFalse(body['session']['store']);self.assertEqual(body['session']['audio']['output']['voice'],'meridian')
         self.assertNotIn('sk-fixture',json.dumps(result));self.assertNotIn('sk-fixture',json.dumps(self.voice.status()))
         self.assertEqual(self.agent.snapshot()['allowance']['remaining'],6);self.assertEqual(self.voice.timer.interval,120)
+    def test_explicit_gleam_voice_reaches_the_provider(self):
+        self.voice.create('v=0','gleam-request','nova',True,voice='gleam')
+        body=json.loads(self.requests[0].data)
+        self.assertEqual(body['session']['audio']['output']['voice'],'gleam')
+        self.assertEqual(self.voice.status()['voice'],'gleam')
+
+    def test_startup_history_keeps_useful_facts_and_bounds_escaped_text(self):
+        messages=[{'role':'user','text':'🪩'*5000} for _ in range(10)]
+        messages.append({'role':'assistant','text':'The next blend is scheduled.'})
+        room={'phase':'playing','index':1,'order':[{'title':'Previous'},{'title':'Current favorite'}],
+              'candidates':[{'title':'Unrelated candidate'}]*200}
+        history=startup_history({'name':'Dot','rules':'🎵'*1000},
+                                {'direction':'House tonight','messages':messages},room)
+        wire=json.dumps(history).encode()
+        self.assertLessEqual(len(wire),START_CONTEXT_BYTES)
+        self.assertEqual([m['role'] for m in history],['developer'])
+        self.assertIn(b'Current favorite',wire)
+        self.assertIn(b'House tonight',wire)
+        self.assertIn(b'next blend is scheduled',wire)
+        self.assertNotIn(b'Unrelated candidate',wire)
+
     def test_one_session_and_duplicate_attempt_guard(self):
         self.start()
         with self.assertRaises(ValueError):self.voice.create('v=0','request_456','rivet',True)
@@ -80,6 +102,53 @@ class VoiceTests(unittest.TestCase):
         self.start();self.voice.opener=Mock(side_effect=URLError('Synthetic failure'))
         state=self.voice.end();self.assertEqual(state['status'],'close-unconfirmed');self.assertFalse(state['finalized'])
         with self.assertRaises(ValueError):self.voice.create('v=0','request_456','nova',True)
+
+    def test_closed_local_transport_releases_talk_after_a_failed_remote_hangup(self):
+        self.start()
+        provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Temporary connection loss'))
+        state=self.voice.end('voice_fixture',transport_closed=True)
+        self.assertEqual(state['status'],'closed')
+        self.assertFalse(state['finalized'])
+        self.voice.opener=provider
+        self.voice.create('v=0','request_456','nova',True)
+
+    def test_missing_heartbeats_releases_an_abruptly_closed_browser(self):
+        with patch('time.monotonic',return_value=10):
+            receipt=self.voice.create('v=0','request_abc','nova',True,client_lease=True)
+            self.assertEqual(receipt['clientLeaseSeconds'],CLIENT_LEASE_SECONDS)
+        with patch('time.monotonic',return_value=15):
+            self.voice.heartbeat('voice_fixture')
+            deadline=self.voice.lease_deadline
+        provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Provider not reachable'))
+        with patch('time.monotonic',return_value=deadline+1):
+            self.voice.check_lease('voice_fixture')
+        self.assertEqual(self.voice.status()['status'],'closed')
+        self.assertFalse(self.voice.status()['finalized'])
+        self.voice.opener=provider
+        self.voice.create('v=0','request_def','nova',True,client_lease=True)
+        self.assertEqual(self.voice.status()['status'],'active')
+
+    def test_final_receipt_during_failed_hangup_is_preserved(self):
+        self.start()
+        def interrupted_hangup(request,**kwargs):
+            self.voice.receipt('voice_fixture',12,True)
+            raise URLError('Connection lost after remote close')
+        self.voice.opener=interrupted_hangup
+        state=self.voice.end()
+        self.assertEqual(state['status'],'closed')
+        self.assertTrue(state['finalized'])
+        self.assertEqual(state['usageSeconds'],12)
+
+    def test_next_explicit_connection_retries_unconfirmed_hangup(self):
+        self.start();provider=self.voice.opener
+        self.voice.opener=Mock(side_effect=URLError('Temporary connection loss'))
+        self.assertEqual(self.voice.end()['status'],'close-unconfirmed')
+        self.voice.opener=provider
+        self.voice.create('v=0','request_456','nova',True)
+        self.assertTrue(self.requests[-2].full_url.endswith('/hangup'))
+        self.assertEqual(self.voice.status()['status'],'active')
     def test_expired_sessions_cannot_delegate_even_if_timer_is_delayed(self):
         self.start();self.voice.state['expiresAt']=0
         with self.assertRaises(ValueError):self.voice.require('voice_fixture')

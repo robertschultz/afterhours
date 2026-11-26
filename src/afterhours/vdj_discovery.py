@@ -21,6 +21,7 @@ class CatalogSearch:
         self.matched=0;self.seen=set()
         self.phase='begin';self.ready_at=0;self.deadline=None;self.done=False
         self.last_id=None;self.repeated=0
+        self.latest=None
         # A set opening can reuse its first matching records immediately.
         # An explicit import or expansion must dig beyond known archive rows.
         opening=not session.snapshot().get('order') and not recheck_missing
@@ -34,7 +35,7 @@ class CatalogSearch:
         self.session.update(catalogSearch={'status':status,'query':'; '.join(self.terms),
             **({'externalRequestId':self.external_request_id} if self.external_request_id else {}),
             'term':self.terms[min(self.term_index,len(self.terms)-1)],'filters':copy.deepcopy(self.filters),
-            'examined':self.examined,'added':self.added,'matched':self.matched,
+            'examined':self.examined,'added':self.added,'matched':self.matched,'latest':self.latest,
             'foundIds':sorted(self.seen)[:32],'message':message,'updated':time.time()})
         if self.external_finish and status in ('complete','error'):
             self.external_finish('confirmed' if status=='complete' else 'blocked',
@@ -72,6 +73,7 @@ class CatalogSearch:
             raise BridgeError('Catalog folder changed during discovery. The queue was kept.')
         term=self.terms[self.term_index]
         if self.phase=='begin':
+            self.latest=None
             s.send(client,'search '+search_literal(term));self.ready_at=now+1.5;self.phase='settle'
             self.publish('searching',f'Looking through {term}. Keeping the current queue.');return
         if self.phase=='settle':
@@ -82,6 +84,7 @@ class CatalogSearch:
         if selected:
             self.repeated=self.repeated+1 if selected['id']==self.last_id else 0;self.last_id=selected['id']
             track=selected['metadata'];bpm=track.get('bpm')
+            self.latest={key:str(track.get(key) or '')[:120] for key in ('title','artist')}
             if self.recheck_missing:self.session.availability.found_again(track['id'])
             matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))

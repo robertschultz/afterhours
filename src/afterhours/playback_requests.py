@@ -2,6 +2,19 @@
 import re
 
 
+NAMED_PLAY = re.compile(r'^(?:play|start playing|start (?:a |the )?(?:new )?(?:dj )?(?:session|set|mix) (?:based on|inspired by|with|of|around|featuring))\s+(\S.*)$')
+
+
+def named_query(text):
+    """Use the named portion of an explicit play request for a catalog lookup."""
+    if intent(text) != 'select-and-start':return None
+    match=re.fullmatch(r'(?:play|start playing)\s+(\S.*)',normalized_intent(text))
+    if not match:return None
+    query=re.sub(r'^(?:some|something (?:by|from)|a track (?:by|from))\s+', '', match[1])
+    query=re.sub(r'(?:,? now|,? right now)$', '', query).strip()
+    return query if 2<=len(query)<=120 and ';' not in query else None
+
+
 def ready_opening(snapshot):
     """Go may start only the exact applied opening that has never run.
 
@@ -37,9 +50,10 @@ def queue_intent(value):
     return None
 
 
-def intent(text):
+def normalized_intent(text):
     if not isinstance(text, str):return None
     value=' '.join(text.casefold().replace('’',"'").strip().split()).rstrip('.!?')
+    value=re.sub(r'^(?:hey )?dot[, ]+', '', value)
     value=re.sub(r'^(?:ok(?:ay)?[, ]+|yes[, ]+)', '', value)
     value=re.sub(r'^(?:can|could|would|will) (?:you|we) (?:please )?', '', value)
     value=re.sub(r'^please |[, ]+please$', '', value).strip()
@@ -48,12 +62,29 @@ def intent(text):
     # paid discovery. Keep the complete remainder: named music, timing and
     # negation still pass through the checks below.
     value=re.sub(r'^go (?:ahead and )?', '', value)
+    return value
+
+
+def fresh_voice_request(text, snapshot):
+    command=normalized_intent(text)
+    if not command or queue_intent(command):return False
+    meaning=intent(text)
+    if meaning not in ('start','select-and-start','fresh-start'):return False
+    if meaning=='select-and-start' and not named_query(text):return False
+    return (not snapshot.get('active') and
+            not any(deck.get('playing') for deck in (snapshot.get('telemetry') or {}).get('decks', [])))
+
+
+def intent(text):
+    value=normalized_intent(text)
+    if not value:return None
     if value in {'status','what is playing',"what's playing",'what are you playing',
                  'are you playing','is music playing','are you ready','what are you doing',
                  "what's happening",'what is happening','why are you still analyzing',
                  "why aren't you playing",'why are you not playing','how is it going',
                  'are you starting','when will the music start'}:return 'status'
-    if value in {'stop', 'stop playing', 'stop the music', 'stop music', 'stop the set',
+    stop_value=re.sub(r',? (?:right now|now)$', '', value)
+    if stop_value in {'stop', 'stop playing', 'stop the music', 'stop music', 'stop the set',
                  'pause the music', 'pause music', 'cancel playback', 'cancel start',
                  'pause', 'pause it', 'pause playback', 'pause the set', 'pause the track', 'pause this',
                  'stop it', 'stop the track', 'stop playback', 'stop this', 'hold the music'}:return 'stop'
@@ -75,5 +106,5 @@ def intent(text):
                  'start djing now','just play','just play music','just start playing'}:return 'start'
     # A request naming music must first pass normal discovery/selection. Never
     # start the old queue just because the sentence begins with "play".
-    if re.match(r'^(?:play|start playing|start (?:a |the )?(?:new )?(?:dj )?(?:session|set|mix) (?:based on|inspired by|with|of|around|featuring))\s+\S',value):return 'select-and-start'
+    if NAMED_PLAY.fullmatch(value):return 'select-and-start'
     return None

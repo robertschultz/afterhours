@@ -22,6 +22,10 @@ REPORTS = analysis_reports()
 PLUGIN = 'Afterhours Analysis'
 
 
+class AudioAnalysisTimeout(BridgeError):
+    pass
+
+
 def bounded(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
 
@@ -131,7 +135,7 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
             from afterhours.background_analysis import guard_isolation
             guard_isolation(client,deck)
         if clock() >= deadline:
-            raise BridgeError('Audio analysis did not settle in time. Leave the track loaded and prepare again.')
+            raise AudioAnalysisTimeout('Audio analysis did not settle in time. Leave the track loaded and prepare again.')
         if any(as_bool(client.query(f'deck {d} play', 'bool')) for d in ((deck,) if isolated else (1,2))):
             raise BridgeError('A deck is playing. Audio analysis stopped without changing transport.')
         if identity(str(client.query(f'deck {deck} get_filepath', 'text'))) != sid:
@@ -182,6 +186,11 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                     fresh = True
                     if current[0].get('bufferReadComplete') is True:
                         break
+                if not fresh and str(label or '').startswith('Buffer read finished'):
+                    raise AudioAnalysisTimeout(
+                        'VirtualDJ finished scanning, but Afterhours could not read a new report. '
+                        'Check that Afterhours and the installed analysis bridge use the same report folder.'
+                    )
                 if label and not any(s in label for s in ('scanned', 'incomplete', 'Buffer read finished')):
                     raise BridgeError('The analysis bridge could not scan this recording. ' + str(label)[:192])
                 wait(.15)
@@ -212,7 +221,7 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                 last, last_time = digest, clock()
                 last_reason = 'Waiting for two matching whole-track scans.'
             wait(1.05)
-        raise BridgeError('Audio analysis remains unverified: '+last_reason)
+        raise AudioAnalysisTimeout('Audio analysis remains unverified: '+last_reason)
     finally:
         # Do not overwrite an operator's newly selected effect. Cleanup never
         # sends Play, Pause, Load, gain, EQ or seek; it only removes our plugin.

@@ -165,6 +165,24 @@ class CopilotControlTests(unittest.TestCase):
         self.assertIsNone(result);self.assertTrue(s.state['copilot']['held'])
         self.assertEqual(s.state['copilot']['command']['status'],'failed');send.assert_not_called()
 
+    def test_next_intents_advance_the_cued_record_instead_of_skipping_it(self):
+        for phrase in ('next','please play the next track','skip to the next track','transition now'):
+            self.assertEqual(cc.intent(phrase),'go')
+        self.assertEqual(cc.intent('skip the next track'),'skip')
+
+    def test_quick_go_uses_the_cued_native_grid_and_keeps_the_fade(self):
+        s=running()
+        s.update(mixStyle='quick',executionPlan=None,analysis=None,
+                 timing={'entryBeat':64,'mixAtBeat':128,'endBeat':136,'phraseBeats':4,
+                         'fadeBeats':8,'basis':'native-beat-grid','segmentBeats':72})
+        self.command(s,'go')
+        current=s.state['telemetry']['decks'][0]
+        with patch.object(s,'send') as send:
+            window=s.service_copilot(None,current,2,Mock(),155,s.state['timing'])['window']
+        self.assertEqual((window['mixAtBeat'],window['endBeat']),(84,92))
+        self.assertEqual(s.state['copilot']['command']['status'],'confirmed')
+        send.assert_not_called()
+
     def test_go_is_consumed_once_and_clears_hold_after_a_valid_window(self):
         s=running();self.command(s,'hold');expected=cc.context(s.snapshot());self.command(s,'go')
         current=s.state['telemetry']['decks'][0]

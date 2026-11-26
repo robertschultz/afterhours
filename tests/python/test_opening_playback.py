@@ -6,7 +6,7 @@ from unittest.mock import Mock,patch
 from afterhours import ai_mix
 from afterhours import cue_planner
 from afterhours.dj_bridge import BridgeError
-from afterhours.opening_playback import measured_plan,start_and_prepare
+from afterhours.opening_playback import OpeningHandoffHeld,measured_plan,start_and_prepare
 from test_cue_planner import fixture
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession,TrackMetadataChanged
@@ -69,6 +69,29 @@ class OpeningTests(unittest.TestCase):
         recovered=ai_mix.validate_plan({k:review.get(k) for k in ai_mix.PLAN_SCHEMA['properties']},s.state['analysis'],30)
         self.assertEqual(recovered['selections'],review['selections'])
         self.assertEqual(recovered['missingEvidence'],[])
+
+    def test_opening_uses_early_verified_exit_even_if_late_entrance_scores_better(self):
+        s,report,_,_,_=self.setup_session()
+        first=report['tracks'][0]
+        early=first['cueCandidates'][0]
+        early['entry']['levelVariationDb']=7
+        later={**early,'id':'late','entry':{**early['entry'],'levelVariationDb':0}}
+        for field in ('entryBeat','exitBeat','endBeat'):later[field]+=400
+        for field in ('entrySeconds','introEndSeconds','exitSeconds','endSeconds'):later[field]+=400*60/155
+        first['cueCandidates'].insert(0,later)
+        prepared=measured_plan(s.snapshot(),s.state['order'][:2],report['tracks'][:2],{'beatPosition':12,'bpm':155})
+        self.assertEqual(prepared['executionPlan']['selections'][0]['id'],early['id'])
+
+    def test_analysis_timeout_holds_handoff_without_replaying_or_stopping_opening(self):
+        s,_,trace,playing,_=self.setup_session()
+        job=Mock(done=True,error='Audio analysis did not settle in time.',analysis_timed_out=True,cache={})
+        with patch('afterhours.opening_playback.BackgroundAnalysis',return_value=job),patch('afterhours.opening_playback.TransitionMixer') as mixer:
+            mixer.return_value.baselines={}
+            with self.assertRaises(OpeningHandoffHeld):start_and_prepare(s,None,s.snapshot()['order'])
+        self.assertTrue(playing[0])
+        self.assertEqual(s.snapshot()['startup']['status'],'handoff-held')
+        self.assertEqual(trace.count('deck 1 play'),1)
+        self.assertNotIn('prepare-next',trace)
 
     def test_unknown_start_result_never_replays_play_or_starts_analysis(self):
         s,report,trace,playing,beat=self.setup_session()

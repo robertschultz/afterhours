@@ -149,7 +149,8 @@ class LookupTests(unittest.TestCase):
         changes=[abs(row['tempoChangePercent']) for row in result['matches']]
         self.assertEqual(changes,sorted(changes))
         self.assertEqual(result['playable'],sum(1 for r in crate() if r['id']!='t01' and abs((125/r['bpm']-1)*100)<=8))
-        self.assertEqual(set(result['matches'][0]),{'id','title','artist','bpm','camelot','genre','tempoChangePercent','harmonicCompatible','preparedCue','queuePosition'})
+        self.assertEqual(set(result['matches'][0])-{'relationships'},{'id','title','artist','bpm','camelot','genre','tempoChangePercent','harmonicCompatible','preparedCue','queuePosition'})
+        self.assertTrue(any('sharedGenre' in row.get('relationships',[]) for row in result['matches']))
         text,detail=book.describe('suggest_next',{'afterId':'t01','limit':8},result)
         self.assertEqual(text,'Looked for what can follow Warm Start')
         self.assertEqual(detail,f" · {result['playable']} within the tempo limit · {result['compatibleKey']} in a compatible key")
@@ -861,9 +862,10 @@ class AgentIntegrationTests(unittest.TestCase):
             for _ in range(20):agent.last_request=0;agent.tick();settled(agent)
         self.assertLessEqual(len(provider.requests)-base,dj_agent.OVERTAKEN_LIMIT+1)
 
-    def test_discovery_off_also_stops_the_engine_digging_on_its_own(self):
+    def test_planner_discovery_does_not_enable_unprompted_cache_digging(self):
         agent,session=self.agent(Provider(ready(),decides()))
-        agent.tick(force=True);self.assertTrue(session.dig_allowed)
+        session.dig_allowed=False
+        agent.tick(force=True);self.assertFalse(session.dig_allowed)
         agent.settings.state['discover']=False
         agent.tick(force=True);self.assertFalse(session.dig_allowed)
 

@@ -2620,7 +2620,24 @@ class DJSession:
                     if rolling:rolling.tick(self,slack)
                     self.service_catalog(client,slack)
                     self.service_dig(client,slack)
-                    self.sleep(.12)
+                    job = self.background_job
+                    if entry_cadence and job and not job.done and slack >= 14:
+                        # With runway to spare, use the gap between deck
+                        # samples for queued decoder/seek readbacks. Avoid
+                        # making every isolated read wait for the next full
+                        # transport sample.
+                        until = time.monotonic() + .12
+                        while not job.done and time.monotonic() < until:
+                            try:job.step(client, slack)
+                            except (BridgeError, ValueError, OSError) as exc:
+                                job.error = str(exc)
+                                job.done = True
+                                break
+                            remaining = until-time.monotonic()
+                            if remaining > 0:
+                                self.sleep(min(.012, remaining))
+                    else:
+                        self.sleep(.12)
                 if revised_final:continue
                 if final:
                     self.send(client, f'deck {active} pause')

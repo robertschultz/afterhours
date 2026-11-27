@@ -2874,10 +2874,12 @@ class DJSession:
                     self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
                 if entry_cadence and planned and not final and not resume:
                     try:
-                        resume_window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
-                            entry_interval=entry_cadence[index % len(entry_cadence)],
+                        resume_window = copilot_commands.automatic_timed_window(self.snapshot(), current, recipe['fadeBeats'],
+                            entry_cadence[index % len(entry_cadence)],
                             actual_entry=resume_window if measured_opening and index == 0 else None,
                             earliest_beat=self.tempo_ramp.minimum_handoff_beat(current['beatPosition']) if tempo_row else None)
+                        if resume_window['basis']=='cadence-recovery-measured-exit':
+                            self.event('Requested timing no longer fits. Mixing on the next verified phrase.', 'timing')
                     except ValueError as exc:
                         if resume_window is None:
                             raise BridgeError(str(exc)) from exc

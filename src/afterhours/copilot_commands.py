@@ -166,6 +166,10 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
+class NoVerifiedHandoff(ValueError):
+    """No replay-verified exit fits the current timing constraints."""
+
+
 def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, latest_beat=None, earliest_beat=None, allow_outro_bars=False):
     """Earliest verified exit with lead time, preserving the actual entry.
 
@@ -227,7 +231,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
             valid.append(candidate)
     if not valid:
         timing = ' within the requested cadence' if entry_interval is not None and not final else ' ahead'
-        raise ValueError(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
+        raise NoVerifiedHandoff(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
     selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
@@ -237,6 +241,20 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         window.update(basis='cadence-measured-exit', requestedEntryInterval=entry_interval,
                       plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'])
     return window
+
+
+def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_entry=None, earliest_beat=None):
+    """Treat the requested interval as a target while preserving a verified fade."""
+    try:
+        return retime(snapshot, current, fade_beats, entry_interval=seconds,
+                      actual_entry=actual_entry, earliest_beat=earliest_beat)
+    except NoVerifiedHandoff:
+        window = retime(snapshot, current, fade_beats, actual_entry=actual_entry,
+                        earliest_beat=earliest_beat, allow_outro_bars=True)
+        planned = (window['mixAtBeat'] - window['entryBeat']) * 60 / current['bpm']
+        window.update(basis='cadence-recovery-measured-exit', requestedEntryInterval=seconds,
+                      plannedEntryInterval=planned)
+        return window
 
 
 def skip_plan(snapshot):

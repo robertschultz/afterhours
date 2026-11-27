@@ -47,6 +47,7 @@ class OpeningTests(unittest.TestCase):
         s.update(mixStyle='quick',quickBlendSeconds=30,quickTargetBpm=122)
         client=Mock()
         client.status.return_value={'automix':False,'decks':[{'playing':False}]*2}
+        client.query.side_effect={'get_decks':4,'deck 3 get_deck':3,'deck 4 get_deck':4}.__getitem__
         s.choose_rotation=Mock(return_value=(1,2))
         captured={}
 
@@ -62,6 +63,22 @@ class OpeningTests(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError,'End fixture'):
                 worker(client)
         self.assertEqual(captured,{'style':'phrase','blend':None,'target':None,'ids':['0','1','2']})
+
+    def test_two_deck_voice_start_cues_the_next_track_before_play(self):
+        s,_,trace,_,_=self.setup_session()
+        client=Mock()
+        client.status.return_value={'automix':False,'decks':[{'playing':False}]*2}
+        client.query.return_value=2
+        s.choose_rotation=Mock(return_value=(1,2))
+        s.prepare_deck=Mock(side_effect=[None, BridgeError('End fixture before native playback.')])
+        with patch.object(s,'_launch') as launch:
+            s.start(immediate=True,allow_grid_opening=True)
+            worker=launch.call_args.args[0]
+            with self.assertRaisesRegex(BridgeError,'End fixture'):
+                worker(client)
+        self.assertEqual(s.snapshot()['mixStyle'],'quick')
+        self.assertEqual([call.args[1]['id'] for call in s.prepare_deck.call_args_list],['0','1'])
+        self.assertNotIn('deck 1 play', trace)
 
     def check_opening(self,mode):
         s,report,trace,playing,beat=self.setup_session()

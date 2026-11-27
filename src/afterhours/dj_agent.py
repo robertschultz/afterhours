@@ -2736,9 +2736,12 @@ class DJAgent:
         if any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):
             return fail('A deck started manually. The pending automatic start was cancelled.')
         request.update(status='starting',message='Starting the opening recording.')
-        rolling=(request.get('source')=='voice' and request.get('scope')!='finite' and self.settings.state['discover']
+        voice = request.get('source')=='voice'
+        rolling=(voice and request.get('scope')!='finite' and self.settings.state['discover']
                  and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
-        try:self.session.start(initialize_mixer=True,immediate=True,**({'rolling_queue':True} if rolling else {}))
+        options = {'rolling_queue': True} if rolling else {}
+        if voice:options['allow_grid_opening'] = True
+        try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')
         self.save();return True

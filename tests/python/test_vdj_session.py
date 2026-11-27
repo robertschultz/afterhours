@@ -418,6 +418,10 @@ class SessionTests(unittest.TestCase):
         self.assertLess(s.final_preparation_runway(track,0,{'position':330,'controls':{}}),16)
         self.assertEqual(s.final_preparation_runway(track,0,{'position':100,'controls':{'durationMs':98000}}),0)
         self.assertEqual(s.final_preparation_runway({'id':'previous'},0,{'position':100,'controls':{}}),0)
+        s.update(rollingQueue={'status':'held'}, queuedUpdate=None)
+        self.assertGreater(s.final_preparation_runway(track,0,{'position':100,'controls':{}}),200)
+        s.update(rollingQueue=None)
+        self.assertEqual(s.final_preparation_runway(track,0,{'position':100,'controls':{}}),0)
 
     def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
         self.simulate_run(30,8,128,background=True,late_background=True)

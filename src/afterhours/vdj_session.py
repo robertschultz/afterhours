@@ -1691,7 +1691,7 @@ class DJSession:
             return copy.deepcopy(order),copy.deepcopy(plan)
 
     def final_preparation_runway(self, track, index, current):
-        """Time to prepare a staged continuation on the existing recording."""
+        """Verified time left for continuation or a rolling set's closing fade."""
         with self.lock:
             if self.state['copilot']['mode']=='off':return 0
             queued=self.state.get('queuedUpdate') or {}
@@ -1699,7 +1699,7 @@ class DJSession:
             staged=(queued.get('status') in ('needs-analysis','analyzing','ready')
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
-                     and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
+                     and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching','held'))
             from afterhours.rolling_queue import failed_rolling_recording
             replaceable = (not self.state.get('resumeBlocked') or self.quarantined_preparation_decks()) and failed_rolling_recording(queued)
             if not staged and not (rolling and (not queued or replaceable)):
@@ -2947,7 +2947,10 @@ class DJSession:
                     runway=self.final_preparation_runway(track,index,current) if final and planned else 0
                     if current['beatPosition']>=goal and runway>=16 and not waiting_for_continuation:
                         waiting_for_continuation=True
-                        self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
+                        if (self.snapshot().get('rollingQueue') or {}).get('status') == 'held':
+                            self.event('No suitable next recording is ready. Letting the current track reach its outro.', 'queue')
+                        else:
+                            self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
                     if current['beatPosition'] >= goal and runway<16:
                         if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:

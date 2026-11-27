@@ -211,6 +211,17 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(pending['id'], queued['id'])
         self.assertEqual(pending['status'], 'analyzing')
         self.assertEqual(pending['tracks'][-1]['id'], second['id'])
+        self.assertEqual(pending['rollingTrackId'], second['id'])
+        self.assertNotIn('rollingTrackIds', pending)
+        job.done = True
+        job.error = None
+        job.result = [first, second]
+        job.cache = {}
+        job.snapshot.return_value = {'message':'Both tracks have measured cues.'}
+        with patch.object(self.session, 'fit_background_tracks', side_effect=ValueError('No protected tempo route')):
+            self.session.service_background(Mock(), 24)
+        self.assertEqual(self.session.state['queuedUpdate']['measuredFitMissId'], second['id'])
+        self.assertEqual([track['id'] for track in self.session.state['order']], ['a','b',first['id']])
 
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',

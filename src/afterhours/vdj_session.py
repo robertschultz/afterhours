@@ -1572,9 +1572,18 @@ class DJSession:
             prepared=copy.deepcopy(q.get('partialPrepared') or q['prepared']);cue_planner.verify_receipts(prepared['analysis'])
             remaining = None
             if q.get('partialTracks'):
-                remaining = {**q, 'status': 'analyzing', 'protectedIds': [t['id'] for t in order]}
+                committed_ids = [t['id'] for t in order]
+                remaining = {**q, 'status': 'analyzing', 'protectedIds': committed_ids}
                 remaining.pop('partialTracks', None)
                 remaining.pop('partialPrepared', None)
+                staged_ids = q.get('rollingTrackIds') or [q.get('rollingTrackId')]
+                outstanding = [track_id for track_id in staged_ids if track_id and track_id not in committed_ids]
+                remaining.pop('rollingTrackIds', None)
+                remaining.pop('rollingTrackId', None)
+                if outstanding:
+                    remaining['rollingTrackId'] = outstanding[0]
+                    if len(outstanding) > 1:
+                        remaining['rollingTrackIds'] = outstanding
             # Which of the planner's window choices were used is a receipt, not set state.
             windows=prepared.pop('cueChoices',None)
             plan=prepared['executionPlan'];plan['applied']=True

@@ -73,6 +73,22 @@ class AnalysisTests(unittest.TestCase):
             p=Path(d)/'db.xml';p.write_text('<broken')
             with self.assertRaises(ValueError):track_analysis([],p)
 
+    def test_native_padding_after_closed_database_does_not_drop_exact_song(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'db.xml'
+            song = b'<Song FilePath="example"><Infos SongLength="180"/><Poi Pos="12" Type="cue"/></Song>'
+            start, end = b'<VirtualDJ_Database>', b'</VirtualDJ_Database>'
+            tracks = [{'id': 'recording', 'title': 'Test', 'bpm': 120,
+                       'engine': {'selection_id': identity('example')}}]
+            path.write_bytes(start + song + end + b'\n\x00\n')
+            result = track_analysis(tracks, path)['tracks'][0]
+            self.assertEqual(result['duration'], 180)
+            self.assertEqual(result['points'][0]['seconds'], 12)
+            for corrupted in (start + song + b'\x00' + end, start + song + b'\x00'):
+                path.write_bytes(corrupted)
+                with self.assertRaises(ValueError):
+                    track_analysis(tracks, path)
+
 
 class AIReviewTests(unittest.TestCase):
     def test_provider_failure_classes_are_safe_and_not_guessed(self):

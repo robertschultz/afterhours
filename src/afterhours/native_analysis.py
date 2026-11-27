@@ -1,5 +1,6 @@
 """Read-only, identity-bound native analysis. Never reads streamed audio or auth."""
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -18,6 +19,25 @@ class NativeAnalysisDatabaseUpdating(ValueError):
 
 
 DATABASE = Path.home() / 'Library/Application Support/VirtualDJ/database.xml'
+DATABASE_LIMIT = 128 * 1024 * 1024
+XML_TRAILING_PADDING = b'\x00 \t\r\n'
+
+
+def analysis_source(database):
+    """Ignore host NUL padding only beyond the closed native database root."""
+    with database.open('rb') as source:
+        size = source.seek(0, 2)
+        if size > DATABASE_LIMIT:
+            raise ValueError('VirtualDJ analysis database exceeds the bounded reader size.')
+        source.seek(max(0, size - 256))
+        tail = source.read(256)
+        content = tail.rstrip(XML_TRAILING_PADDING)
+        if (b'\x00' in tail[len(content):] and content.endswith(b'</VirtualDJ_Database>')):
+            source.seek(0)
+            snapshot = source.read(size + 1)
+            if len(snapshot) == size and snapshot.endswith(tail):
+                return io.BytesIO(snapshot.rstrip(XML_TRAILING_PADDING))
+    return database
 
 
 def finite(value, low=0, high=86400):
@@ -32,10 +52,10 @@ def track_analysis(tracks, database=DATABASE):
     """Match exact engine identities; filenames/provider locators never leave here."""
     wanted={t['engine']['selection_id']:t for t in tracks}
     found={}
-    if not database.is_file() or database.stat().st_size > 128*1024*1024:
+    if not database.is_file() or database.stat().st_size > DATABASE_LIMIT:
         raise ValueError('VirtualDJ analysis database is unavailable or exceeds the bounded reader size.')
     try:
-        for _,song in ET.iterparse(database,events=('end',)):
+        for _,song in ET.iterparse(analysis_source(database),events=('end',)):
             if song.tag != 'Song':continue
             sid=identity(song.get('FilePath',''))
             if sid not in wanted:

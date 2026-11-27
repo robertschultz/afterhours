@@ -194,7 +194,8 @@ class RollingQueue:
 
     def search(self, session, state, order, style, timed_set):
         tail = order[-1]
-        terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        recent = list(reversed(order[-8:]))
+        terms = [str(track.get('artist') or '').strip() for track in recent[:3]]
         if timed_set or state.get('mixStyle') == 'phrase':
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
@@ -205,6 +206,13 @@ class RollingQueue:
                     terms += [f"{row['artist']} {row['title']}"
                               for row in DISCOVERY.hints(related, order, searched=self.searched)]
             terms += [str(tail.get('genre') or style).strip(), style]
+            # The first providers can exhaust a literal artist or a broad
+            # genre search. Try credits further back in the same set and
+            # neighboring genres, while still applying the regular fit checks.
+            terms += [artist for track in recent for artist in sorted(credit(track.get('artist')))]
+            if not style_for(state.get('agentDirection')):
+                terms += sorted({neighbor for group in STYLE_GROUPS if style in group
+                                 for neighbor in group if neighbor!=style})
         for term in terms:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:

@@ -181,6 +181,20 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
 
+    def test_rolling_search_recovers_from_exhausted_recent_collaboration_queries(self):
+        order = [{**track('a'), 'artist':'Earlier Artist'},
+                 {**track('b'), 'artist':'Recent Duo & Guest Artist', 'genre':'Pop'},
+                 {**track('c'), 'artist':'Later Artist', 'genre':'Pop'},
+                 {**track('d'), 'artist':'Last Artist', 'genre':'Pop'}]
+        roller = RollingQueue()
+        roller.searched.update(('last artist','later artist','recent duo guest artist','pop'))
+        session = Mock()
+        with patch('afterhours.rolling_queue.DISCOVERY') as facts:
+            facts.hints.return_value=[]
+            facts.neighbors.return_value=[]
+            self.assertTrue(roller.search(session, {}, order, 'pop', True))
+        self.assertEqual(session.discover_more.call_args.args, ('guest artist',))
+
     def test_measured_rolling_set_refills_while_three_followups_remain(self):
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
                             executionPlan={'id':'plan','applied':True,'targetBpm':125})

@@ -433,6 +433,7 @@ class BackgroundAnalysis:
                 self.check();self.status='analyzing';self.message='Analyzing upcoming track · '+track['title']
                 cached=self.cache.get(track['id'])
                 timed = bool(s.get('entryCadence'))
+                display_waveform = not (timed or s.get('rollingQueue'))
                 if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']
                         and bool(cached.get('timedPreparation')) == timed):
                     try:
@@ -441,15 +442,15 @@ class BackgroundAnalysis:
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
                 evidence=self.read_evidence(checked)
-                waveform_ready = timed or bool(evidence.get('energyMap')) and verified_waveform(
+                waveform_ready = not display_waveform or bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])
                 if not evidence.get('energyMap') or not waveform_ready:
-                    # Timed sets need verified audio features and replayed
-                    # cues, but can skip the separate display waveform pass.
+                    # Rolling playback still needs verified features and
+                    # replayed cues. Build display waveforms off air.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
                     scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                     evidence=self.read_evidence(checked)
-                    if not timed:
+                    if display_waveform:
                         self.message='Preparing waveform · '+track['title']
                         scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']

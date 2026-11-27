@@ -221,11 +221,17 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(job.result[0]['energyMap']['reportDigest'],'fresh')
 
     def test_timed_refill_still_verifies_audio_and_cues_without_display_waveform(self):
+        self.verify_refill_audio_without_display_waveform(timed=True)
+
+    def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
+        self.verify_refill_audio_without_display_waveform(timed=False)
+
+    def verify_refill_audio_without_display_waveform(self,timed):
         track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
         cold = {'duration':10,'points':[{'label':'realEnd','seconds':9.8}]}
         verified = {**cold,'energyMap':{'reportDigest':'fresh'}}
         session = DJSession(threading.Lock())
-        session.update(entryCadence=[60,30])
+        session.update(**({'entryCadence':[60,30]} if timed else {'rollingQueue':{'status':'ready'}}))
         job = BackgroundAnalysis(session,'revision',[track])
         with patch.object(DJSession,'analyze_deck',return_value=track), \
              patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
@@ -236,7 +242,7 @@ class BackgroundTests(unittest.TestCase):
         features.assert_called_once()
         waveform.assert_not_called()
         self.assertEqual(cues.call_args.args[2]['energyMap'],verified['energyMap'])
-        self.assertTrue(cues.call_args.kwargs['timed'])
-        self.assertTrue(job.result[0]['timedPreparation'])
+        self.assertEqual(bool(cues.call_args.kwargs.get('timed')),timed)
+        self.assertEqual(bool(job.result[0].get('timedPreparation')),timed)
 
 if __name__=='__main__':unittest.main()

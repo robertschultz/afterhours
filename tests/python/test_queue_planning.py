@@ -122,6 +122,14 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
 
+    def test_measured_rolling_set_refills_while_three_followups_remain(self):
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session,22)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual(staged['rollingTrackId'],'x')
+
     def test_open_ended_refill_replaces_a_conclusive_scan_or_fit_failure(self):
         self.session.update(candidates=[{**track(tid), 'genre': 'Christmas: Pop'}
                                         for tid in ('a', 'b', 'c', 'd')])

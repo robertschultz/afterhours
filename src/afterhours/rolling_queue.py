@@ -50,10 +50,10 @@ class RollingQueue:
             # Two spare decks still prepare at most two recordings at once.
             # Start replenishing timed sets earlier so a slow decode or search
             # does not consume all of the upcoming 30-second slots.
-            refill_at = state.get('queueWindow',DEFAULT_QUEUE_WINDOW) - 2 if timed_set else 3
+            quick = state['mixStyle'] == 'quick'
+            refill_at = state.get('queueWindow',DEFAULT_QUEUE_WINDOW) - 2 if timed_set else (3 if quick else 5)
             if not order or len(order) - state['index'] > refill_at:
                 return
-            quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
                 return
             ids = [track['id'] for track in order]

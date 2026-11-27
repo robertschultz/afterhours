@@ -1,6 +1,7 @@
 """Deterministic placement and runway for the engine's exact queue."""
 
 import math
+import re
 
 from afterhours import session_curation
 from afterhours.dj_discovery import credit, normalized, style_for
@@ -27,7 +28,7 @@ def transition_cost(outgoing, incoming, cues):
     return cost
 
 
-def quick_opening(session, query, found):
+def quick_opening(session, query, found, *, allow_spoken_spelling=False):
     """Use a live opener and a feasible next slot before audio analysis."""
     wanted=normalized(query)
     title,artist=named_recording(query)
@@ -35,7 +36,18 @@ def quick_opening(session, query, found):
     blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
     candidates=[row for row in session.get('candidates',[])
                 if row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
-    for first in (row for row in candidates if row['id'] in found):
+    live=[row for row in candidates if row['id'] in found]
+    if allow_spoken_spelling and not title and len(wanted.split()) >= 2:
+        # Accept a repeated-letter spelling from speech only after the native
+        # search settles and supplies one unambiguous artist credit.
+        names=set().union(*(credit(row.get('artist')) for row in live))
+        folded=re.sub(r'([a-z])\1+', r'\1', wanted)
+        variants={name for name in names if re.sub(r'([a-z])\1+', r'\1', name)==folded}
+        if len(variants)==1 and not any(normalized(row.get('title'))==wanted for row in live):
+            possible=next(iter(variants))
+            if abs(len(possible)-len(wanted))==1 and set(possible.split()) & set(wanted.split()):
+                wanted=possible
+    for first in live:
         first_title=normalized(first.get('title'))
         first_artists=credit(first.get('artist'))
         qualified=bool(title and first_title==title and artist in first_artists)

@@ -202,7 +202,19 @@ def start_and_prepare(session,client,requested):
         for track in pair:
             row=measured[track['id']];track.update(bpm=row['bpm'],camelot=row.get('camelot'),engineChecked=True)
         t=s.telemetry(client);current=t['decks'][0]
-        if abs(current['bpm']-target)>.15:raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
+        if (current.get('id')!=first['id'] or not current.get('playing') or t['crossfader']>.02
+                or t['decks'][1].get('playing') or t['decks'][1].get('id')!=initial_incoming):
+            raise BridgeError('The opening decks changed. Background preparation yielded to manual control.')
+        if abs(current['bpm']-target)>.15:
+            # VirtualDJ can refine its grid after playback starts. Check the
+            # unpitched deck reading before adopting a small native correction.
+            native=number(s.q(client,'deck 1 get_bpm absolute'),40,300)
+            if (abs(current['bpm']-native)>.15 or abs(native/target-1)>.02
+                    or abs(native/measured[first['id']]['bpm']-1)>.02):
+                raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
+            startup['targetBpm']=current['bpm']
+            s.event(f'Opening grid refined to {current["bpm"]:.2f} BPM. Preparing the handoff at the observed tempo.',
+                    'analysis', previousBpm=target, observedBpm=current['bpm'])
         targets=snapshot.get('tempoTargets')
         subset={**snapshot,'tempoTargets':[r for r in targets if r['trackId'] in {t['id'] for t in pair}] if targets else targets}
         prepared=measured_plan({**subset,'startup':startup},pair,job.result,current)
@@ -216,7 +228,8 @@ def start_and_prepare(session,client,requested):
             s.prepare_deck(client,pair[1],2,plan['tempoSchedule'][1]['fromBpm'],cue=plan['selections'][1],checked=exc.track)
         t=s.telemetry(client)
         if (t['decks'][0].get('id')!=first['id'] or not t['decks'][0].get('playing') or t['crossfader']>.02
-                or t['decks'][1].get('id')!=pair[1]['id'] or t['decks'][1].get('playing')):
+                or t['decks'][1].get('id')!=pair[1]['id'] or t['decks'][1].get('playing')
+                or abs(t['decks'][0]['bpm']-startup['targetBpm'])>.15):
             raise BridgeError('Opening pair was not confirmed; no handoff was started.')
         window=cue_planner.execution_window(plan['selections'][0],t['decks'][0]['beatPosition'],plan['transitions'][0]['fadeBeats'])
         window.update(entryBeat=startup['entryBeat'],entrySeconds=startup['entrySeconds'],

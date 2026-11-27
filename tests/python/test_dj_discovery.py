@@ -98,6 +98,15 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNone(queue_planning.quick_opening(state,'Forrest Frank',{'c'}))
         self.assertIsNone(queue_planning.quick_opening({'candidates':state['candidates'][:-1]},'Forrest Frank',{'a'}))
 
+    def test_settled_spoken_search_accepts_one_unambiguous_doubled_letter(self):
+        first={'id':'a','title':'First','artist':'Forrest Frank','bpm':118}
+        second={**first,'id':'b','title':'Second'}
+        state={'candidates':[first,second]}
+        self.assertIsNone(queue_planning.quick_opening(state,'Forest Frank',{'a','b'}))
+        self.assertEqual(queue_planning.quick_opening(state,'Forest Frank',{'a','b'},allow_spoken_spelling=True),['a','b'])
+        state['candidates'].append({**first,'id':'c','artist':'Forest Frrank'})
+        self.assertIsNone(queue_planning.quick_opening(state,'Forest Frank',{'a','b','c'},allow_spoken_spelling=True))
+
     def test_peak_slot_prefers_energy_and_credited_collaborators(self):
         anchor={'id':'anchor','artist':'Alex','genre':'House'}
         collab={'id':'collab','artist':'Alex, Jules','energy':.4,'genre':'House'}

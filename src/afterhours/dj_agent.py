@@ -1838,7 +1838,8 @@ class DJAgent:
                     and request.get('revision')==self.state['revision'] and self.clock()<request['expiresAt']
                     and not s.get('active') and not s.get('order') and not mixing_only
                     and not any(deck.get('playing') for deck in (s.get('telemetry') or {}).get('decks',[]))):
-                pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])))
+                pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])),
+                                                 allow_spoken_spelling=request.get('source')=='voice')
                 if pair:
                     try:
                         self.session.plan(pair,s.get('secondsPerTrack',30),0,s.get('maxTempoShift',8),'phrase')

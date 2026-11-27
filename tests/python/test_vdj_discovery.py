@@ -66,6 +66,36 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(all(v.args[1].startswith(('search ','browser_')) for v in send.call_args_list))
             self.assertIn('Reference two',s.positions['2']['query'])
 
+    def test_rolling_seed_rejects_title_hits_and_matches_chart_recording(self):
+        rows = [
+            ('title-hit', 'Poetic Justice (feat. Drake)', 'Kendrick Lamar'),
+            ('similar-credit', 'Neverender', 'Justice Crew'),
+            ('other-recording', 'D.A.N.C.E.', 'Justice'),
+            ('exact-recording', 'Neverender', 'Justice & Tame Impala'),
+        ]
+        selections = [
+            {'id': identifier, 'artist': artist, 'metadata': {
+                'id': identifier, 'title': title, 'artist': artist, 'bpm': 124}}
+            for identifier, title, artist in rows
+        ]
+        for title, expected in (('', {'other-recording', 'exact-recording'}),
+                                ('Neverender', {'exact-recording'})):
+            with self.subTest(seed=title):
+                session = DJSession(threading.Lock())
+                now = [0.0]
+                job = CatalogSearch(session, ['Justice'], '', '', 115, 135, clock=lambda: now[0])
+                job.set_rolling_seed('Justice', title)
+                with patch('afterhours.vdj_discovery.folder_state', return_value={'id': 'folder'}), \
+                        patch('afterhours.vdj_discovery.selection', side_effect=selections), \
+                        patch.object(session, 'send'):
+                    job.step(None)
+                    now[0] = 2
+                    job.step(None)
+                    for _ in selections:
+                        job.step(None)
+                self.assertEqual(job.seen, expected)
+                self.assertEqual({track['id'] for track in session.snapshot()['candidates']}, expected)
+
     def test_empty_search_has_a_short_deadline_and_partial_finds_survive(self):
         s=DJSession(threading.Lock());now=[0.0];job=CatalogSearch(s,['Missing'],'','',100,130,clock=lambda:now[0])
         with patch('afterhours.vdj_discovery.folder_state',return_value={'id':'folder'}),patch.object(s,'send'):

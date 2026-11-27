@@ -134,17 +134,19 @@ class RollingQueue:
 
     def search(self, session, state, order, style, timed_set):
         tail = order[-1]
-        terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        artists = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        seeds = [(artist, artist if timed_set else '', '') for artist in artists]
         if timed_set:
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
-            terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
-            terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
+            seeds = [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
+                     for row in suggestions] + seeds
+            seeds += [(str(track.get('label') or '').strip(), '', '') for track in reversed(order[-5:])]
             if style == 'house' and not style_for(state.get('agentDirection')):
                 for related in ('deep house', 'tech house'):
-                    terms += [f"{row['artist']} {row['title']}"
+                    seeds += [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
                               for row in DISCOVERY.hints(related, order, searched=self.searched)]
-            terms += [str(tail.get('genre') or style).strip(), style]
-        for term in terms:
+            seeds += [(str(tail.get('genre') or style).strip(), '', ''), (style, '', '')]
+        for term, artist, title in seeds:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:
                 continue
@@ -157,6 +159,7 @@ class RollingQueue:
             job = session.catalog_job
             job.rolling = True
             if timed_set:
+                job.set_rolling_seed(artist, title)
                 job.reuse_matches = True
                 job.target = job.quota = 4
                 job.max_rows = 12

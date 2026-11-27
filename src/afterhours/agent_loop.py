@@ -17,6 +17,7 @@ import re
 
 from afterhours import ai_mix
 from afterhours import catalog_browser, dj_discovery
+from afterhours.stem_profiles import cue_pair
 from afterhours.vdj_mixing import transition_recipe
 
 MAX_CALLS_PER_REQUEST = 3
@@ -48,7 +49,7 @@ TOOL_DEFS = [
          {'afterId':STR,'limit':{'type':'integer','description':'1 to 8.'}}),
     tool('compare_tracks','Tempo, key, genre, queue position and preparation of 2 to 4 recordings.',
          {'trackIds':{'type':'array','items':STR}}),
-    tool('check_transition','How one recording would hand over to another: tempo change, key relation, blend technique.',
+    tool('check_transition','Check tempo, key, blend and measured stems for a pair.',
          {'fromId':STR,'toId':STR}),
     tool('inspect_track','Measured level, bass and mix windows of one analysed recording.',
          {'trackId':STR}),
@@ -339,6 +340,10 @@ class Lookups:
             if changes:
                 result['measuredEntryMinusExitDb'] = changes
                 result['activityEvidence'] = 'Decoded signal levels at verified cue windows. Lead and vocal activity are unknown.'
+        stem_fit = cue_pair(source,target,outgoing_cue,incoming_cue)
+        if stem_fit:
+            result['stemEvidence'] = stem_fit
+            result['activityEvidence'] = 'Native vocal, drum and bass meters at the measured cues. Meter occupancy does not identify notes or lyrics.'
         self.surface((source, target))
         return result
 

@@ -474,6 +474,9 @@ class Handler(RuntimeStaticHandler):
                         data.get('previewSeconds'),data.get('evidence'),data.get('observedAt'))
                 elif action == 'prepare-waveforms':
                     result = DJ_SESSION.prepare_waveforms()
+                elif action == 'prepare-stem-windows':
+                    from afterhours.stem_probe import prepare
+                    result = prepare(DJ_SESSION,data.get('ids'))
                 elif action == 'ai-review':
                     result = DJ_SESSION.review_mix(data.get('approveRequest') is True)
                 elif action == 'apply-plan':

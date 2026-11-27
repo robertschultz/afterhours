@@ -112,7 +112,17 @@ class TempoRamp:
     def arm(self,track,deck,row,entry):
         self.track=track;self.deck=deck;self.row=dict(row);self.entry=entry
         self.running=False;self.done=not row['durationBeats'];self.samples=[]
-    def tick(self,client,current,incoming):
+    def planned_start(self, beat):
+        start = self.entry + self.row['startOffsetBeats']
+        return start + 4 * max(0, math.ceil((beat-start-2)/4))
+
+    def minimum_handoff_beat(self, beat):
+        if not self.row or self.done:
+            return None
+        start = self.start if self.running else max(beat, self.planned_start(beat))
+        return start + self.row['durationBeats'] + self.row['settleBeats'] + 2
+
+    def tick(self,client,current,incoming,*,handoff_beat=None):
         if not self.row:return None
         row=self.row;beat=current['beatPosition'];start=self.entry+row['startOffsetBeats']
         if current.get('id')!=self.track['id'] or not current.get('playing'):
@@ -125,7 +135,14 @@ class TempoRamp:
         if not self.running:
             if abs(current['bpm']-row['fromBpm'])>.2:raise BridgeError('Playing tempo changed before its ramp. No tempo command sent.')
             if beat<start:return {'status':'waiting','targetBpm':row['toBpm']}
-            if beat-start>2:raise BridgeError('The tempo ramp window was missed. No compressed ramp was sent.')
+            if beat-start>2:
+                # A following deck's load can occupy the first few solo
+                # beats. Use a nearby bar only when the full ramp, endpoint
+                # readback and settle window all fit before the measured exit.
+                next_bar = self.planned_start(beat)
+                if handoff_beat is None or self.minimum_handoff_beat(beat) > handoff_beat:
+                    raise BridgeError('The tempo ramp window was missed. No compressed ramp was sent.')
+                if beat<next_bar:return {'status':'waiting','targetBpm':row['toBpm']}
             if incoming and incoming.get('playing'):raise BridgeError('Tempo ramps require a solo playing deck.')
             if as_bool(self.q(client,'pitch_lock','bool')):raise BridgeError('Turn off linked pitch before the set; the tempo ramp did not change it.')
             native=finite(self.q(client,f'deck {self.deck} get_bpm absolute'),40,300)
@@ -143,6 +160,8 @@ class TempoRamp:
             # Bind the repeat's beat clock as well as its pitch action to the
             # playing deck; background catalog/loading can change selection.
             self.send(client,f"deck {self.deck} repeat_start_fade '{self.NAME}' {slider:.9f} {goal:.9f} {row['durationBeats']}bt & deck {self.deck} pitch")
+            if beat-start>2:
+                self.event('Started the full tempo ramp at a nearby bar before the verified handoff.','tempo')
             self.event(row['reason'],'tempo')
         progress=max(0,min(1,(beat-self.start)/row['durationBeats']))
         expected=row['fromBpm']+(row['toBpm']-row['fromBpm'])*progress

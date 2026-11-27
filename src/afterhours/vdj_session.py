@@ -788,10 +788,27 @@ class DJSession:
             reading=self.telemetry(client, preloading=True)
         except (BridgeError, OSError):
             return  # Real read failures still expire; never invent a live clock.
-        if self.tempo_ramp and self.tempo_ramp.row:
-            active=self.tempo_ramp.deck
-            self.update(tempoControl=self.tempo_ramp.tick(client,reading['decks'][active-1],
-                                                          reading['decks'][deck_rotation.following(active,self.decks)-1]))
+        ramp = self.tempo_ramp
+        if ramp and ramp.row:
+            active = ramp.deck
+            playing = reading['decks'][active-1]
+            following = reading['decks'][deck_rotation.following(active,self.decks)-1]
+            cadence = s.get('entryCadence')
+            index = s['index']
+            handoff = None
+            if (cadence and not ramp.done and not ramp.running and index + 1 < len(s['order'])
+                    and ramp.planned_start(playing['beatPosition']) > ramp.entry + ramp.row['startOffsetBeats']):
+                # The next preload can run past the nominal solo-ramp start
+                # before the play loop computes the current track's exit.
+                # Preserve the full ramp and settle time on a verified bar.
+                try:
+                    window = copilot_commands.retime(s, playing, s['executionPlan']['transitions'][index]['fadeBeats'],
+                        entry_interval=cadence[index % len(cadence)],
+                        earliest_beat=ramp.minimum_handoff_beat(playing['beatPosition']))
+                except ValueError as exc:
+                    raise BridgeError(str(exc)) from exc
+                handoff = window['mixAtBeat']
+            self.update(tempoControl=ramp.tick(client, playing, following, handoff_beat=handoff))
 
     def wait_observed(self, client, seconds):
         if self.snapshot()['phase'] != 'playing':
@@ -2732,7 +2749,8 @@ class DJSession:
                     try:
                         resume_window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
                             entry_interval=entry_cadence[index % len(entry_cadence)],
-                            actual_entry=resume_window if immediate and index == 0 else None)
+                            actual_entry=resume_window if immediate and index == 0 else None,
+                            earliest_beat=self.tempo_ramp.minimum_handoff_beat(current['beatPosition']) if tempo_row else None)
                     except ValueError as exc:
                         if resume_window is None:
                             raise BridgeError(str(exc)) from exc
@@ -2755,7 +2773,8 @@ class DJSession:
                     if current['id'] != track['id'] or not current['playing']:
                         raise BridgeError('A deck changed or was paused. Scheduling stopped for manual control.')
                     if tempo_row:
-                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1])
+                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1],
+                            handoff_beat=goal if entry_cadence and not final else None)
                         self.update(tempoControl=control)
                     change = self.service_copilot(client, current, incoming, ready, target, window)
                     if change:

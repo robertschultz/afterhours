@@ -176,6 +176,13 @@ class CopilotControlTests(unittest.TestCase):
         self.assertEqual(opening['entryBeat'], 0)
         self.assertEqual(opening['mixAtBeat'], 144)
 
+    def test_timed_exit_leaves_a_full_ramp_and_settle_window_after_preload(self):
+        s = running()
+        current = {**s.state['telemetry']['decks'][0], 'beatPosition': 85}
+        nearest = cc.retime(s.snapshot(), current, 8, entry_interval=30)
+        window = cc.retime(s.snapshot(), current, 8, entry_interval=30, earliest_beat=nearest['mixAtBeat']+4)
+        self.assertEqual(window['mixAtBeat'], nearest['mixAtBeat']+4)
+
     def test_timed_exit_refuses_a_verified_window_minutes_after_the_requested_entry(self):
         s = running()
         current = {**s.state['telemetry']['decks'][0], 'beatPosition': 156}

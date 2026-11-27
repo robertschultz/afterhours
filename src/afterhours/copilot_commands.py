@@ -165,7 +165,7 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
-def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None):
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, earliest_beat=None):
     """Earliest verified exit with lead time, preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
@@ -182,6 +182,8 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     if type(position) not in (int, float) or not math.isfinite(position):
         raise ValueError('The native beat position is unavailable.')
     earliest = position+8  # two bars for bounded readbacks; never an instant cut
+    if earliest_beat is not None:
+        earliest = max(earliest, earliest_beat)
     rows = plan.get('tempoSchedule') or []
     if index < len(rows):
         row = rows[index]

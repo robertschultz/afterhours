@@ -240,6 +240,8 @@ class CrateSessionTests(unittest.TestCase):
             if script.endswith('get_bpm absolute'):return 125.125
             if script.endswith('get_key'):return '8A'
             if script.endswith('get_firstbeat'):return -2.494
+            if script.endswith('get_time total absolute'):return 264509
+            if script.endswith('get_filepath'):return 'fixture:1'
             raise AssertionError(script)
         with patch.object(s, 'q', side_effect=query), patch.object(s, 'load'), patch.object(s, 'send'), \
              patch.object(s, 'wait_observed'), patch.object(s, 'sleep'):

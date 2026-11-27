@@ -89,6 +89,20 @@ class AnalysisTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     track_analysis(tracks, path)
 
+    def test_exact_loaded_duration_can_disagree_with_saved_catalog_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'db.xml'
+            path.write_text('<VirtualDJ_Database><Song FilePath="example"><Infos SongLength="262.96"/>'
+                            '<Poi Pos="260" Type="automix" Point="realEnd"/></Song></VirtualDJ_Database>')
+            sid = identity('example')
+            track = {'id': 'recording', 'title': 'Test', 'bpm': 107,
+                     'engine': {'selection_id': sid}, 'nativeDuration': 264.509}
+            with patch('afterhours.native_analysis.verified_energy', return_value={'verified': True}) as proof:
+                result = track_analysis([track], path)['tracks'][0]
+            proof.assert_called_once_with(sid, 264.509)
+            self.assertEqual(result['duration'], 264.509)
+            self.assertEqual(result['points'][0]['seconds'], 260)
+
 
 class AIReviewTests(unittest.TestCase):
     def test_provider_failure_classes_are_safe_and_not_guessed(self):

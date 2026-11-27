@@ -745,7 +745,7 @@ class SessionTests(unittest.TestCase):
         s.update(candidates=[source]);bpm=[86.0];sent=[]
         def query(client,script,kind=None):
             return {'deck 1 loaded':True,'deck 1 play':False,'deck 1 get_filepath':path,'deck 1 get_bpm absolute':bpm[0],
-                    'deck 1 get_key':'F#m','deck 1 get_firstbeat':9000}[script]
+                    'deck 1 get_key':'F#m','deck 1 get_firstbeat':9000,'deck 1 get_time total absolute':264509}[script]
         def send(client,script):
             sent.append(script)
             if 'set_bpm' in script:bpm[0]=172
@@ -753,13 +753,14 @@ class SessionTests(unittest.TestCase):
             actual=s.analyze_deck(None,source,1)
         self.assertEqual(actual['bpm'],172)
         self.assertTrue(actual['engineChecked'])
+        self.assertEqual(actual['nativeDuration'],264.509)
         self.assertFalse(any(' play' in c or ' pitch' in c for c in sent))
 
     def test_negative_first_grid_anchor_is_valid_without_a_negative_audio_seek(self):
         s=DJSession(threading.Lock());path='free-your-mind';source={'id':'a','title':'Fixture','bpm':128,'camelot':'12A','engine':{'selection_id':identity(path)}}
         s.update(candidates=[source]);sent=[]
         readings={'deck 1 loaded':True,'deck 1 play':False,'deck 1 get_filepath':path,'deck 1 get_bpm absolute':128,
-                  'deck 1 get_key':'C#m','deck 1 get_firstbeat':-2.494}
+                  'deck 1 get_key':'C#m','deck 1 get_firstbeat':-2.494,'deck 1 get_time total absolute':264509}
         with patch.object(s,'q',side_effect=lambda c,v,k=None:readings[v]),patch.object(s,'send',side_effect=lambda c,v:sent.append(v)),patch.object(s,'sleep'):
             actual=s.analyze_deck(None,source,1)
         self.assertEqual(actual['bpm'],128);self.assertTrue(actual['engineChecked'])

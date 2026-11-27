@@ -845,6 +845,24 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(s.program()['current'],'b')
             self.assertEqual(s.program()['transitionInSeconds'],70)
 
+    def test_timed_program_keeps_next_title_while_waiting_for_its_live_window(self):
+        s = DJSession(threading.Lock())
+        decks = [{'id': 'a', 'playing': True, 'bpm': 120, 'beatPosition': 100},
+                 {'id': 'b', 'playing': True, 'bpm': 120, 'beatPosition': 40}]
+        s.update(order=tracks(), active=True, phase='mixing', index=0, entryCadence=[60, 30],
+                 timing={'mixAtBeat': 120}, timingTrackId='a',
+                 executionPlan={'applied': True, 'selections': [
+                     {'trackId': 'a', 'exitBeat': 160}, {'trackId': 'b', 'exitBeat': 180}]},
+                 telemetry={'decks': decks, 'crossfader': .75, 'sampledAt': 100})
+        with patch('afterhours.vdj_session.time.time', return_value=101):
+            self.assertEqual(s.program()['current'], 'b')
+            self.assertEqual(s.program()['nextTrack']['id'], 'c')
+            self.assertIsNone(s.program()['transitionInSeconds'])
+            s.update(phase='playing', index=1)
+            self.assertIsNone(s.program()['transitionInSeconds'])
+            s.update(timing={'mixAtBeat': 96}, timingTrackId='b')
+            self.assertEqual(s.program()['transitionInSeconds'], 28)
+
     def test_completed_program_does_not_switch_tracks_when_only_crossfader_moves(self):
         s=DJSession(threading.Lock())
         decks=[{'id':'a','playing':False,'loaded':True},{'id':'b','playing':False,'loaded':True}]

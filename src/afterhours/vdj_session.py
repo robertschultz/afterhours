@@ -1715,6 +1715,10 @@ class DJSession:
                     omit(track,exc,PREVIEW_ONLY);continue
                 except RecordingUnavailable as exc:
                     omit(track,exc,'recording-unavailable');continue
+                except NativeStreamRejected as exc:
+                    if not entry_cadence:
+                        raise
+                    omit(track,exc,'native-stream-rejected');continue
                 evidence = track_analysis([checked_track])['tracks'][0]
                 waveform_ready = bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])

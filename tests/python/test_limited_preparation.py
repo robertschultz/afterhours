@@ -5,13 +5,13 @@ from contextlib import ExitStack
 from unittest.mock import Mock,patch
 from afterhours.cue_planner import LimitedAudio
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_session import DJSession,RecordingUnavailable,TrackMetadataChanged
+from afterhours.vdj_session import DJSession,NativeStreamRejected,RecordingUnavailable,TrackMetadataChanged
 
 
 class LimitedPreparationTests(unittest.TestCase):
     def test_timed_preparation_applies_local_measured_plan_without_playing(self):
         from test_cue_planner import fixture
-        _, report, _ = fixture(count=3)
+        _, report, _ = fixture(count=4)
         tracks = [{**t, 'engine': {'selection_id': t['id']*64}} for t in report['tracks']]
         session = DJSession(threading.Lock())
         session.update(candidates=tracks)
@@ -22,12 +22,16 @@ class LimitedPreparationTests(unittest.TestCase):
         def prepare_track(client, track, deck, bpm, *, cue, checked=None):
             if deck == 2 and checked is None:
                 raise TrackMetadataChanged(changed)
+        def analyze_track(client, track, deck):
+            if track['id'] == tracks[2]['id']:
+                raise NativeStreamRejected('Native stream rejected while paused.')
+            return track
         with ExitStack() as stack:
             stack.enter_context(patch('afterhours.vdj_session.track_analysis',
                 side_effect=lambda values: {'tracks': list(values)}))
             stack.enter_context(patch('afterhours.vdj_session.verified_waveform', return_value=True))
             stack.enter_context(patch('afterhours.cue_planner.verify_receipts'))
-            stack.enter_context(patch.object(session, 'analyze_deck', side_effect=lambda c, t, d: t))
+            stack.enter_context(patch.object(session, 'analyze_deck', side_effect=analyze_track))
             stack.enter_context(patch.object(session, 'measure_cues', side_effect=lambda c,t,*a,**kw: t['cueCandidates']))
             prepare = stack.enter_context(patch.object(session, 'prepare_deck', side_effect=prepare_track))
             send = stack.enter_context(patch.object(session, 'send'))
@@ -40,6 +44,8 @@ class LimitedPreparationTests(unittest.TestCase):
         self.assertTrue(all('cue' in call.kwargs for call in prepare.call_args_list))
         self.assertEqual(prepare.call_args.kwargs['checked'], changed)
         self.assertEqual(result['order'][1]['camelot'], changed['camelot'])
+        self.assertEqual(result['preparationSelection']['skipped'][0]['code'], 'native-stream-rejected')
+        self.assertEqual([t['id'] for t in result['order']], ['0','1','3'])
         send.assert_called_once_with(client, 'crossfader 0%')
 
     def test_only_unlocked_preview_is_omitted_with_exact_selection_receipt(self):

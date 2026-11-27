@@ -2428,7 +2428,8 @@ class DJSession:
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
+              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
+              allow_opening_catalog_fallback=False):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
@@ -2537,7 +2538,8 @@ class DJSession:
             paused_current = False
             if immediate:
                 from afterhours.opening_playback import start_and_prepare
-                order,planned,t,resume_window=start_and_prepare(self,client,order)
+                fallback = {'allow_catalog_fallback': True} if allow_opening_catalog_fallback else {}
+                order,planned,t,resume_window=start_and_prepare(self,client,order,**fallback)
                 target=planned['targetBpm'];active,index=1,0
             elif resume:
                 if not planned or not copilot_commands.resumable(snapshot):

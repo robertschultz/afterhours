@@ -90,6 +90,8 @@ class MCPTests(unittest.TestCase):
 
     def test_named_play_without_accepted_tracks_returns_selection_hold(self):
         reply=self.direct(text='Play Christmas music')
+        self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','foundIds':[]})
+        self.agent.tick(force=True)
         settled(self.agent)
         receipt=self.control.receipt(self.music['credential'],reply['requestId'])
         self.assertEqual((receipt['status'],receipt['reasonCode']),('blocked','selection-held'))
@@ -97,19 +99,30 @@ class MCPTests(unittest.TestCase):
     def test_idle_external_named_play_replaces_finished_queue_before_planning(self):
         self.session.update(phase='completed', index=19, startedAt=self.now - 900)
         self.session.state['order'] *= 7
+        for row in self.session.state['candidates']:
+            row['engine'] = {'folder_id': 'beatport' if row['id'] == 'a' else 'apple'}
         self.session.new_set = Mock(side_effect=lambda: self.session.update(
             id='fresh-fixture', phase='idle', index=-1, order=[], queuedUpdate=None,
             startedAt=None, executionPlan=None))
         self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
             active=True, phase='loading'))
-        self.provider.return_value = (decision(['b', 'c']), {})
+        self.provider.return_value = ({**decision(['b', 'c']),
+                                       'sessionScope': {'mode': 'ongoing', 'message': 'Keep playing.'}}, {})
 
         receipt = self.direct(text='Play Christmas music')
+        self.provider.assert_not_called()
+        self.assertEqual(self.session.calls[-1][:2], ('discover', ('christmas music',)))
+        self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
+                            catalogSearch={'status': 'complete', 'foundIds': ['b', 'c']})
+        self.agent.tick(force=True)
         settled(self.agent)
         self.agent.tick()
 
         self.session.new_set.assert_called_once_with()
-        self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True)
+        self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True,
+                                                   allow_opening_catalog_fallback=True)
+        packet = self.provider.call_args.args[0]
+        self.assertEqual({row['id'] for row in packet['music']['catalog']}, {'b', 'c'})
         request = self.agent.playback_request
         self.assertEqual((request['sessionId'], request['orderIds']), ('fresh-fixture', ['b', 'c']))
         self.assertEqual(request['externalRequestId'], receipt['commandId'])

@@ -1742,18 +1742,27 @@ class DJAgent:
                     'decisionRequired':transport!='fresh-start' and source=='typed' and approved is True and approve_preparation is True,
                     'freshQueue':transport=='fresh-start','intent':text.strip()}
                 self.clarification=None
-                query=playback_requests.named_query(text) if source=='voice' and transport=='fresh-start' else None
+                query=playback_requests.named_query(text) if (source=='voice' or external_fresh) and transport=='fresh-start' else None
                 if query and self.settings.state['discover'] and dj_settings.lead(self.session.snapshot())=='all':
                     _,artist=playback_requests.named_recording(query)
                     search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(search)
+                        if external_fresh:
+                            external.consume('discovery')
+                            self.session.discover_more(search, external_request_id=external.id, authorize=external.check)
+                        else:
+                            self.session.discover_more(search)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
+                        if external_fresh:
+                            external.finish('blocked', 'The native catalog search could not start.', 'discovery-failed')
                         return self.snapshot()
                     self.searches.add(query);self.search_rounds=1
-                    self.playback_request['fastOpeningQuery']=query
-                    if search!=query:self.playback_request['fastOpeningSearch']=search
+                    if external_fresh:
+                        self.playback_request['externalCatalogProbe'] = True
+                    else:
+                        self.playback_request['fastOpeningQuery']=query
+                        if search!=query:self.playback_request['fastOpeningSearch']=search
                     self.awaiting_catalog=True;self.search_from_turn=True
                     summary='Searching the crate for '+query+'.'
                     self.playback_request['message']=summary
@@ -1895,6 +1904,9 @@ class DJAgent:
             if refill and not pending and not catalog_ready:
                 self.last_refill=refill_key;self.search_rounds=0
             found_enough=(catalog.get('matched',catalog.get('added',len(s.get('candidates',[]))))>=2)
+            if request.get('externalCatalogProbe'):
+                live_ids = set(catalog.get('foundIds', []))
+                found_enough = len({song_identity(row)[0] for row in s['candidates'] if row['id'] in live_ids}) >= 2
             can_search=self.settings.state['discover'] and not mixing_only and self.search_rounds<2 and not (catalog_ready and found_enough)
             if (self.text_turn and not use_curation) and catalog_ready:can_search=False
             if catalog_ready:self.awaiting_catalog=False
@@ -1910,6 +1922,14 @@ class DJAgent:
             latest_text=operator['text'] if operator else self.state['direction']
             recall=self.queue_mode=='steer' or re.search(r'\b(again|before|earlier|previous|last set|remember|same as)\b',latest_text,re.I)
             planning,history=session_curation.planning_view(s)
+            if request.get('externalCatalogProbe') and request.get('status') == 'choosing':
+                scope = (s.get('catalogFolder') or {}).get('id')
+                ids = set(catalog.get('foundIds', []))
+                if scope:
+                    planning = {**planning, 'candidates': [
+                        row for row in planning['candidates']
+                        if row['id'] in ids or row.get('engine', {}).get('folder_id') == scope
+                    ]}
             ranking_text=latest_text if pending else latest_text+' '+self.state['direction']
             packet={'operatorRequest':copy.deepcopy(operator),'mentionedAgents':copy.deepcopy(self.mentioned_agents) if pending else [],'djProfile':self.profile_context(),'profilePolicy':'Use this operator-authored profile as taste and persona preferences for future decisions. Current operator requests take precedence; never override protected tracks or execution safeguards.', 'direction':self.state['direction'],'messages':self.state['messages'][-12:],
                     'audienceRequests':copy.deepcopy([r for r in self.audience_requests if self.clock()-r['at']<3600][-8:]),
@@ -2737,7 +2757,8 @@ class DJAgent:
         if request['orderIds']!=actual:
             startup=s.get('startup') or {}
             skipped={r['trackId'] for r in startup.get('skipped',[])
-                     if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
+                     if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only',
+                                          'catalog-lookup-incomplete')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
             future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
             if not (request['status']=='starting' and startup.get('requestedIds')==request['orderIds']
@@ -2760,7 +2781,10 @@ class DJAgent:
                  and ((request.get('source')=='voice'
                        and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
                       or (request.get('source')=='mcp' and request.get('freshQueue'))))
-        try:self.session.start(initialize_mixer=True,immediate=True,**({'rolling_queue':True} if rolling else {}))
+        options = {'rolling_queue': True} if rolling else {}
+        if request.get('source')=='mcp' and request.get('freshQueue') and request.get('scope')=='ongoing':
+            options['allow_opening_catalog_fallback'] = True
+        try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')
         self.save();return True

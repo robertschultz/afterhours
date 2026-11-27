@@ -18,6 +18,7 @@ import re
 from afterhours import ai_mix
 from afterhours import booth_primitives, catalog_browser, dj_discovery
 from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
+from afterhours.stem_profiles import cue_pair
 
 MAX_CALLS_PER_REQUEST = 3
 MAX_RESULT_BYTES = 2600
@@ -48,7 +49,7 @@ TOOL_DEFS = [
          {'afterId':STR,'limit':{'type':'integer','description':'1 to 8.'}}),
     tool('compare_tracks','Tempo, key, genre, queue position and preparation of 2 to 4 recordings.',
          {'trackIds':{'type':'array','items':STR}}),
-    tool('check_transition','How one recording would hand over to another: tempo change, key relation, blend technique.',
+    tool('check_transition','Check tempo, key, blend and measured stems for a pair.',
          {'fromId':STR,'toId':STR}),
     tool('inspect_track','Measured level, bass and mix windows of one analysed recording.',
          {'trackId':STR}),
@@ -345,6 +346,10 @@ class Lookups:
             result['sharedBrightHighs'] = changes.pop('sharedBrightHighs',None)
             result['measuredEntryMinusExitDb'] = {field:round(value,1) for field,value in changes.items()}
             result['activityEvidence'] = 'Decoded frequency-band and dynamic levels at verified cue windows. Lead and vocal activity are unknown.'
+        stem_fit = cue_pair(source,target,outgoing_cue,incoming_cue)
+        if stem_fit:
+            result['stemEvidence'] = stem_fit
+            result['activityEvidence'] = 'Native vocal, drum and bass meters at the measured cues. Meter occupancy does not identify notes or lyrics.'
         self.surface((source, target))
         return result
 

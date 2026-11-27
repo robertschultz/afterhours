@@ -12,6 +12,7 @@ from afterhours import tempo_planner
 
 from afterhours.audio_analysis import read_scan
 from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
+from afterhours.stem_profiles import cue_pair
 
 
 VERSION = 'afterhours.cues.v1'
@@ -401,9 +402,13 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
             def cost(c):
                 before=cues[-1]['exit'] if cues else c['entry']
                 bands=window_pair_evidence(cues[-1],c) if cues else {}
-                return (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])
+                fit = (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])
                         + c['entry']['levelVariationDb'] + c['entry']['silentFraction']*100
                         + .25*abs(bands.get('highDb',0)) + 2*bool(bands.get('sharedBrightHighs')))
+                measured_stems = cue_pair(order[i-1]['id'],track['id'],cues[-1],c) if cues else None
+                if measured_stems:
+                    fit += measured_stems['scoreAdjustment']
+                return fit
             cue=min(candidates,key=cost)
             previous={'trackId':track['id'],'candidateId':cue['id'],
                 'reason':'Local measured cue fit: stable entrance, similar level and controlled bass overlap; vocals remain unknown.'}
@@ -434,6 +439,12 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
             choices = (8,)
         if bands.get('sharedBrightHighs'):
             reason_detail += ' Shorter overlap avoids stacking strongly measured highs.'
+        stem_fit = cue_pair(a['id'],b['id'],cues[i],cues[i+1])
+        if stem_fit:
+            vocal_conflict = stem_fit['vocalOverlapFraction']
+            reason_detail += f' Vocal stems are prominent together in {vocal_conflict:.0%} of the metered bins.'
+            if vocal_conflict >= .5 or stem_fit['lowEndOverlap'] >= .55:
+                choices = (8,)
         beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
         technique = 'bass-swap' if beats==32 else 'restrained-bass-swap'

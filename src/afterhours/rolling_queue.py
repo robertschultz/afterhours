@@ -6,6 +6,7 @@ from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
+from afterhours.stem_profiles import candidate_fit
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 
 
@@ -142,11 +143,18 @@ class RollingQueue:
                 if catalog and not catalog.done and slack >= 22:
                     return
             if timed_set or not quick:
+                tail_cue=next((cue for cue in (state.get('executionPlan') or {}).get('selections',[])
+                               if cue.get('trackId')==tail['id']),{})
+                stem_fit={row['id']:fit for row in candidates
+                          if (fit:=candidate_fit(tail['id'],row['id'],tail_cue))}
                 candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
                     0 if not timed_set or track['id'] in self.live_matches else 1,
-                    transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)),
+                    transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)
+                    + 8*stem_fit.get(track['id'],{}).get('scoreAdjustment',0)),
                     set_slot=set_slot(str(state.get('agentDirection') or ''),
                                       plan=getattr(session,'standing_night_plan',None),at=time.time()))
+                for track_id, fit in stem_fit.items():
+                    facts[track_id]['stemFit']=fit
             else:
                 candidates = sorted(candidates, key=score)
             deferred = state.get('timedContinuation') or []

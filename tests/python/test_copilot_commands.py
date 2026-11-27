@@ -176,6 +176,17 @@ class CopilotControlTests(unittest.TestCase):
         self.assertEqual(opening['entryBeat'], 0)
         self.assertEqual(opening['mixAtBeat'], 144)
 
+    def test_timed_exit_refuses_a_verified_window_minutes_after_the_requested_entry(self):
+        s = running()
+        current = {**s.state['telemetry']['decks'][0], 'beatPosition': 156}
+        original = s.state['executionPlan']['selections'][0]
+        s.state['analysis']['tracks'][0]['cueCandidates'].append({
+            **original, 'id': 'much-later', 'exitBeat': 1024, 'endBeat': 1056,
+            'exitSeconds': 1024 * 60 / 155, 'endSeconds': 1056 * 60 / 155,
+        })
+        with self.assertRaisesRegex(ValueError, 'within the requested cadence'):
+            cc.retime(s.snapshot(), current, 16, entry_interval=30)
+
     def test_timed_exit_moves_one_bar_inside_a_verified_outro_after_late_preload(self):
         s = running()
         current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}

@@ -118,6 +118,19 @@ class QueueRevisionTests(unittest.TestCase):
         self.assertIsNone(s.state['queuedUpdate'])
         send.assert_not_called()
 
+    def test_preload_metadata_revision_refits_planner_tail_without_marking_media_missing(self):
+        from afterhours.vdj_session import TrackMetadataChanged
+        s, original = self.prepared()
+        s.update(index=1, entryCadence=[60,30], rollingQueue={'status':'preparing'})
+        changed = TrackMetadataChanged({**s.state['order'][2], 'bpm':131})
+        with patch('afterhours.cue_planner.verify_receipts'), patch.object(s, 'send') as send:
+            order, plan = s.substitute_rejected_preload(2, metadata_changed=changed)
+        self.assertEqual([row['id'] for row in order], ['0','1','3'])
+        self.assertEqual(plan['selections'][:2], original['selections'][:2])
+        self.assertIsNone(s.availability.blocked('2'))
+        self.assertIn('tempo or key', s.state['events'][-1]['text'])
+        send.assert_not_called()
+
     def test_rejected_preload_keeps_operator_queue_intact(self):
         s,_ = self.prepared()
         pending = {'tracks':s.state['order']}

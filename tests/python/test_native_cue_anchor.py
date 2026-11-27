@@ -87,6 +87,10 @@ class NativeCueAnchorTests(unittest.TestCase):
             self.assertLessEqual(cue['endSeconds'], 400)
         self.assertTrue(all(seconds >= 0 for stage, seconds in peer.readbacks if stage != 'anchor'))
         self.assertTrue(all(command.startswith('deck 3 goto') for command in peer.commands))
+        relative_seeks=[cmd for cmd in peer.commands if cmd.startswith('deck 3 goto +')]
+        absolute_replays=[cmd for cmd in peer.commands if cmd.endswith('%')]
+        self.assertEqual(len(relative_seeks),len(set(relative_seeks)))
+        self.assertEqual(len(absolute_replays),len(cues))
         self.assertFalse(peer.playing)
 
     def test_short_recording_uses_replay_verified_shorter_phrase(self):

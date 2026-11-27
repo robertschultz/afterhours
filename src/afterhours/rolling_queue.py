@@ -43,7 +43,10 @@ class RollingQueue:
                 return
 
             order = state['order']
-            if not order or len(order) - state['index'] > (5 if timed_set else 3):
+            # Two spare decks still prepare at most two recordings at once.
+            # Start replenishing timed sets earlier so a slow decode or search
+            # does not consume all of the upcoming 30-second slots.
+            if not order or len(order) - state['index'] > (10 if timed_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
@@ -74,7 +77,11 @@ class RollingQueue:
             if timed_set and catalog and getattr(catalog, 'rolling', False):
                 self.live_matches.update(catalog.seen)
             style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
-            if timed_set and not any(t['id'] in self.live_matches for t in candidates):
+            upcoming = len(order) - state['index'] - 1
+            # With a short buffer, prepare an eligible previously searched
+            # recording now. Live discovery can resume once its deck is loaded.
+            urgent_refill = upcoming <= 2 and bool(candidates)
+            if timed_set and not urgent_refill and not any(t['id'] in self.live_matches for t in candidates):
                 if (slack >= 26 and len(order)-state['index'] >= 2
                         and (not catalog or catalog.done) and self.search(session, state, order, style, timed_set)):
                     return

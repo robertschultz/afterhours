@@ -189,6 +189,12 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     source = next((t for t in (snapshot.get('analysis') or {}).get('tracks', []) if t['id'] == current['id']), {})
     entry = actual_entry or cue
     target = earliest if entry_interval is None else entry['entryBeat'] + entry_interval * current['bpm'] / 60
+    if entry_interval is not None and not final:
+        # A timed run can flex to a nearby verified bar. A window several
+        # minutes later belongs to cue-led pacing, not the requested cadence.
+        tolerance = 10 * current['bpm'] / 60
+        earliest = max(earliest, target - tolerance)
+        cadence_end = target + tolerance
     blend = 0 if final else fade_beats
     valid = []
     for candidate in source.get('cueCandidates', []):
@@ -205,6 +211,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         span = candidate['endBeat']-exit_beat
         first_bar = max(0, math.ceil((earliest-exit_beat)/4))
         last_bar = math.floor((min(span, candidate['maxBlendBeats'])-blend+1e-4)/4)
+        last_bar = min(last_bar, math.floor((cadence_end-exit_beat)/4))
         if first_bar > last_bar:
             continue
         bars = min(last_bar, max(first_bar, round((target-exit_beat)/4)))
@@ -214,7 +221,8 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         else:
             valid.append(candidate)
     if not valid:
-        raise ValueError('No verified handoff remains ahead. The current track keeps playing; take over or prepare another exit.')
+        timing = ' within the requested cadence' if entry_interval is not None and not final else ' ahead'
+        raise ValueError(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
     selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],

@@ -17,6 +17,7 @@ class PreparationPool:
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
         self.analysis_miss=None
+        self.osc_reply_timeout=False
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
         for track in self.tracks:
@@ -55,6 +56,7 @@ class PreparationPool:
         self.analysis_timed_out=job.analysis_timed_out
         self.catalog_miss=getattr(job,'catalog_miss',None)
         self.analysis_miss=getattr(job,'analysis_miss',None)
+        self.osc_reply_timeout=getattr(job,'osc_reply_timeout',False)
         self.done=True
 
     def step(self,client,seconds_available):

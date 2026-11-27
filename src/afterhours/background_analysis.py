@@ -12,7 +12,7 @@ import re
 import threading
 import time
 import uuid
-from afterhours.dj_bridge import BridgeError, as_bool
+from afterhours.dj_bridge import BridgeError, OSCReplyTimeout, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN, SPARE_SCAN_TIMEOUT
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
@@ -227,6 +227,7 @@ class BackgroundAnalysis:
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.catalog_miss=None
         self.analysis_miss=None
+        self.osc_reply_timeout=False
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -292,7 +293,9 @@ class BackgroundAnalysis:
             for track in self.tracks:self.session.availability.require_track(track)
             if not self.owned:self.acquire(client)
         except (BridgeError,ValueError,OSError) as exc:
-            self.error=str(exc);self.done=True;return
+            self.error=str(exc);self.done=True
+            self.osc_reply_timeout=isinstance(exc,OSCReplyTimeout)
+            return
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
     def step(self,client,seconds_available):
         self.clock();self.suspended=seconds_available<12
@@ -465,6 +468,7 @@ class BackgroundAnalysis:
             self.session.availability.record(track['id'],code,str(exc))
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         except Exception as exc:
+            self.osc_reply_timeout=isinstance(exc,OSCReplyTimeout)
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))

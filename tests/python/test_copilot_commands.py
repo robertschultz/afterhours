@@ -187,6 +187,34 @@ class CopilotControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'within the requested cadence'):
             cc.retime(s.snapshot(), current, 16, entry_interval=30)
 
+    def test_cue_driven_exit_follows_measured_sections_and_preserves_entry(self):
+        s = running()
+        current = s.state['telemetry']['decks'][0]
+        original = s.state['executionPlan']['selections'][0]
+        candidates = s.state['analysis']['tracks'][0]['cueCandidates']
+
+        def exit_at(beat, change, **stats):
+            return {**original, 'id': f'exit-{beat}', 'exitBeat': beat,
+                    'exitSeconds': beat * 60 / 155, 'endBeat': beat + 32,
+                    'endSeconds': (beat + 32) * 60 / 155, 'exitChangeDb': change,
+                    'exit': {**original['exit'], **stats}}
+
+        early = exit_at(112, -3)
+        later = exit_at(256, -6)
+        candidates.extend([early, later, exit_at(320, -14, rmsDb=-60, silentFraction=1)])
+        s.state['analysis']['tracks'][0]['points'].append(
+            {'id': 'native-break', 'type': 'remix', 'label': 'Break 1', 'seconds': later['exitSeconds'] + .25})
+        window = cc.retime(s.snapshot(), current, 16, cue_driven=True)
+        self.assertEqual((window['entryBeat'], window['mixAtBeat']), (64, 256))
+        self.assertEqual(window['basis'], 'cue-driven-phrase-exit')
+        self.assertEqual(window['exitEvidence']['sectionLevelChangeDb'], -6)
+        self.assertEqual(window['exitEvidence']['nativeMarker']['offsetSeconds'], .25)
+        self.assertAlmostEqual(window['plannedEntryInterval'], (256 - 64) * 60 / 155)
+        later['replayVerified'] = False
+        self.assertEqual(cc.retime(s.snapshot(), current, 16, cue_driven=True)['mixAtBeat'], 112)
+        with self.assertRaisesRegex(ValueError, 'No verified'):
+            cc.retime(s.snapshot(), current, 16, cue_driven=True, latest_beat=111)
+
     def test_timed_exit_moves_one_bar_inside_a_verified_outro_after_late_preload(self):
         s = running()
         current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}

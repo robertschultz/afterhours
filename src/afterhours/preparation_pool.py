@@ -20,13 +20,15 @@ class PreparationPool:
         self.osc_reply_timeout=False
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
+        cue_driven = bool(state.get('cueDriven'))
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
             if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
-                    and bool(cached.get('timedPreparation')) == self.timed):
+                    and bool(cached.get('timedPreparation')) == self.timed
+                    and bool(cached.get('cueDrivenPreparation')) == cue_driven):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
             self.pending.append(track)

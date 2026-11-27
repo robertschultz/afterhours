@@ -438,6 +438,8 @@ class Handler(RuntimeStaticHandler):
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
                     if 'entryCadence' in data:
                         options['entry_cadence'] = data['entryCadence']
+                    if 'cueDriven' in data:
+                        options['cue_driven'] = data['cueDriven']
                     if data.get('loopHandoffs') is True:
                         options['loop_handoffs'] = True
                     if data.get('prepareWhilePlaying') is True:
@@ -466,7 +468,12 @@ class Handler(RuntimeStaticHandler):
                 elif action == 'prepare':
                     result = DJ_SESSION.prepare()
                 elif action == 'prepare-analysis':
-                    result = DJ_SESSION.prepare_analysis(entry_cadence=data['entryCadence']) if 'entryCadence' in data else DJ_SESSION.prepare_analysis()
+                    options = {}
+                    if 'entryCadence' in data:
+                        options['entry_cadence'] = data['entryCadence']
+                    if 'cueDriven' in data:
+                        options['cue_driven'] = data['cueDriven']
+                    result = DJ_SESSION.prepare_analysis(**options)
                 elif action == 'record-provider-preview':
                     result = DJ_SESSION.record_provider_preview(data.get('trackId'),data.get('provider'),
                         data.get('previewSeconds'),data.get('evidence'),data.get('observedAt'))

@@ -1726,9 +1726,13 @@ class DJSession:
             self.update(setlist=policy)
             return self.snapshot()
 
-    def prepare_analysis(self, entry_cadence=None):
+    def prepare_analysis(self, entry_cadence=None, *, cue_driven=False):
         """Preload and verify full-track numerical features while paused."""
         entry_cadence = validate_entry_cadence(entry_cadence)
+        if type(cue_driven) is not bool or (cue_driven and entry_cadence):
+            raise ValueError('Cue-driven timing requires a boolean and no fixed entry cadence.')
+        local_plan = bool(entry_cadence or cue_driven)
+        cue_options = {('timed' if entry_cadence else 'cue_driven'): True} if local_plan else {}
         snapshot=self.snapshot()
         if snapshot['mixStyle']!='phrase':
             raise ValueError('Choose genre-aware EQ mixing to prepare measured cue candidates.')
@@ -1753,7 +1757,7 @@ class DJSession:
                 except RecordingUnavailable as exc:
                     omit(track,exc,'recording-unavailable');continue
                 except NativeStreamRejected as exc:
-                    if not entry_cadence:
+                    if not local_plan:
                         raise
                     omit(track,exc,'native-stream-rejected');continue
                 evidence = track_analysis([checked_track])['tracks'][0]
@@ -1773,7 +1777,7 @@ class DJSession:
                 try:
                     candidates[track['id']]=self.measure_cues(client,checked_track,evidence,
                         checked[0]['bpm'] if checked else checked_track['bpm'],snapshot['secondsPerTrack'],
-                        **({'timed': True} if entry_cadence else {}))
+                        **cue_options)
                 except cue_planner.LimitedAudio as exc:
                     omit(track,exc,'limited-decoded-audio');continue
                 checked.append(checked_track)
@@ -1793,9 +1797,10 @@ class DJSession:
                 self.event('Native tempo or key refined the selection. The measured order remains within its mixing limits.','analysis-metadata')
             report=cue_planner.attach_candidates(report,candidates,snapshot['secondsPerTrack'],checked[0]['bpm'],targets,snapshot.get('maxTempoShift',8))
             prepared = {}
-            if entry_cadence:
-                source = 'Local measured timed-set preparation'
-                seed = {**snapshot, 'entryCadence':entry_cadence, 'rollingQueue':True, 'analysis':report,
+            if local_plan:
+                source = 'Local cue-driven set preparation' if cue_driven else 'Local measured timed-set preparation'
+                seed = {**snapshot, 'entryCadence':entry_cadence, 'cueDriven':cue_driven,
+                        'rollingQueue':True, 'analysis':report,
                         'executionPlan':{'orderIds':[], 'targetBpm':report['targetBpm']},
                         'aiReview':{'decision':'propose', 'secondsBetweenEntries':snapshot['secondsPerTrack'],
                                     'selections':[], 'transitions':[]}}
@@ -1819,7 +1824,8 @@ class DJSession:
                         self.prepare_deck(client,checked[i],i+1,plan['tempoSchedule'][i]['fromBpm'],
                                           cue=plan['selections'][i],checked=exc.track)
                 plan['applied'] = True
-                prepared.update(executionPlan=plan, mixPlans=plan['transitions'], entryCadence=entry_cadence)
+                prepared.update(executionPlan=plan, mixPlans=plan['transitions'], entryCadence=entry_cadence,
+                                cueDriven=cue_driven)
             else:
                 estimate=tempo_planner.estimate(checked,snapshot['secondsPerTrack'],snapshot.get('maxTempoShift',8),targets)
                 for i in range(2):self.prepare_deck(client,checked[i],i+1,estimate[i]['fromBpm'])
@@ -1829,7 +1835,7 @@ class DJSession:
             selection={'fromIds':[t['id'] for t in order],'orderIds':[t['id'] for t in checked],'skipped':skipped} if skipped else None
             policy=snapshot.get('setlist',{'allowReorder':True,'lockedIds':[],'sourceById':{}})
             policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in {t['id'] for t in checked}}}
-            message = ('Measured timed opening is ready. Audio remains paused.' if entry_cadence else
+            message = ('Measured opening is ready. Audio remains paused.' if local_plan else
                        f'{count} measured cue candidates prepared. Plan the transitions before starting.')
             self.update(order=checked,setlist=policy,tempoTargets=targets,preparationSelection=selection,analysis=report,phase='ready',
                         message=message, **prepared)
@@ -1894,7 +1900,7 @@ class DJSession:
         self._launch(work,'reviewing')
         return self.snapshot()
 
-    def measure_cues(self,client,track,evidence,target_bpm,seconds,deck=1,isolated=None, *, timed=False):
+    def measure_cues(self,client,track,evidence,target_bpm,seconds,deck=1,isolated=None, *, timed=False, cue_driven=False):
         isolated=deck in (3,4) if isolated is None else isolated is True
         if deck not in ((1,2,3,4) if isolated else (1,)):raise ValueError('Cue analysis uses paused deck A or an isolated spare deck.')
         def guard():
@@ -1939,7 +1945,7 @@ class DJSession:
         # signal, grid, or replay requirements for any proposed transition.
         while span>=32:
             policy=cue_planner.propose_offsets(evidence,rows,anchor_time,track['bpm'],target_bpm,seconds,
-                                              limit=10 if timed else 8,timed=timed,span_beats=span)
+                                              limit=10 if timed else 8,timed=timed,span_beats=span,cue_driven=cue_driven)
             result=[]
             for offset in policy['offsets']:
                 entry,entry_time=at(offset)
@@ -2437,7 +2443,8 @@ class DJSession:
             failure = metadata_changed or NativeStreamRejected('VirtualDJ reports a streamed-track error.')
             if metadata_changed is not None and metadata_changed.track['id'] != rejected['id']:
                 raise failure
-            if (state['phase'] != 'playing' or index != state['index']+1 or not state.get('entryCadence')
+            if (state['phase'] != 'playing' or index != state['index']+1
+                    or not (state.get('entryCadence') or state.get('cueDriven'))
                     or not state.get('rollingQueue') or not policy['allowReorder'] or dj_settings.lead(state) != 'all'
                     or policy.get('sourceById', {}).get(rejected['id']) == 'operator'
                     or any(track['id'] in policy['lockedIds'] for track in order[index:])
@@ -2462,13 +2469,18 @@ class DJSession:
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
+              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
+              cue_driven=False):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
         snapshot = self.snapshot()
         entry_cadence = validate_entry_cadence(entry_cadence)
-        if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
+        if resume and snapshot.get('cueDriven') is True:
+            cue_driven = True
+        if type(cue_driven) is not bool or (cue_driven and entry_cadence):
+            raise ValueError('Cue-driven timing requires a boolean and no fixed entry cadence.')
+        if (entry_cadence or loop_handoffs or cue_driven) and snapshot['mixStyle'] != 'phrase':
             raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
         rolling = RollingQueue() if rolling_queue else None
         if snapshot.get('resumeBlocked'):
@@ -2557,7 +2569,8 @@ class DJSession:
         def work(client):
             nonlocal order,planned
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
-                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[])
+                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, cueDriven=cue_driven,
+                        timedContinuation=[])
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -2661,6 +2674,7 @@ class DJSession:
                 track=order[index]
                 self.update(index=index)
                 final = index == len(order)-1
+                interval = entry_cadence[index % len(entry_cadence)] if entry_cadence else None
                 incoming = nxt(active)
                 # Telemetry reads these two in full and the others lightly.
                 self.active_deck=active;self.pair_decks=(active,incoming)
@@ -2703,14 +2717,17 @@ class DJSession:
                     resume_window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
                     resume_window['basis']='measured-continuation-exit'
                     self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
-                if entry_cadence and planned and not final and not resume:
+                if (entry_cadence and not resume or cue_driven) and planned and not final:
+                    entry = resume_window if (immediate and index == 0) or index == resumed_index else None
                     try:
                         resume_window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
-                            entry_interval=entry_cadence[index % len(entry_cadence)],
-                            actual_entry=resume_window if immediate and index == 0 else None)
+                            entry_interval=interval, cue_driven=cue_driven,
+                            actual_entry=entry)
                     except ValueError as exc:
                         if resume_window is None:
                             raise BridgeError(str(exc)) from exc
+                        if cue_driven:
+                            self.event('Keeping the verified exit already prepared for the playing record.', 'timing')
                 return_to_verified_exit=False
                 window = resume_window or (cue_planner.execution_window(planned['selections'][index],current['beatPosition'],0 if final else recipe['fadeBeats'],final)
                           if planned else segment_window(entries[active], t['decks'][active-1]['beatPosition'],
@@ -2724,6 +2741,7 @@ class DJSession:
                 revised_final=False
                 waiting_for_continuation=False
                 stems_check_at=0
+                retried_mixer_window=False
                 while True:
                     t = self.telemetry(client)
                     current = t['decks'][active-1]
@@ -2779,6 +2797,28 @@ class DJSession:
                         waiting_for_continuation=True
                         self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
                     if current['beatPosition'] >= goal and runway<16:
+                        if self.mixer and not final and cue_driven:
+                            # Assess mixer state before committing to the
+                            # handoff. A delayed reply can consume this bar.
+                            self.mixer.validate_armed(client)
+                            observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
+                            if observed<goal:
+                                raise MixerControlChanged('The outgoing beat clock moved before the handoff. No transition was sent.')
+                            current={**current,'beatPosition':observed}
+                            if observed-goal>1:
+                                if retried_mixer_window:
+                                    raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
+                                try:
+                                    window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'],
+                                        entry_interval=interval, actual_entry=window, cue_driven=cue_driven,
+                                        latest_beat=goal+min(16,current['bpm']*8/60))
+                                except ValueError as exc:
+                                    raise BridgeError('Mixer checks missed the transition window. '+str(exc)) from exc
+                                retried_mixer_window=True
+                                start_beat,goal=window['entryBeat'],window['mixAtBeat']
+                                self.update(targetBeat=goal,timing=dict(window),segmentBeats=window['segmentBeats'])
+                                self.event('Mixer readback arrived late. Waiting for a nearby verified bar.', 'timing')
+                                continue
                         if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:
                                 raise BridgeError('The analyzed transition window was missed. Scheduling stopped; no substitute cue was used.')
@@ -2853,7 +2893,7 @@ class DJSession:
                 if tempo_row and not self.tempo_ramp.done:
                     raise BridgeError('Tempo ramp was not confirmed before the handoff. No transition was started.')
                 fade_beats = window['fadeBeats']
-                if self.mixer:
+                if self.mixer and not cue_driven:
                     self.mixer.validate_armed(client)
                     observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
                     if observed-goal>1:

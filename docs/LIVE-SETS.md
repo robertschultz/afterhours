@@ -72,3 +72,17 @@ through the API. Add `--prepare` to verify and cue the initial buffer while
 paused before the clock starts. This validates longer runs with an opening
 queue ready while new records are being found and measured. The script leaves
 playback running and records no audio.
+
+
+### Cue-driven pacing
+
+For phrase mixing, send `"cueDriven": true` with `action: "start"` and
+omit `entryCadence`. The same option on `prepare-analysis` readies a
+local measured opening while playback is paused. During playback, measured
+section changes, overlap fit, and nearby native markers help choose the exit of each recording. The engine uses replay-verified native
+beat positions, preserves the entry already playing, and keeps enough
+measured audio and tempo-settle time for the blend. Track intervals can
+vary. The handoff receipt records the selected exit, measured level and
+bass changes, and how they fit the incoming recording. Phrase confidence
+remains estimated from the audio features. Use `rollingQueue` and
+`loopHandoffs` with this mode for a sustained set with outgoing loops.

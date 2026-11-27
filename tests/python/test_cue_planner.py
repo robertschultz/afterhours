@@ -64,6 +64,19 @@ class CueTests(unittest.TestCase):
         self.assertLessEqual(len(timed['offsets']), 10)
         self.assertEqual(timed['spanBeats'], standard['spanBeats'])
 
+    def test_cue_driven_candidates_probe_the_bar_near_a_native_break(self):
+        rows, report, _ = fixture()
+        track = report['tracks'][0]
+        track['points'] = [{'type': 'remix', 'label': 'Break 1', 'seconds': .2 + (64 + 116) * 60 / 126}]
+        ordinary = cp.propose_offsets(track, rows, .2, 126, 126, 30)
+        measured = cp.propose_offsets(track, rows, .2, 126, 126, 30, cue_driven=True)
+        self.assertNotIn(116, ordinary['offsets'])
+        self.assertIn(116, measured['offsets'])
+        for row in rows:
+            if 86 <= row['seconds'] <= 88:
+                row['rmsDb'] = -120
+        self.assertNotIn(116, cp.propose_offsets(track, rows, .2, 126, 126, 30, cue_driven=True)['offsets'])
+
     def test_native_readbacks_cannot_move_into_silence_or_outside_track(self):
         rows,report,_=fixture();t=report['tracks'][0];native=t['cueCandidates'][0]
         policy={'spanBeats':64,'blendBeats':32,'medianRmsDb':-14}

@@ -42,6 +42,27 @@ class OpeningTests(unittest.TestCase):
     def test_fast_opening_preserves_mixing_only_while_preparing_spare_decks(self):
         self.check_opening('mix')
 
+    def test_start_first_uses_measured_strategy_after_a_quick_set(self):
+        s,_,_,_,_=self.setup_session()
+        s.update(mixStyle='quick',quickBlendSeconds=30,quickTargetBpm=122)
+        client=Mock()
+        client.status.return_value={'automix':False,'decks':[{'playing':False}]*2}
+        s.choose_rotation=Mock(return_value=(1,2))
+        captured={}
+
+        def prepare(session, client, tracks):
+            snapshot=session.snapshot()
+            captured.update(style=snapshot['mixStyle'],blend=snapshot['quickBlendSeconds'],
+                            target=snapshot['quickTargetBpm'],ids=[t['id'] for t in tracks])
+            raise BridgeError('End fixture before native playback.')
+
+        with patch.object(s,'_launch') as launch, patch('afterhours.opening_playback.start_and_prepare',prepare):
+            s.start(immediate=True)
+            worker=launch.call_args.args[0]
+            with self.assertRaisesRegex(BridgeError,'End fixture'):
+                worker(client)
+        self.assertEqual(captured,{'style':'phrase','blend':None,'target':None,'ids':['0','1','2']})
+
     def check_opening(self,mode):
         s,report,trace,playing,beat=self.setup_session()
         s.state['copilot']['mode']=mode

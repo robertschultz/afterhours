@@ -2525,7 +2525,12 @@ class DJSession:
         if ((snapshot['phase'] not in (('ready', 'completed', 'stopped', 'takeover', 'error') if immediate else ('ready', 'completed', 'stopped', 'takeover'))
              and not (resume and copilot_commands.resumable(snapshot))) or len(snapshot['order']) < 2):
             raise ValueError('Build a set before starting playback.')
-        if immediate:planned=None
+        # Start-first playback prepares measured handoffs after the opener.
+        # A fresh voice request can inherit the last stopped set's quick mode.
+        opening_style = {'mixStyle': 'phrase', 'quickBlendSeconds': None, 'quickTargetBpm': None} if immediate else {}
+        if immediate:
+            planned=None
+            snapshot.update(opening_style)
         order = validate_order([t['id'] for t in snapshot['order']], snapshot['candidates'], snapshot.get('maxTempoShift',8),
                                snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),
                                frozen=(planned or {}).get('tempoSchedule'),opening=(planned or {}).get('targetBpm'),
@@ -2627,6 +2632,7 @@ class DJSession:
             paused_current = False
             if immediate:
                 from afterhours.opening_playback import start_and_prepare
+                self.update(**opening_style)
                 order,planned,t,resume_window=start_and_prepare(self,client,order)
                 target=planned['targetBpm'];active,index=1,0
             elif resume:

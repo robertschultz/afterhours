@@ -34,7 +34,7 @@ def intent(text):
                'next', 'next track', 'play the next track', 'skip to the next track',
                'play next', 'go to the next track', 'next song', 'play the next song',
                'start mixing into the next track', 'start mixing the next track',
-               'transition to the next track', 'transition into the next track',
+               'transition next', 'transition to the next track', 'transition into the next track',
                'transition up to the next track', 'mix in the next track',
                'bring in the next track', 'start the next transition',
                'start the next mix', 'mix to the next track', 'transition now',

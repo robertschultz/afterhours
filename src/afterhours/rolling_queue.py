@@ -6,6 +6,14 @@ from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 
 
+def failed_rolling_recording(pending):
+    if pending.get('status') != 'blocked':
+        return None
+    attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
+    return next((pending[key] for key in ('catalogMissId','analysisMissId','measuredFitMissId')
+                 if pending.get(key) and pending[key] in attempted), None)
+
+
 class RollingQueue:
     def __init__(self):
         self.searched = set()
@@ -23,14 +31,10 @@ class RollingQueue:
                 return
             pending = state.get('queuedUpdate') or {}
             timed_set = bool(state.get('entryCadence'))
-            miss = pending.get('catalogMissId')
-            if timed_set:
-                miss = miss or pending.get('analysisMissId') or pending.get('measuredFitMissId')
-            attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
-            if (miss and pending.get('status')=='blocked' and miss in attempted
-                    and not state.get('resumeBlocked') and not session.background_job):
+            miss = failed_rolling_recording(pending)
+            if miss and not state.get('resumeBlocked') and not session.background_job:
                 self.missed.add(miss)
-                if timed_set:
+                if miss != pending.get('catalogMissId'):
                     rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
                     if rejected:
                         self.missed_titles.add(song_identity(rejected)[0])
@@ -91,9 +95,9 @@ class RollingQueue:
                     return
                 if catalog and not catalog.done and slack >= 22:
                     return
-            if timed_set:
+            if timed_set or not quick:
                 candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
-                    0 if track['id'] in self.live_matches else 1,
+                    0 if not timed_set or track['id'] in self.live_matches else 1,
                     transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)),
                     set_slot=set_slot(str(state.get('agentDirection') or '')))
             else:
@@ -128,7 +132,7 @@ class RollingQueue:
                     queued['rollingTrackIds'] = selected
                 if deferred:
                     session.update(timedContinuation=[t for t in deferred if t['id'] not in selected])
-                if timed_set:
+                if timed_set or not quick:
                     for track in picked:
                         session.event(f"Selected {track['title']} for a measured queue slot.", 'queue',
                                       trackId=track['id'], currentCatalogMatch=track['id'] in self.live_matches,
@@ -146,7 +150,7 @@ class RollingQueue:
     def search(self, session, state, order, style, timed_set):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
-        if timed_set:
+        if timed_set or state.get('mixStyle') == 'phrase':
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]

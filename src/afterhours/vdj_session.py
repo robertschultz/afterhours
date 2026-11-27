@@ -1670,8 +1670,8 @@ class DJSession:
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
-            replaceable=queued.get('catalogMissId') or (self.state.get('entryCadence') and
-                (queued.get('measuredFitMissId') or queued.get('analysisMissId')))
+            from afterhours.rolling_queue import failed_rolling_recording
+            replaceable = not self.state.get('resumeBlocked') and failed_rolling_recording(queued)
             if not staged and not (rolling and (not queued or replaceable)):
                 return 0
             # Native console controls can temporarily omit duration during

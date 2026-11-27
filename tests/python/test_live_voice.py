@@ -42,6 +42,14 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(body['session']['audio']['output']['voice'],'gleam')
         self.assertEqual(self.voice.status()['voice'],'gleam')
 
+    def test_dawt_presentation_uses_dot_even_with_a_different_assigned_profile(self):
+        self.agent.profile_context=Mock(return_value={'id':'nova','name':'Nova'})
+        self.voice.create('v=0','dawt-request','nova',True,voice='gleam',presentation='dawt')
+        body=json.loads(self.requests[0].data)['session']
+        self.assertIn('You are Dot',body['instructions'])
+        self.assertIn('Introduce yourself as Dot',body['instructions'])
+        self.assertNotIn('Nova',json.dumps(body))
+
     def test_startup_history_keeps_useful_facts_and_bounds_escaped_text(self):
         messages=[{'role':'user','text':'🪩'*5000} for _ in range(10)]
         messages.append({'role':'assistant','text':'The next blend is scheduled.'})

@@ -1832,7 +1832,9 @@ class DJAgent:
                 pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])))
                 if pair:
                     try:
-                        self.session.plan(pair,s.get('secondsPerTrack',30),0,s.get('maxTempoShift',8),'phrase')
+                        # A named music request starts a cue-led set. A short
+                        # preview selected earlier must not cap its EQ blend.
+                        self.session.plan(pair,max(60,s.get('secondsPerTrack',30)),0,s.get('maxTempoShift',8),'phrase')
                     except (ValueError,OSError,BridgeError):
                         pass  # The main planner can choose another safe opening.
                     else:

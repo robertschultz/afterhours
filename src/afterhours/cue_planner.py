@@ -320,12 +320,12 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
     This transparent fallback is signal-based, not another model decision or
     vocal classifier. It never changes an already cued/armed selection.
     """
-    preferred_beats=16
+    preferred_beats=32
     if standing_style is not None:
         from afterhours.dj_settings import style_context
         # Unknown lead activity keeps the existing conservative ceiling. A
         # short preference can tighten it; a long preference cannot bypass it.
-        preferred_beats=min(16,style_context(standing_style)['preferredBlendBeats'])
+        preferred_beats=min(32,style_context(standing_style)['preferredBlendBeats'])
     old=snapshot['executionPlan'];report=copy.deepcopy(snapshot['analysis'])
     evidence={t['id']:copy.deepcopy(t) for t in report['tracks']}
     evidence.update({t['id']:copy.deepcopy(t) for t in measured})
@@ -397,19 +397,22 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         # Conservative one-lead transition. Do not represent signal energy as
         # proof of instrumental/vocal sections or a listening judgment.
         max_beats=min(cues[i]['maxBlendBeats'],cues[i+1]['maxBlendBeats'],preferred_beats)
-        choices = (8, 16)
-        reason_detail = ''
+        outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
+        level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
+        bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
+        gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
+        use_long_blend = (gradual and snapshot['secondsPerTrack'] > 30
+                          and recipe['genreFamily'] in ('house', 'techno', 'dnb'))
+        choices = (8, 16, 32) if use_long_blend else (8, 16)
+        reason_detail = f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
         if snapshot.get('entryCadence'):
-            outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
-            level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
-            bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
-            gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
             choices = (8, 16) if gradual else (8,)
-            reason_detail = (f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
-                             + (' Both support a longer blend.' if gradual else ' Use a shorter overlap.'))
+        elif not gradual and (level_gap > 6 or bass_gap > 8):
+            choices = (8,)
         beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
-        pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':'restrained-bass-swap',
+        technique = 'bass-swap' if beats==32 else 'restrained-bass-swap'
+        pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':technique,
             'reason':'Local measured transition. '+recipe['reason']+reason_detail})
     report['tracks']=[evidence[i] for i in ids];report['fingerprint']=fingerprint(report['tracks'])
     report.update(tempoVersion=tempo_planner.VERSION,tempoTargets=tempo_targets,

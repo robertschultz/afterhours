@@ -96,6 +96,20 @@ class CueTests(unittest.TestCase):
         self.assertEqual(cp.execution_window(cue,80,32)['mixAtBeat'],128)
         with self.assertRaisesRegex(ValueError,'missed'):cp.execution_window(cue,126,32)
 
+    def test_measured_music_fit_controls_blend_length(self):
+        for bass_gap, expected in ((0,32),(10,8)):
+            with self.subTest(bass_gap=bass_gap):
+                _,report,_=fixture(2,60)
+                order=report['tracks']
+                order[1]['cueCandidates'][0]['entry']['bassDb']+=bass_gap
+                snapshot={'analysis':report,'mixStyle':'phrase','secondsPerTrack':60,
+                          'executionPlan':{'orderIds':[],'targetBpm':155},
+                          'aiReview':{'decision':'propose','secondsBetweenEntries':60,'selections':[],'transitions':[]}}
+                result=cp.complete_background_queue(snapshot,order,[],'Measured fit fixture.',0)
+                recipe=result['executionPlan']['transitions'][0]
+                self.assertEqual(recipe['fadeBeats'],expected)
+                self.assertFalse(recipe['tonalOverlap'])
+
     def test_compatible_keys_do_not_override_unknown_lead_guard_or_rewrite_ai_response(self):
         _,report,response=fixture();response['transitions'][0]['technique']='bass-swap'
         review=ai_mix.validate_plan(response,report,30);original=copy.deepcopy(review)

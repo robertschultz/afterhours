@@ -62,7 +62,7 @@ class LiveVoice:
                     'maxSeconds':self.state.get('maxSeconds') or SECONDS,'voiceUSDPerMinute':VOICE_RATE_PER_MINUTE,
                     'maxDecisionRequests':self.state.get('maxDecisionRequests') or DECISION_REQUESTS,'recording':False}
 
-    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None,client_lease=False):
+    def create(self,sdp,request_id,performer='nova',approved=False,max_seconds=120,voice=None,client_lease=False,presentation=None):
         if approved is not True:raise ValueError('Turn on Talk before connecting.')
         # Older open pages approved only the original two-minute session.
         # A longer session must be explicitly requested by the new Talk control.
@@ -74,6 +74,8 @@ class LiveVoice:
         if not isinstance(request_id,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',request_id):
             raise ValueError('A connection request ID is required.')
         profile=getattr(self.agent,'profile_context',lambda:{})()
+        if presentation not in (None,'dawt'):raise ValueError('Choose a supported Talk presentation.')
+        if presentation=='dawt':profile={**profile,'name':'Dot'}
         if voice is not None and voice not in ('gleam','meridian','marin'):
             raise ValueError('Choose a supported live voice.')
         selected_voice=voice or profile.get('voice') or ('meridian' if performer=='nova' else 'marin')
@@ -102,7 +104,11 @@ class LiveVoice:
                               maxSeconds=max_seconds,maxDecisionRequests=decisions,transportClosed=False)
             self.cancel_connect=False
         history=startup_history(profile,self.agent.snapshot(),self.agent.session.snapshot())
-        instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. Use a relaxed, concise,
+        identity_note = ('Introduce yourself as Dot. Keep this booth identity throughout the conversation. '
+                         'DAWT animates Dot from your reply and confirmed engine activity. ' if presentation=='dawt' else '')
+        handoff_identity = ('acknowledge the change and keep introducing yourself as Dot' if presentation=='dawt'
+                            else 'continue as the newly assigned AI DJ')
+        instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. {identity_note}Use a relaxed, concise,
 knowledgeable DJ voice. You are an AI persona, not the human operator and not their cloned voice.
 Listen naturally and accept interruptions. Delegate any musical direction, track request, change to
 the set, a visible gesture or movement for the live video performer, or a question about actual playback to the DJ backend. It owns the current truth and music
@@ -112,11 +118,11 @@ as you delegate it, so the operator can hear that you are checking the crate. Wh
 reports a change from searching to preparing or playing, describe that actual change once.
 Delegate the request once; never promise playback
 until its deck confirmation arrives. Selecting or discussing music alone does not start it.
-"Mix into the next track", "transition to the next track", and "just mix it in" are explicit
+"Mix into the next track", "transition next", "transition to the next track", and "just mix it in" are explicit
 operator commands too: delegate them once without asking for another Play confirmation.
 "Take back over" returns mixing control to Copilot. "Have the guest DJ take over from the resident DJ"
 changes the DJ character: delegate it once, preserving the named people. After the application
-confirms a character handoff, continue as the newly assigned AI DJ. The current audio voice stays
+confirms a character handoff, {handoff_identity}. The current audio voice stays
 the same until Talk reconnects; never claim a cloned voice or a generated entrance.
 If the backend reports an engine error, describe that actual fault; do not call it missing consent.
 Do not delegate unrelated room conversation. Do not invent catalog availability, audience emotions,

@@ -84,14 +84,18 @@ class TempoFitError(ValueError):
         super().__init__(' '.join(self.reasons.values()))
 
 
-def validate_order(ids, candidates, max_tempo_shift=8, seconds=30, tempo_targets=None, frozen=None, opening=None, fixed=False, history_prefix=(), retained_final_resume=False):
-    # Only an engine-owned exact heard prefix may extend the 12-record window.
+DEFAULT_QUEUE_WINDOW = 12
+MAX_TIMED_QUEUE_WINDOW = 20
+
+
+def validate_order(ids, candidates, max_tempo_shift=8, seconds=30, tempo_targets=None, frozen=None, opening=None, fixed=False, history_prefix=(), retained_final_resume=False, *, window_limit=DEFAULT_QUEUE_WINDOW):
+    # Only an engine-owned exact heard prefix may extend the upcoming window.
     if len(history_prefix)>256 or not isinstance(ids,list) or ids[:len(history_prefix)]!=list(history_prefix):
         raise ValueError("Played queue history must stay unchanged.")
     minimum=1 if retained_final_resume is True and history_prefix else 2
-    if (not isinstance(ids, list) or len(ids)<2 or not minimum <= len(ids)-len(history_prefix) <= 12
+    if (not isinstance(ids, list) or len(ids)<2 or not minimum <= len(ids)-len(history_prefix) <= window_limit
             or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
-        raise ValueError("Choose 2–12 distinct tracks from this session's catalog.")
+        raise ValueError(f"Choose 2–{window_limit} distinct tracks from this session's catalog.")
     by_id = {t['id']: t for t in candidates}
     if any(i not in by_id for i in ids):
         raise ValueError("A track is no longer in the analyzed catalog. Discover music again.")
@@ -677,7 +681,7 @@ class DJSession:
                               saved.get('excerptBars',16), saved.get('maxTempoShift',8),
                               saved.get('mixStyle','quick'),source='operator',tempo_targets=saved.get('tempoTargets'),_tempo_route=recovered_route,
                               quick_blend_seconds=saved.get('quickBlendSeconds'),
-                              _archive_boundary=False)
+                              _archive_boundary=False,queue_window=saved.get('queueWindow',DEFAULT_QUEUE_WINDOW))
                 else:
                     # A conversation can finish a catalog search before choosing
                     # an order. Recover those results without inventing a set.
@@ -1088,6 +1092,7 @@ class DJSession:
             self.update(candidates=[], order=[], index=-1, transitions=[], telemetry=None,
                         setlist={'allowReorder':True,'lockedIds':[],'sourceById':{}},
                         query=query, artistFilter=artist, genreFilter=genre, bpmMin=bpm_min, bpmMax=bpm_max,
+                        queueWindow=DEFAULT_QUEUE_WINDOW,
                         message='Searching the selected VirtualDJ catalog…')
             records, seen = [], set()
             filters = [item.strip().casefold() for item in artist.split(';') if item.strip()]
@@ -1143,7 +1148,8 @@ class DJSession:
         return self.snapshot()
 
     def plan(self, ids, seconds=30, excerpt_bars=16, max_tempo_shift=8, mix_style='phrase',
-             source='planner', tempo_targets=None, _tempo_route=None, _archive_boundary=True, quick_blend_seconds=None):
+             source='planner', tempo_targets=None, _tempo_route=None, _archive_boundary=True, quick_blend_seconds=None,
+             *, queue_window=DEFAULT_QUEUE_WINDOW):
         with self.lock:
             if self.state['active']:
                 raise ValueError('Wait for the current session operation to finish.')
@@ -1155,6 +1161,9 @@ class DJSession:
                 raise ValueError('Choose a tempo adjustment limit from 0 to 8%.')
             if not isinstance(mix_style, str) or mix_style not in MIX_STYLES:
                 raise ValueError('Choose phrase or quick mixing.')
+            if (type(queue_window) is not int or not DEFAULT_QUEUE_WINDOW <= queue_window <= MAX_TIMED_QUEUE_WINDOW
+                    or (queue_window > DEFAULT_QUEUE_WINDOW and mix_style != 'phrase')):
+                raise ValueError(f'Choose a queue window of {DEFAULT_QUEUE_WINDOW}–{MAX_TIMED_QUEUE_WINDOW} tracks for measured timed sets.')
             if quick_blend_seconds is not None:
                 if (mix_style!='quick' or type(quick_blend_seconds) is not int or quick_blend_seconds not in (15,20,30)
                         or seconds<quick_blend_seconds+16):
@@ -1163,7 +1172,7 @@ class DJSession:
                 raise ValueError('Phrase mixing needs an excerpt at 0, 16 or 32 bars.')
             order = validate_order(ids, self.state['candidates'], max_tempo_shift, seconds, tempo_targets,
                                    frozen=_tempo_route,opening=_tempo_route[0]['fromBpm'] if _tempo_route else None,
-                                   fixed=mix_style=='quick')
+                                   fixed=mix_style=='quick',window_limit=queue_window)
             if source=='planner':self.require_available(ids)
             policy=self.state.get('setlist',{'allowReorder':True,'lockedIds':[],'sourceById':{}})
             previous=[t['id'] for t in self.state['order']]
@@ -1178,6 +1187,7 @@ class DJSession:
                 sources.update({track:'operator' for i,track in enumerate(ids) if i>=len(previous) or previous[i]!=track})
             if _archive_boundary:self.archive_call('boundary')
             self.state.update(order=order, recoveryRemainder=[], secondsPerTrack=seconds, excerptBars=excerpt_bars,
+                              queueWindow=queue_window,
                               setlist={**policy,'sourceById':sources},
                               maxTempoShift=max_tempo_shift, mixStyle=mix_style, quickBlendSeconds=quick_blend_seconds, quickTargetBpm=None,
                               **MIX_STYLES[mix_style],
@@ -1328,10 +1338,12 @@ class DJSession:
             if quick and s['order']:opening=s.get('quickTargetBpm') or s['order'][0]['bpm']
             order=validate_order(ids,s['candidates'],s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
                                  frozen or None,opening if audible else None,fixed=quick,
-                                 history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [])
+                                 history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [],
+                                 window_limit=s.get('queueWindow',DEFAULT_QUEUE_WINDOW))
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
-                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],source=source or 'planner',tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'))
+                return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],source=source or 'planner',tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'),
+                                 queue_window=s.get('queueWindow',DEFAULT_QUEUE_WINDOW))
             if audible and s['phase'] not in ('playing','mixing','loading'):
                 raise ValueError('Manual playback keeps control. Stop or return to the scheduled set before applying a new queue.')
             if not quick and not old_plan.get('applied'):
@@ -1732,7 +1744,11 @@ class DJSession:
         snapshot=self.snapshot()
         if snapshot['mixStyle']!='phrase':
             raise ValueError('Choose genre-aware EQ mixing to prepare measured cue candidates.')
-        order=validate_order([t['id'] for t in snapshot['order']],snapshot['candidates'],snapshot.get('maxTempoShift',8),snapshot['secondsPerTrack'],snapshot.get('tempoTargets'))
+        queue_window = snapshot.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+        if queue_window > DEFAULT_QUEUE_WINDOW and not entry_cadence:
+            raise ValueError('An extended queue window requires a measured entry cadence.')
+        order=validate_order([t['id'] for t in snapshot['order']],snapshot['candidates'],snapshot.get('maxTempoShift',8),
+                             snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),window_limit=queue_window)
         def work(client):
             before=client.status()
             if before['automix'] or any(d['playing'] for d in before['decks']):
@@ -1783,7 +1799,7 @@ class DJSession:
             targets=snapshot.get('tempoTargets')
             if skipped and targets:
                 targets=[r for r in targets if r['trackId'] in {t['id'] for t in checked}]
-            validate_order([t['id'] for t in checked],checked,snapshot.get('maxTempoShift',8),snapshot['secondsPerTrack'],targets)
+            validate_order([t['id'] for t in checked],checked,snapshot.get('maxTempoShift',8),snapshot['secondsPerTrack'],targets,window_limit=queue_window)
             report=track_analysis(checked)
             original={t['id']:t for t in order}
             if any(abs(a['bpm']/original[a['id']]['bpm']-1)>.02 or a.get('camelot')!=original[a['id']].get('camelot') for a in checked):
@@ -2382,7 +2398,8 @@ class DJSession:
         if snapshot.get('executionPlan'):
             return self.apply_plan()
         order=validate_order([t['id'] for t in snapshot['order']],snapshot['candidates'],snapshot.get('maxTempoShift',8),
-                             snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),fixed=snapshot['mixStyle']=='quick')
+                             snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),fixed=snapshot['mixStyle']=='quick',
+                             window_limit=snapshot.get('queueWindow',DEFAULT_QUEUE_WINDOW))
         def work(client):
             before=client.status()
             if before['automix'] or any(d['playing'] for d in before['decks']):
@@ -2467,9 +2484,16 @@ class DJSession:
 
         self.dig_restart()
         snapshot = self.snapshot()
+        if resume and snapshot.get('entryCadence'):
+            entry_cadence = snapshot['entryCadence'] if entry_cadence is None else entry_cadence
+            rolling_queue = bool(rolling_queue or snapshot.get('rollingQueue'))
+            loop_handoffs = bool(loop_handoffs or snapshot.get('loopHandoffs'))
         entry_cadence = validate_entry_cadence(entry_cadence)
         if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
             raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
+        queue_window = snapshot.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+        if queue_window > DEFAULT_QUEUE_WINDOW and not (entry_cadence and rolling_queue):
+            raise ValueError('An extended queue window requires a measured rolling set with an entry cadence.')
         rolling = RollingQueue() if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
@@ -2485,7 +2509,8 @@ class DJSession:
                                fixed=snapshot['mixStyle']=='quick',
                                history_prefix=[t['id'] for t in snapshot['order'][:max(0,snapshot['index'])]] if resume else [],
                                retained_final_resume=bool(resume and snapshot['index']==len(snapshot['order'])-1 and
-                                   (planned or {}).get('applied') and (planned or {}).get('orderIds')==[t['id'] for t in snapshot['order']]))
+                                   (planned or {}).get('applied') and (planned or {}).get('orderIds')==[t['id'] for t in snapshot['order']]),
+                               window_limit=queue_window)
         if not immediate and snapshot['mixStyle']=='phrase' and not (snapshot.get('analysis') or {}).get('cueVersion'):
             raise ValueError('Analyze this set and apply a measured mix plan before starting.')
         if not immediate and (planned or (snapshot.get('analysis') and snapshot['analysis'].get('cueVersion'))):

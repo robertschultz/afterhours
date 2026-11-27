@@ -158,6 +158,19 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(update['rollingTrackIds'], ['l', 'm'])
         self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
 
+    def test_timed_refill_skips_provider_continuous_mix_cuts(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True, 'targetBpm':125})
+        for row, suffix in zip(self.session.state['candidates'][2:4], [' [Mixed]', ' (Mixed)']):
+            row['title'] += suffix
+        roller = RollingQueue()
+        roller.live_matches.update(row['id'] for row in self.tracks)
+        roller.tick(self.session, 35)
+        added = self.session.snapshot()['queuedUpdate']['tracks'][2:]
+        self.assertTrue(added)
+        self.assertTrue(all(not row['title'].endswith((' [Mixed]', ' (Mixed)')) for row in added))
+
     def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

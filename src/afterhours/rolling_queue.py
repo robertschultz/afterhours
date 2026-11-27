@@ -3,7 +3,7 @@ from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
-from afterhours.vdj_session import song_identity
+from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 
 
 class RollingQueue:
@@ -46,7 +46,8 @@ class RollingQueue:
             # Two spare decks still prepare at most two recordings at once.
             # Start replenishing timed sets earlier so a slow decode or search
             # does not consume all of the upcoming 30-second slots.
-            if not order or len(order) - state['index'] > (10 if timed_set else 3):
+            refill_at = state.get('queueWindow',DEFAULT_QUEUE_WINDOW) - 2 if timed_set else 3
+            if not order or len(order) - state['index'] > refill_at:
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
@@ -71,6 +72,9 @@ class RollingQueue:
                           if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
                               or track['engine']['folder_id'] == folder)
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
+                          # Continuous-mix cuts often duplicate the full
+                          # recording and have a baked-in DJ transition.
+                          and not (timed_set and track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)')))
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             catalog = session.catalog_job

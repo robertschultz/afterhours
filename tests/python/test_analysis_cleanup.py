@@ -100,6 +100,25 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertFalse(p.values['deck 3 loaded']);self.assertEqual(p.values['deck 3 volume'],1)
         self.assertTrue(all('deck 3' in c and 'deck 1' not in c and 'deck 2' not in c for c in p.commands))
 
+    def test_failed_owned_load_can_clear_native_headphone_cue(self):
+        for error in (False, True):
+            with self.subTest(error=error):
+                _, peer, job = self.owned()
+                job.requested_load = job.loaded
+                job.loaded = None
+                peer.values.update({'deck 3 loaded':False,'deck 3 pfl':True,'deck 3 deck_has_error':error})
+                descriptor = job.cleanup_descriptors()[0]
+                if not error:
+                    with self.assertRaises(BridgeError):
+                        cleanup_analysis_deck(peer,descriptor)
+                    self.assertEqual(peer.commands,[])
+                    continue
+                cleanup_analysis_deck(peer,descriptor)
+                self.assertFalse(descriptor['loadPending'])
+                self.assertFalse(peer.values['deck 3 pfl'])
+                self.assertEqual(peer.values['deck 3 volume'],1)
+                self.assertTrue(all('deck 3' in command and 'unload' not in command for command in peer.commands))
+
     def test_unconfirmed_unload_is_an_error_with_a_recoverable_descriptor(self):
         s,p,j=self.owned();p.ignore_unload.add(3)
         with self.assertRaisesRegex(BridgeError,'unload was not confirmed'):j.close(p)

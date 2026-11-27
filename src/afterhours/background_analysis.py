@@ -124,6 +124,17 @@ def cleanup_analysis_deck(client, descriptor):
         return (client.query(f'deck {deck} get_effect_name 1','text')==expected_effect and
                 not as_bool(client.query(f'deck {deck} effect_active 1','bool')))
     def isolated_identity():
+        # A failed owned Load can apply the host's automatic headphone cue
+        # even though the deck never loaded audio. Recover only that empty,
+        # muted, stopped deck while its original effect is still intact.
+        if row['loadPending'] and row['selectionId'] and not baseline['pfl']:
+            guard_deck(client,deck)
+            if (as_bool(client.query(f'deck {deck} pfl','bool')) and
+                    not as_bool(client.query(f'deck {deck} play','bool')) and
+                    float(client.query(f'deck {deck} volume'))==0 and
+                    not as_bool(client.query(f'deck {deck} loaded','bool')) and
+                    as_bool(client.query(f'deck {deck} deck_has_error','bool')) and effect_is_restored()):
+                client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : deck {deck} pfl off')
         guard_isolation(client,deck)
         loaded=as_bool(client.query(f'deck {deck} loaded','bool'))
         if loaded and (not row['selectionId'] or identity(str(client.query(f'deck {deck} get_filepath','text')))!=row['selectionId']):

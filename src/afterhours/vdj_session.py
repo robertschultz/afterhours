@@ -2988,11 +2988,15 @@ class DJSession:
                                 if retried_mixer_window:
                                     raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
                                 try:
-                                    interval = entry_cadence[index % len(entry_cadence)] if entry_cadence else None
-                                    lead = min(16, current['bpm']*8/60) if interval is not None else 32
-                                    window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
-                                        entry_interval=interval, actual_entry=window, latest_beat=goal+lead,
-                                        allow_outro_bars=True)
+                                    current_set = self.snapshot()
+                                    if entry_cadence:
+                                        window = copilot_commands.automatic_timed_window(
+                                            current_set, current, recipe['fadeBeats'],
+                                            entry_cadence[index % len(entry_cadence)],
+                                            actual_entry=window, latest_beat=goal+32)
+                                    else:
+                                        window = copilot_commands.retime(current_set, current, recipe['fadeBeats'],
+                                            actual_entry=window, latest_beat=goal+32, allow_outro_bars=True)
                                 except ValueError as exc:
                                     raise BridgeError('Mixer checks missed the transition window. '+str(exc)) from exc
                                 retried_mixer_window = True

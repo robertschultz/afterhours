@@ -213,11 +213,14 @@ class CopilotControlTests(unittest.TestCase):
     def test_live_set_follows_a_verified_outro_when_the_requested_interval_is_missed(self):
         session = running()
         current = {**session.state['telemetry']['decks'][0], 'beatPosition':123}
-        recovered = cc.automatic_timed_window(session.snapshot(), current, 16, 15)
+        recovered = cc.automatic_timed_window(session.snapshot(), current, 16, 15, latest_beat=132)
+        self.assertEqual(recovered['mixAtBeat'], 132)
         self.assertEqual(recovered['basis'], 'cadence-recovery-measured-exit')
         self.assertEqual(recovered['requestedEntryInterval'], 15)
         self.assertGreater(recovered['plannedEntryInterval'], 15)
         self.assertEqual(recovered['endBeat']-recovered['mixAtBeat'], 16)
+        with self.assertRaises(cc.NoVerifiedHandoff):
+            cc.automatic_timed_window(session.snapshot(), current, 16, 15, latest_beat=131)
         with self.assertRaises(cc.NoVerifiedHandoff):
             cc.automatic_timed_window(session.snapshot(), current, 32, 15)
 

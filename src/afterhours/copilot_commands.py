@@ -243,14 +243,15 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     return window
 
 
-def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_entry=None, earliest_beat=None):
+def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_entry=None, earliest_beat=None,
+                           latest_beat=None):
     """Treat the requested interval as a target while preserving a verified fade."""
     try:
         return retime(snapshot, current, fade_beats, entry_interval=seconds,
-                      actual_entry=actual_entry, earliest_beat=earliest_beat)
+                      actual_entry=actual_entry, earliest_beat=earliest_beat, latest_beat=latest_beat)
     except NoVerifiedHandoff:
         window = retime(snapshot, current, fade_beats, actual_entry=actual_entry,
-                        earliest_beat=earliest_beat, allow_outro_bars=True)
+                        earliest_beat=earliest_beat, latest_beat=latest_beat, allow_outro_bars=True)
         planned = (window['mixAtBeat'] - window['entryBeat']) * 60 / current['bpm']
         window.update(basis='cadence-recovery-measured-exit', requestedEntryInterval=seconds,
                       plannedEntryInterval=planned)

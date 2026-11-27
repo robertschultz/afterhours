@@ -2426,30 +2426,35 @@ class DJSession:
         cue_planner.verify_receipts(prepared['analysis'])
         return order,prepared
 
-    def substitute_rejected_preload(self, index):
-        """Remove a rejected planner pick and refit the existing measured tail."""
+    def substitute_rejected_preload(self, index, *, metadata_changed=None):
+        """Remove an unusable planner pick and refit the existing measured tail."""
         with self.lock:
             state = self.snapshot()
             order = state['order']
             rejected = order[index]
             policy = state['setlist']
             queued = state.get('queuedUpdate')
+            failure = metadata_changed or NativeStreamRejected('VirtualDJ reports a streamed-track error.')
+            if metadata_changed is not None and metadata_changed.track['id'] != rejected['id']:
+                raise failure
             if (state['phase'] != 'playing' or index != state['index']+1 or not state.get('entryCadence')
                     or not state.get('rollingQueue') or not policy['allowReorder'] or dj_settings.lead(state) != 'all'
                     or policy.get('sourceById', {}).get(rejected['id']) == 'operator'
                     or any(track['id'] in policy['lockedIds'] for track in order[index:])
                     or (queued and not queued.get('rollingTrackId'))):
-                raise NativeStreamRejected('VirtualDJ reports a streamed-track error.')
+                raise failure
             retained = order[:index] + order[index+1:]
             targets = state.get('tempoTargets')
             if targets:
                 targets = [row for row in targets if row['trackId'] != rejected['id']]
-            reason = f"{rejected['title']} was rejected by VirtualDJ. Keeping the playing track and refitting the remaining queue."
+            problem = 'was rejected by VirtualDJ' if metadata_changed is None else 'changed its verified tempo or key on the paused deck'
+            reason = f"{rejected['title']} {problem}. Keeping the playing track and refitting the remaining queue."
             prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
             cue_planner.verify_receipts(prepared['analysis'])
             plan = prepared['executionPlan']
             plan['applied'] = True
-            self.availability.record(rejected['id'],'native-stream-rejected',reason)
+            if metadata_changed is None:
+                self.availability.record(rejected['id'],'native-stream-rejected',reason)
             policy['sourceById'].pop(rejected['id'], None)
             self.update(order=retained,setlist=policy,queuedUpdate=None,tempoTargets=targets,
                         rollingQueue={'status':'ready'},mixPlans=plan['transitions'],**prepared)
@@ -2537,8 +2542,16 @@ class DJSession:
             nonlocal order,planned
             try:
                 ready(client,order[index],deck,target,index)
-            except NativeStreamRejected:
-                order,planned = self.substitute_rejected_preload(index)
+            except (NativeStreamRejected, TrackMetadataChanged) as exc:
+                rejected = order[index]
+                changed = exc if isinstance(exc, TrackMetadataChanged) else None
+                if changed is not None:
+                    if (as_bool(self.q(client,f'deck {deck} play','bool')) or
+                            identity(str(self.q(client,f'deck {deck} get_filepath','text'))) != rejected['engine']['selection_id']):
+                        raise
+                order,planned = self.substitute_rejected_preload(index, metadata_changed=changed)
+                if rolling:
+                    rolling.missed.add(rejected['id'])
                 if index < len(order):
                     ready(client,order[index],deck,target,index)
         def work(client):

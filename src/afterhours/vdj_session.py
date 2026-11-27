@@ -1190,7 +1190,7 @@ class DJSession:
             return self.snapshot()
 
     def discover_more(self, query, artist='', genre='', bpm_min=40, bpm_max=300, recheck_missing=False,
-                      external_request_id=None,authorize=None,finish=None):
+                      external_request_id=None,authorize=None,finish=None, *, opening_breadth=False):
         terms=search_terms(query)
         if not isinstance(artist,str) or len(artist)>120 or not isinstance(genre,str) or len(genre)>80:
             raise ValueError('Invalid catalog filters.')
@@ -1200,6 +1200,11 @@ class DJSession:
             if self.catalog_job and not self.catalog_job.done:raise ValueError('A crate search is already in progress.')
             job=CatalogSearch(self,terms,artist,genre,bpm_min,bpm_max,recheck_missing=recheck_missing,
                               external_request_id=external_request_id,authorize=authorize,finish=finish)
+            if opening_breadth:
+                job.target = 12
+                job.quota = (job.target + len(terms) - 1) // len(terms)
+                job.max_rows = 24
+                job.seconds = 35
             if self.state['active']:
                 if self.state['phase'] not in ('playing','mixing','loading'):
                     raise ValueError('Wait for current preparation to finish.')
@@ -1607,7 +1612,7 @@ class DJSession:
             self.event('Prepared queue revision adopted at the handoff. Playing cue preserved.','queue-applied')
             return copy.deepcopy(order),copy.deepcopy(plan)
 
-    def final_preparation_runway(self, track, index, current):
+    def final_preparation_runway(self, track, index, current, *, scoped=False):
         """Time to prepare a staged continuation on the existing recording."""
         with self.lock:
             if self.state['copilot']['mode']=='off':return 0
@@ -1617,7 +1622,7 @@ class DJSession:
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
-            replaceable=queued.get('catalogMissId') or (self.state.get('entryCadence') and
+            replaceable=queued.get('catalogMissId') or ((self.state.get('entryCadence') or scoped) and
                 (queued.get('measuredFitMissId') or queued.get('analysisMissId')))
             if not staged and not (rolling and (not queued or replaceable)):
                 return 0
@@ -2428,7 +2433,8 @@ class DJSession:
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
+              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
+              allow_opening_catalog_fallback=False, rolling_category=None):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
@@ -2436,7 +2442,7 @@ class DJSession:
         entry_cadence = validate_entry_cadence(entry_cadence)
         if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
             raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
-        rolling = RollingQueue() if rolling_queue else None
+        rolling = RollingQueue(rolling_category, snapshot.get('agentDirection')) if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
         planned=snapshot.get('executionPlan')
@@ -2537,7 +2543,8 @@ class DJSession:
             paused_current = False
             if immediate:
                 from afterhours.opening_playback import start_and_prepare
-                order,planned,t,resume_window=start_and_prepare(self,client,order)
+                fallback = {'allow_catalog_fallback': True} if allow_opening_catalog_fallback else {}
+                order,planned,t,resume_window=start_and_prepare(self,client,order,**fallback)
                 target=planned['targetBpm'];active,index=1,0
             elif resume:
                 if not planned or not copilot_commands.resumable(snapshot):
@@ -2732,7 +2739,7 @@ class DJSession:
                             continue
                     self.update(segmentProgress=max(0, min(1, (current['beatPosition'] - start_beat) / (window['endBeat']-start_beat))))
                     slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
-                    runway=self.final_preparation_runway(track,index,current) if final and planned else 0
+                    runway=self.final_preparation_runway(track,index,current,scoped=bool(rolling and rolling.category)) if final and planned else 0
                     if current['beatPosition']>=goal and runway>=16 and not waiting_for_continuation:
                         waiting_for_continuation=True
                         self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')

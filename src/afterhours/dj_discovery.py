@@ -30,6 +30,13 @@ def identity(title, artist):
     return normalized(title), tuple(sorted(credit(artist)))
 
 
+def matches_category(category, track):
+    if category != 'christmas':
+        return True
+    words = normalized(f"{track.get('genre', '')} {track.get('title', '')}").split()
+    return bool({'christmas', 'xmas', 'holiday'}.intersection(words))
+
+
 def read_json(url):
     request = Request(url, headers={'User-Agent': 'Afterhours/1.0 DJ chart discovery', 'Accept': 'application/json'})
     with urlopen(request, timeout=7) as response:

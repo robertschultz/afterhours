@@ -37,6 +37,7 @@ from afterhours import dj_settings, dj_discovery
 from afterhours import set_plan
 from afterhours import learned_preferences
 from afterhours import native_settings
+from afterhours.native_analysis import track_analysis
 from afterhours import guest_coordinator
 from afterhours import crowd_choice
 from afterhours.agent_mentions import validate_handoff
@@ -1742,18 +1743,36 @@ class DJAgent:
                     'decisionRequired':transport!='fresh-start' and source=='typed' and approved is True and approve_preparation is True,
                     'freshQueue':transport=='fresh-start','intent':text.strip()}
                 self.clarification=None
-                query=playback_requests.named_query(text) if source=='voice' and transport=='fresh-start' else None
+                query=playback_requests.named_query(text) if (source=='voice' or external_fresh) and transport=='fresh-start' else None
                 if query and self.settings.state['discover'] and dj_settings.lead(self.session.snapshot())=='all':
                     _,artist=playback_requests.named_recording(query)
                     search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(search)
+                        if external_fresh:
+                            external.consume('discovery')
+                            broad = re.sub(r'\s+music$', '', query).strip()
+                            if broad != query and len(broad) >= 3 and not artist:
+                                search = f'{broad}; {query}'
+                                # A category request gives no last track. Put
+                                # it on the rolling native queue after opening.
+                                self.playback_request['scope'] = 'ongoing'
+                                if broad in ('christmas', 'xmas', 'holiday'):
+                                    self.playback_request['rollingCategory'] = 'christmas'
+                            self.session.discover_more(search, external_request_id=external.id, authorize=external.check,
+                                                       opening_breadth=True)
+                        else:
+                            self.session.discover_more(search)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
+                        if external_fresh:
+                            external.finish('blocked', 'The native catalog search could not start.', 'discovery-failed')
                         return self.snapshot()
                     self.searches.add(query);self.search_rounds=1
-                    self.playback_request['fastOpeningQuery']=query
-                    if search!=query:self.playback_request['fastOpeningSearch']=search
+                    if external_fresh:
+                        self.playback_request['externalCatalogProbe'] = True
+                    else:
+                        self.playback_request['fastOpeningQuery']=query
+                        if search!=query:self.playback_request['fastOpeningSearch']=search
                     self.awaiting_catalog=True;self.search_from_turn=True
                     summary='Searching the crate for '+query+'.'
                     self.playback_request['message']=summary
@@ -1895,6 +1914,9 @@ class DJAgent:
             if refill and not pending and not catalog_ready:
                 self.last_refill=refill_key;self.search_rounds=0
             found_enough=(catalog.get('matched',catalog.get('added',len(s.get('candidates',[]))))>=2)
+            if request.get('externalCatalogProbe'):
+                live_ids = set(catalog.get('foundIds', []))
+                found_enough = len({song_identity(row)[0] for row in s['candidates'] if row['id'] in live_ids}) >= 5
             can_search=self.settings.state['discover'] and not mixing_only and self.search_rounds<2 and not (catalog_ready and found_enough)
             if (self.text_turn and not use_curation) and catalog_ready:can_search=False
             if catalog_ready:self.awaiting_catalog=False
@@ -1910,6 +1932,23 @@ class DJAgent:
             latest_text=operator['text'] if operator else self.state['direction']
             recall=self.queue_mode=='steer' or re.search(r'\b(again|before|earlier|previous|last set|remember|same as)\b',latest_text,re.I)
             planning,history=session_curation.planning_view(s)
+            variable = set()
+            if request.get('externalCatalogProbe') and request.get('status') == 'choosing':
+                scope = (s.get('catalogFolder') or {}).get('id')
+                ids = set(catalog.get('foundIds', []))
+                if scope:
+                    candidates = [
+                        row for row in planning['candidates']
+                        if row['id'] in ids or row.get('engine', {}).get('folder_id') == scope
+                    ]
+                    if request.get('scope') == 'ongoing':
+                        exact = [row for row in candidates if row.get('engine', {}).get('selection_id')]
+                        try:
+                            variable = {row['id'] for row in track_analysis(exact)['tracks']
+                                        if row.get('variableTempo')} if exact else set()
+                        except (ValueError, OSError):
+                            variable = set()  # No saved proof; native playback checks still decide.
+                    planning = {**planning, 'candidates': candidates}
             ranking_text=latest_text if pending else latest_text+' '+self.state['direction']
             packet={'operatorRequest':copy.deepcopy(operator),'mentionedAgents':copy.deepcopy(self.mentioned_agents) if pending else [],'djProfile':self.profile_context(),'profilePolicy':'Use this operator-authored profile as taste and persona preferences for future decisions. Current operator requests take precedence; never override protected tracks or execution safeguards.', 'direction':self.state['direction'],'messages':self.state['messages'][-12:],
                     'audienceRequests':copy.deepcopy([r for r in self.audience_requests if self.clock()-r['at']<3600][-8:]),
@@ -1937,6 +1976,8 @@ class DJAgent:
             profile_id=packet['djProfile'].get('id') or ''
             feedback={row['trackId']:row for row in self.state['trackFeedback'] if row['profileId']==profile_id}
             for row in working_rows:
+                if row['id'] in variable:
+                    row['nativeGrid'] = 'variable; use after the first track'
                 if row['id'] in feedback:
                     value=feedback[row['id']]
                     row['operatorPreference']=value['preference']
@@ -1951,7 +1992,7 @@ class DJAgent:
             shift=packet['music']['maxTempoShift']
             blocked=availability.blocked if availability else (lambda tid:None)
             retrieve=None
-            if crate:
+            if crate and not (request.get('externalCatalogProbe') and request.get('status') == 'choosing'):
                 retrieve=lambda text, known: crate_rows(crate.search(text,limit=24),known,anchor,shift,blocked)
             book=agent_loop.Lookups(planning,working_rows,s.get('analysis'),retrieve=retrieve)
             # The operator's turn shares one request budget across its direction
@@ -1989,6 +2030,7 @@ class DJAgent:
                      self.curation.expiry(night_end(self.settings.state.get('plan'),self.clock())))
                 packet['sessionIntent']={'request':request.get('intent','Start the selected set.'),'startApproved':not request.get('decisionRequired',False),
                     'awaitingClarification':request.get('status')=='clarifying',
+                    **({'requestedScope':request['scope']} if request.get('externalCatalogProbe') and request.get('scope') else {}),
                     'ongoingCurationApproved':request.get('curationApproved',False),
                     'curationLimit':({'seconds':max(0,int(end-self.clock())),'decisions':session_curation.DECISIONS}
                         if request.get('curationApproved') else {'seconds':max(0,int(self.deadline-self.clock())),'decisions':self.remaining})}
@@ -2120,15 +2162,40 @@ class DJAgent:
                      'deferredTracks':None,'requestVerdicts':None,'direction':packet.get('direction',''),
                      'reply':'Mixing only is on. Your chosen records stay in order; Copilot times the blends.',
                      'reason':'Track selection stays with the operator in Mixing only.'}
-            try:result=validate_decision(raw,s)
+            tempo_error = None
+            try:
+                result = validate_decision(raw, s)
             except TempoFitError as exc:
-                # A model can make a poor proposal. Preserve the working set,
-                # surface the exact execution constraint, and never retry a fee.
-                held={t['trackId']:{k:t[k] for k in ('trackId','reason')} for t in packet['music'].get('deferredTracks',[])}
-                held.update({t['id']:{'trackId':t['id'],'reason':exc.reasons[t['id']]} for t in exc.tracks})
-                result=validate_decision({**raw,'trackIds':[],'mixTransitions':None,'tempoTargets':None,'cueChoices':None,'crowdChoice':None,'deferredTracks':list(held.values())[-12:],
-                    'reply':('Queue unchanged. '+str(exc))[:1600],'reason':'Tempo limit prevented this selection.'},s)
-                hold_source='tempo-guard'
+                tempo_error = exc
+            request = self.playback_request or {}
+            open_ended = (external and request.get('externalCatalogProbe') and request.get('id') == external.id
+                          and request.get('status') == 'choosing' and not s.get('active') and not s.get('order')
+                          and (request.get('scope') == 'ongoing'
+                               or (raw.get('sessionScope') or {}).get('mode') == 'ongoing'))
+            variable = {row['id'] for row in packet['music']['catalog'] if row.get('nativeGrid')}
+            unstable_first = bool(open_ended and raw.get('trackIds') and raw['trackIds'][0] in variable)
+            if tempo_error or unstable_first:
+                pair = None
+                if open_ended:
+                    found = [row['id'] for row in packet['music']['catalog']
+                             if row.get('searchMatch') and row.get('selectionEligible') is not False
+                             and row['id'] in supplied_ids]
+                    pair = queue_planning.compatible_live_opening(s, found, raw['trackIds'],
+                                                                  exclude_openers=variable)
+                if pair:
+                    result = validate_decision({**raw, 'trackIds': pair, 'mixTransitions': None,
+                        'tempoTargets': None, 'cueChoices': None, 'crowdChoice': None,
+                        'selectionReview': None, 'deferredTracks': None, 'requestVerdicts': None,
+                        'reply': 'Selected a compatible opening pair from the live catalog.',
+                        'reason': 'These catalog matches support the opening tempo and a verified handoff.'}, s)
+                else:
+                    held={t['trackId']:{k:t[k] for k in ('trackId','reason')} for t in packet['music'].get('deferredTracks',[])}
+                    if tempo_error:
+                        held.update({t['id']:{'trackId':t['id'],'reason':tempo_error.reasons[t['id']]} for t in tempo_error.tracks})
+                    reason = str(tempo_error) if tempo_error else 'No compatible opening with a steady native grid was found.'
+                    result=validate_decision({**raw,'trackIds':[],'mixTransitions':None,'tempoTargets':None,'cueChoices':None,'crowdChoice':None,'deferredTracks':list(held.values())[-12:],
+                        'reply':('Queue unchanged. '+reason)[:1600],'reason':'Tempo limit prevented this selection.'},s)
+                    hold_source='tempo-guard'
             supplied_ids=receipt.get('catalogIds',[t['id'] for t in packet['music']['catalog']])
             if result['trackInsertion']:
                 tid=result['trackInsertion']['trackId']
@@ -2563,6 +2630,8 @@ class DJAgent:
                  request.get('sessionId')==session['id'] and request.get('revision')==revision and
                  self.clock()<request.get('expiresAt',0))
         if scope is None:return
+        if pending and request.get('externalCatalogProbe') and request.get('scope') == 'ongoing' and scope['mode'] == 'finite':
+            scope = result['sessionScope'] = {'mode': 'ongoing', 'message': 'Keep playing the requested music.'}
         if scope['mode']=='clarify':
             if pending:
                 request.update(status='clarifying',message=scope['message'])
@@ -2737,7 +2806,8 @@ class DJAgent:
         if request['orderIds']!=actual:
             startup=s.get('startup') or {}
             skipped={r['trackId'] for r in startup.get('skipped',[])
-                     if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
+                     if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only',
+                                          'catalog-lookup-incomplete')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
             future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
             if not (request['status']=='starting' and startup.get('requestedIds')==request['orderIds']
@@ -2760,7 +2830,12 @@ class DJAgent:
                  and ((request.get('source')=='voice'
                        and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
                       or (request.get('source')=='mcp' and request.get('freshQueue'))))
-        try:self.session.start(initialize_mixer=True,immediate=True,**({'rolling_queue':True} if rolling else {}))
+        options = {'rolling_queue': True} if rolling else {}
+        if rolling and request.get('rollingCategory'):
+            options['rolling_category'] = request['rollingCategory']
+        if request.get('source')=='mcp' and request.get('freshQueue') and request.get('scope')=='ongoing':
+            options['allow_opening_catalog_fallback'] = True
+        try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')
         self.save();return True

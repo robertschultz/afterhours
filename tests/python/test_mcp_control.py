@@ -90,6 +90,8 @@ class MCPTests(unittest.TestCase):
 
     def test_named_play_without_accepted_tracks_returns_selection_hold(self):
         reply=self.direct(text='Play Christmas music')
+        self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','foundIds':[]})
+        self.agent.tick(force=True)
         settled(self.agent)
         receipt=self.control.receipt(self.music['credential'],reply['requestId'])
         self.assertEqual((receipt['status'],receipt['reasonCode']),('blocked','selection-held'))
@@ -97,19 +99,30 @@ class MCPTests(unittest.TestCase):
     def test_idle_external_named_play_replaces_finished_queue_before_planning(self):
         self.session.update(phase='completed', index=19, startedAt=self.now - 900)
         self.session.state['order'] *= 7
+        for row in self.session.state['candidates']:
+            row['engine'] = {'folder_id': 'beatport' if row['id'] == 'a' else 'apple'}
         self.session.new_set = Mock(side_effect=lambda: self.session.update(
             id='fresh-fixture', phase='idle', index=-1, order=[], queuedUpdate=None,
             startedAt=None, executionPlan=None))
         self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
             active=True, phase='loading'))
-        self.provider.return_value = (decision(['b', 'c']), {})
+        self.provider.return_value = ({**decision(['b', 'c']),
+                                       'sessionScope': {'mode': 'ongoing', 'message': 'Keep playing.'}}, {})
 
         receipt = self.direct(text='Play Christmas music')
+        self.provider.assert_not_called()
+        self.assertEqual(self.session.calls[-1][:2], ('discover', ('christmas; christmas music',)))
+        self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
+                            catalogSearch={'status': 'complete', 'foundIds': ['b', 'c']})
+        self.agent.tick(force=True)
         settled(self.agent)
         self.agent.tick()
 
         self.session.new_set.assert_called_once_with()
-        self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True)
+        self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True,
+                                                   allow_opening_catalog_fallback=True, rolling_category='christmas')
+        packet = self.provider.call_args.args[0]
+        self.assertEqual({row['id'] for row in packet['music']['catalog']}, {'b', 'c'})
         request = self.agent.playback_request
         self.assertEqual((request['sessionId'], request['orderIds']), ('fresh-fixture', ['b', 'c']))
         self.assertEqual(request['externalRequestId'], receipt['commandId'])
@@ -136,6 +149,35 @@ class MCPTests(unittest.TestCase):
         self.session.new_set.assert_not_called()
         self.session.start.assert_not_called()
         self.assertIsNone(self.agent.playback_request)
+
+    def test_open_ended_request_can_choose_live_tempo_fit_without_reasking_planner(self):
+        self.session.new_set = Mock(side_effect=lambda: self.session.update(
+            id='fresh-fixture', phase='idle', index=-1, order=[]))
+        for row, bpm in zip(self.session.state['candidates'], [124, 150, 125]):
+            row.update(bpm=bpm, engine={'folder_id': 'apple', 'selection_id': row['id']})
+        unstable = {'id': 'variable', 'title': 'Unsteady Swing', 'artist': 'Fixture', 'bpm': 150,
+                    'engine': {'folder_id': 'apple', 'selection_id': 'variable'}}
+        self.session.state['candidates'].append(unstable)
+        self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
+            active=True, phase='loading'))
+        self.provider.return_value = ({**decision(['a', 'b']),
+                                       'sessionScope': {'mode': 'finite', 'message': 'Use the available small batch.'}}, {})
+
+        self.direct(text='Play Christmas music')
+        self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
+                            catalogSearch={'status': 'complete', 'foundIds': ['a', 'b', 'c', 'variable']})
+        with patch('afterhours.dj_agent.track_analysis', return_value={'tracks': [
+                {'id': 'variable', 'variableTempo': True}]}):
+            self.agent.tick(force=True)
+            settled(self.agent)
+        self.agent.tick()
+
+        self.assertEqual(self.agent.playback_request['orderIds'], ['a', 'c'])
+        self.assertEqual(self.agent.playback_request['scope'], 'ongoing')
+        self.provider.assert_called_once()
+        catalog = {row['id']: row for row in self.provider.call_args.args[0]['music']['catalog']}
+        self.assertIn('variable', catalog['variable']['nativeGrid'])
+        self.session.start.assert_called_once()
 
     def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):
         self.session.update(phase='takeover',active=False,

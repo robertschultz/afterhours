@@ -41,6 +41,12 @@ class QueuePlanningTests(unittest.TestCase):
             queue_planning.placement(self.session.snapshot(), 'a')
         self.assertEqual([row['id'] for row in self.session.snapshot()['order']], ['a', 'b', 'c', 'd'])
 
+    def test_a_variable_grid_can_follow_a_steady_opening(self):
+        state = {'candidates': [track('fixed', bpm=106), track('variable', bpm=102)]}
+        pair = queue_planning.compatible_live_opening(
+            state, ['variable', 'fixed'], ['variable'], exclude_openers={'variable'})
+        self.assertEqual(pair, ['fixed', 'variable'])
+
     def test_quick_set_adopts_future_tracks_without_a_measured_plan(self):
         self.session.plan(['a', 'b'],mix_style='quick')
         self.session.update(index=0,active=True,phase='mixing')
@@ -121,6 +127,44 @@ class QueuePlanningTests(unittest.TestCase):
         staged=self.session.snapshot()['queuedUpdate']
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
+
+    def test_scoped_refill_keeps_category_and_provider_until_direction_changes(self):
+        holiday = [{**track(tid), 'artist': 'Fixture', 'genre': 'Holiday',
+                    'engine': {'folder_id': 'apple'}} for tid in ('a', 'b', 'x')]
+        pop = {**track('c'), 'title': 'Born Free', 'artist': 'Fixture', 'genre': 'Pop',
+               'engine': {'folder_id': 'apple'}}
+        other_provider = {**track('z'), 'title': 'Other Christmas', 'genre': 'Holiday',
+                          'engine': {'folder_id': 'beatport'}}
+        self.session.folder = {'id': 'apple'}
+        self.session.update(candidates=[*holiday, pop, other_provider])
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status': 'ready'},
+                            executionPlan={'id': 'plan', 'applied': True, 'targetBpm': 125},
+                            agentDirection='Christmas favorites')
+        roller = RollingQueue('christmas', 'Christmas favorites')
+        roller.tick(self.session, 22)
+        self.assertEqual([t['id'] for t in self.session.state['queuedUpdate']['tracks']], ['a', 'b', 'x'])
+        self.session.update(queuedUpdate=None, agentDirection='Play pop now')
+        roller.tick(self.session, 22)
+        self.assertIsNone(roller.category)
+
+    def test_scoped_refill_replaces_a_conclusive_measured_fit_failure(self):
+        self.session.update(candidates=[{**track(tid), 'genre': 'Christmas: Pop'}
+                                        for tid in ('a', 'b', 'c', 'd')])
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status': 'ready'},
+                            executionPlan={'id': 'plan', 'applied': True, 'targetBpm': 125},
+                            agentDirection='Christmas favorites')
+        roller = RollingQueue('christmas', 'Christmas favorites')
+        roller.tick(self.session, 22)
+        pending = self.session.state['queuedUpdate']
+        rejected = pending['rollingTrackId']
+        pending.update(status='blocked', measuredFitMissId=rejected)
+        current = {'position': 45, 'controls': {'durationMs': 180000}}
+        self.assertGreater(self.session.final_preparation_runway({'id': 'b'}, 1, current, scoped=True), 16)
+        roller.tick(self.session, 22)
+        self.assertIn(rejected, roller.missed)
+        self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], rejected)
 
     def test_rolling_replaces_only_its_failed_catalog_lookup_after_cleanup(self):
         self.session.plan(['a','b'])

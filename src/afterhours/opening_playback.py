@@ -80,8 +80,8 @@ def confirm_started(session, client, deck, track_id, entry_beat):
     raise BridgeError('VirtualDJ reported Play but its playhead did not advance. Check its audio output. No second Play was sent.')
 
 
-def start_and_prepare(session,client,requested):
-    from afterhours.vdj_session import RecordingUnavailable,TrackMetadataChanged,number,validate_order
+def start_and_prepare(session,client,requested, *, allow_catalog_fallback=False):
+    from afterhours.vdj_session import RecordingLookupIncomplete,RecordingUnavailable,TrackMetadataChanged,number,validate_order
     s=session;snapshot=s.snapshot();order=copy.deepcopy(requested);skipped=[]
     startup={'id':uuid.uuid4().hex,'status':'loading','requestedIds':[t['id'] for t in order],
              'requestedAt':time.time(),'skipped':skipped}
@@ -107,8 +107,8 @@ def start_and_prepare(session,client,requested):
     can_omit=policy.get('allowReorder',True) and not policy.get('lockedIds')
     mixing_only=(snapshot.get('copilot') or {}).get('mode')=='mix'
     pinned=set(snapshot.get('setPins',[]))
-    # Only a conclusive missing recording can fall through to the next pick.
-    # A load timeout or other uncertain transport result is never retried.
+    # Lookup exceptions occur before dispatching Load. An approved flexible
+    # opening may move on without declaring an incomplete lookup unavailable.
     while order:
         first=order[0]
         try:
@@ -133,6 +133,12 @@ def start_and_prepare(session,client,requested):
             if not can_omit or mixing_only or first['id'] in pinned or len(order)<3:raise
             skipped.append({'trackId':first['id'],'code':'recording-unavailable','reason':str(exc)})
             order.pop(0)
+        except RecordingLookupIncomplete as exc:
+            if not allow_catalog_fallback or not can_omit or mixing_only or first['id'] in pinned or len(order)<3:
+                raise
+            skipped.append({'trackId': first['id'], 'code': 'catalog-lookup-incomplete', 'reason': str(exc)})
+            order.pop(0)
+            s.event(f"Could not locate {first['title']} before loading. Trying the next selected opener.", 'queue-skipped')
     first=order[0]
     if any(as_bool(s.q(client,f'deck {deck} play','bool')) for deck in (1,2)):
         raise BridgeError('A deck started manually. The opening start was cancelled.')
@@ -192,6 +198,15 @@ def start_and_prepare(session,client,requested):
             unavailable=[r for r in pair[1:] if (failure:=s.availability.blocked(r['id']))
                          and failure['reason']==job.error
                          and failure['code'] in ('recording-unavailable','limited-decoded-audio')]
+            if (allow_catalog_fallback and len(order)>2 and can_omit and not mixing_only
+                    and getattr(job, 'catalog_miss', None)==pair[1]['id'] and pair[1]['id'] not in pinned
+                    and not unavailable):
+                skipped.append({'trackId': pair[1]['id'], 'code': 'catalog-lookup-incomplete', 'reason': job.error})
+                order.pop(1)
+                startup['skipped'] = copy.deepcopy(skipped)
+                s.update(order=order, startup=copy.deepcopy(startup))
+                s.event(f"Could not locate {pair[1]['title']} on a spare deck. Checking the next selected recording.", 'queue-skipped')
+                continue
             if (not can_omit or mixing_only or not unavailable or any(t['id'] in pinned for t in unavailable)
                     or len(order)-len(unavailable)<2):raise BridgeError(job.error)
             for track in unavailable:

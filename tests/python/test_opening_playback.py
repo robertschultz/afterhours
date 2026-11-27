@@ -9,7 +9,7 @@ from afterhours.dj_bridge import BridgeError
 from afterhours.opening_playback import OpeningHandoffHeld,measured_plan,start_and_prepare
 from test_cue_planner import fixture
 from afterhours.vdj_catalog import identity
-from afterhours.vdj_session import DJSession,TrackMetadataChanged
+from afterhours.vdj_session import DJSession,RecordingLookupIncomplete,TrackMetadataChanged
 
 
 class OpeningTests(unittest.TestCase):
@@ -124,6 +124,21 @@ class OpeningTests(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError,'No second Play'):start_and_prepare(s,None,s.snapshot()['order'])
             job.assert_not_called()
         self.assertEqual(trace.count('deck 1 play'),1)
+
+    def test_flexible_opening_moves_to_next_selected_record_after_preload_lookup_miss(self):
+        for approved in (False, True):
+            with self.subTest(approved=approved):
+                s, _, trace, _, _ = self.setup_session()
+                read = s.q
+                s.q = lambda c, v, *args: False if v == 'deck 1 loaded' else read(c, v, *args)
+                s.load = Mock(side_effect=[RecordingLookupIncomplete('Catalog lookup did not find the exact ID.'),
+                                           BridgeError('Stop test before Play.')])
+                with self.assertRaises(BridgeError):
+                    start_and_prepare(s, None, s.snapshot()['order'], allow_catalog_fallback=approved)
+                self.assertEqual([call.args[1]['id'] for call in s.load.call_args_list],
+                                 ['0', '1'] if approved else ['0'])
+                self.assertIsNone(s.availability.blocked('0'))
+                self.assertNotIn('deck 1 play', trace)
 
     def test_play_flag_with_a_stalled_native_clock_does_not_start_analysis(self):
         s,_,trace,_,beat=self.setup_session()

@@ -37,6 +37,7 @@ from afterhours import dj_settings, dj_discovery
 from afterhours import set_plan
 from afterhours import learned_preferences
 from afterhours import native_settings
+from afterhours.native_analysis import track_analysis
 from afterhours import guest_coordinator
 from afterhours import crowd_choice
 from afterhours.agent_mentions import validate_handoff
@@ -1933,10 +1934,19 @@ class DJAgent:
                 scope = (s.get('catalogFolder') or {}).get('id')
                 ids = set(catalog.get('foundIds', []))
                 if scope:
-                    planning = {**planning, 'candidates': [
+                    candidates = [
                         row for row in planning['candidates']
                         if row['id'] in ids or row.get('engine', {}).get('folder_id') == scope
-                    ]}
+                    ]
+                    if request.get('scope') == 'ongoing':
+                        exact = [row for row in candidates if row.get('engine', {}).get('selection_id')]
+                        try:
+                            variable = {row['id'] for row in track_analysis(exact)['tracks']
+                                        if row.get('variableTempo')} if exact else set()
+                        except (ValueError, OSError):
+                            variable = set()  # No saved proof; native playback checks still decide.
+                        candidates = [row for row in candidates if row['id'] not in variable]
+                    planning = {**planning, 'candidates': candidates}
             ranking_text=latest_text if pending else latest_text+' '+self.state['direction']
             packet={'operatorRequest':copy.deepcopy(operator),'mentionedAgents':copy.deepcopy(self.mentioned_agents) if pending else [],'djProfile':self.profile_context(),'profilePolicy':'Use this operator-authored profile as taste and persona preferences for future decisions. Current operator requests take precedence; never override protected tracks or execution safeguards.', 'direction':self.state['direction'],'messages':self.state['messages'][-12:],
                     'audienceRequests':copy.deepcopy([r for r in self.audience_requests if self.clock()-r['at']<3600][-8:]),
@@ -1978,7 +1988,7 @@ class DJAgent:
             shift=packet['music']['maxTempoShift']
             blocked=availability.blocked if availability else (lambda tid:None)
             retrieve=None
-            if crate:
+            if crate and not (request.get('externalCatalogProbe') and request.get('status') == 'choosing'):
                 retrieve=lambda text, known: crate_rows(crate.search(text,limit=24),known,anchor,shift,blocked)
             book=agent_loop.Lookups(planning,working_rows,s.get('analysis'),retrieve=retrieve)
             # The operator's turn shares one request budget across its direction

@@ -154,7 +154,10 @@ class MCPTests(unittest.TestCase):
         self.session.new_set = Mock(side_effect=lambda: self.session.update(
             id='fresh-fixture', phase='idle', index=-1, order=[]))
         for row, bpm in zip(self.session.state['candidates'], [124, 150, 125]):
-            row.update(bpm=bpm, engine={'folder_id': 'apple'})
+            row.update(bpm=bpm, engine={'folder_id': 'apple', 'selection_id': row['id']})
+        unstable = {'id': 'variable', 'title': 'Unsteady Swing', 'artist': 'Fixture', 'bpm': 125,
+                    'engine': {'folder_id': 'apple', 'selection_id': 'variable'}}
+        self.session.state['candidates'].append(unstable)
         self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
             active=True, phase='loading'))
         self.provider.return_value = ({**decision(['a', 'b']),
@@ -162,14 +165,17 @@ class MCPTests(unittest.TestCase):
 
         self.direct(text='Play Christmas music')
         self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
-                            catalogSearch={'status': 'complete', 'foundIds': ['a', 'b', 'c']})
-        self.agent.tick(force=True)
-        settled(self.agent)
+                            catalogSearch={'status': 'complete', 'foundIds': ['a', 'b', 'c', 'variable']})
+        with patch('afterhours.dj_agent.track_analysis', return_value={'tracks': [
+                {'id': 'variable', 'variableTempo': True}]}):
+            self.agent.tick(force=True)
+            settled(self.agent)
         self.agent.tick()
 
         self.assertEqual(self.agent.playback_request['orderIds'], ['a', 'c'])
         self.assertEqual(self.agent.playback_request['scope'], 'ongoing')
         self.provider.assert_called_once()
+        self.assertNotIn('variable', {row['id'] for row in self.provider.call_args.args[0]['music']['catalog']})
         self.session.start.assert_called_once()
 
     def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):

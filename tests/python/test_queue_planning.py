@@ -361,7 +361,7 @@ class QueuePlanningTests(unittest.TestCase):
             'status':'complete','query':search,'foundIds':[item['id'] for item in candidates]})
         agent.tick(force=True)
         self.assertEqual([item['id'] for item in self.session.snapshot()['order']],['requested','next'])
-        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True)
+        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True,allow_grid_opening=True)
         evaluator.assert_not_called()
 
     def test_next_track_prefers_a_verified_cue_between_key_matches(self):

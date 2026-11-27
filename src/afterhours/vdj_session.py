@@ -5,10 +5,12 @@ display, including hidden tabs. Cancellation is checked between bounded reads;
 no load, start, or transition is automatically replayed after uncertainty.
 """
 import copy
+import logging
 import os
 import math
 import re
 import threading
+import traceback
 from afterhours.planner_policy import track_seconds
 from afterhours.program_timeline import set_timeline
 import time
@@ -974,7 +976,15 @@ class DJSession:
                 if (self.state.get('startup') or {}).get('status') in ('loading','starting','analyzing'):
                     self.state['startup']['status']='blocked'
             self.event(str(exc), 'error')
-        except Exception:
+        except Exception as exc:
+            locations = ' > '.join(
+                f'{os.path.basename(frame.filename)}:{frame.lineno}:{frame.name}'
+                for frame in traceback.extract_tb(exc.__traceback__, limit=-6)
+            )
+            # Record code locations locally, without exception messages,
+            # requested track data, or the local filesystem path.
+            logging.getLogger(__name__).error('Unexpected DJ worker failure (%s) at %s',
+                                              type(exc).__name__, locations)
             self.update(phase='error', message='Session stopped after an internal error. Inspect VirtualDJ before restarting.',
                         lastError='Session stopped after an internal error. Inspect VirtualDJ before restarting.')
             self.event('Internal session error; commands were not replayed.', 'error')

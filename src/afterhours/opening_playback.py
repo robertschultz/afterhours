@@ -227,7 +227,7 @@ def start_and_prepare(session,client,requested):
         if len(order)>len(pair):
             checked={t['id']:t for t in pair};order=[copy.deepcopy(checked.get(t['id'],t)) for t in order]
             next_tracks = order
-            if snapshot.get('entryCadence') and snapshot.get('rollingQueue') and can_omit and not targets:
+            if snapshot.get('rollingQueue') and can_omit and not targets:
                 next_tracks = order[:len(pair)+1]
                 deferred = order[len(pair)+1:]
             future={'id':uuid.uuid4().hex,'tracks':next_tracks,'protectedIds':[t['id'] for t in pair],
@@ -235,6 +235,10 @@ def start_and_prepare(session,client,requested):
                     'prepared':None,'mixTransitions':None,'tempoTargets':targets,
                     'startId':startup['id'],'skipped':copy.deepcopy(skipped),
                     'sourceById':copy.deepcopy(policy.get('sourceById',{}))}
+            next_id=next_tracks[len(pair)]['id']
+            if (snapshot.get('rollingQueue') and len(next_tracks)==len(pair)+1
+                    and next_id not in pinned and policy.get('sourceById',{}).get(next_id)=='planner'):
+                future['rollingTrackId']=next_id
         current_ids={t['id'] for t in pair}
         policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in current_ids}}
         s.update(order=pair,**prepared,queuedUpdate=future,timedContinuation=deferred,setlist=policy,startup=copy.deepcopy(startup),

@@ -1585,6 +1585,15 @@ class DJSession:
                     scan_miss=getattr(job,'analysis_miss',None)
                     pending = self.state['queuedUpdate']
                     staged_ids = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
+                    if self.state.get('rollingQueue'):
+                        protected_ids = (set(pending.get('protectedIds', [])) | set(self.state.get('setPins', []))
+                                         | set(self.state['setlist'].get('lockedIds', [])))
+                        rejected = miss or scan_miss
+                        if (rejected and rejected not in protected_ids
+                                and pending.get('sourceById',{}).get(rejected)=='planner'
+                                and rejected not in staged_ids):
+                            staged_ids = [tid for tid in staged_ids if tid] + [rejected]
+                            pending['rollingTrackIds'] = staged_ids
                     if not cleanup_failed and miss and miss in staged_ids:
                         pending['catalogMissId']=miss
                     if not cleanup_failed and scan_miss and scan_miss in staged_ids:
@@ -2503,7 +2512,7 @@ class DJSession:
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
-              allow_grid_opening=False):
+              allow_grid_opening=False, cue_led_opening=False):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
@@ -2531,6 +2540,8 @@ class DJSession:
         opening_style = {'mixStyle': 'phrase', 'quickBlendSeconds': None, 'quickTargetBpm': None} if immediate else {}
         if immediate:
             planned=None
+            if cue_led_opening and not entry_cadence:
+                opening_style['secondsPerTrack'] = max(60,snapshot['secondsPerTrack'])
             snapshot.update(opening_style)
         order = validate_order([t['id'] for t in snapshot['order']], snapshot['candidates'], snapshot.get('maxTempoShift',8),
                                snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),

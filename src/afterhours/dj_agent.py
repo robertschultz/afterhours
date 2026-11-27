@@ -123,6 +123,7 @@ Never invent availability, BPM, key, vocal/phrase analysis or audience observati
 
 Selection:
 sessionScope: ongoing, finite, or clarify with one natural question; null for unrelated turns/refills. Clarify has no search/trackIds. sessionIntent retains start approval: resolve relevant answers with scope and search/selection, no second Play confirmation. Unrelated answers cannot start; ongoing stays within its allowance.
+Treat a request for an artist, genre or mood as the opening direction for an ongoing set. Use it to anchor the first recording, then explore musically related artists and recordings. Choose finite only when the operator gives a count, requests a single recording, or otherwise defines an ending.
 Open with 6-8 fitting recordings when available, fewer only for a requested shorter set or insufficient fit; keep at least 4 ahead, not a four-record cap. Choose 2-12 supplied exact IDs by groove, tempo, key, genre, energy, contrast, operator priorities and history. Explain fit honestly. Questions/insufficient evidence: search=null, trackIds=[]. Rechecks may keep the order.
 selectionEligible=false records are evidence only: defer them if needed, never select them.
 Artist/track additions queue feasible music, not just results. Preserve exclusions/prepared next; add later if needed. Broad artist requests allow any suitable recording; old rejected titles/BPM constrain nothing unless user-specified.
@@ -1832,9 +1833,7 @@ class DJAgent:
                 pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])))
                 if pair:
                     try:
-                        # A named music request starts a cue-led set. A short
-                        # preview selected earlier must not cap its EQ blend.
-                        self.session.plan(pair,max(60,s.get('secondsPerTrack',30)),0,s.get('maxTempoShift',8),'phrase')
+                        self.session.plan(pair,s.get('secondsPerTrack',30),0,s.get('maxTempoShift',8),'phrase')
                     except (ValueError,OSError,BridgeError):
                         pass  # The main planner can choose another safe opening.
                     else:
@@ -2349,6 +2348,8 @@ class DJAgent:
                             targets=staged.get('tempoTargets') if staged else s.get('tempoTargets')
                             if blends is None and isinstance(source,list) and len(source)==len(p['trackIds'])-1:blends=copy.deepcopy(source)
                             if 'tempo_targets' not in tempo and targets is not None:tempo['tempo_targets']=copy.deepcopy(targets)
+                    if s.get('rollingQueue'):
+                        tempo['source']='planner'
                     self.session.revise_queue(p['trackIds'],reason=p['reason'],mix_transitions=blends,**tempo)
                     message=self.session.snapshot()['message']
                 else:message='The DJ kept the current order. Existing mix preparation is preserved.'
@@ -2721,7 +2722,10 @@ class DJAgent:
             skipped={r['trackId'] for r in startup.get('skipped',[])
                      if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
-            future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
+            queued = s.get('queuedUpdate') or {}
+            future = [t['id'] for t in queued.get('tracks',[])]
+            if queued.get('startId') == startup.get('id') and startup.get('id'):
+                future.extend(t['id'] for t in s.get('timedContinuation') or [])
             grid_started = (startup.get('mode')=='native-beat-grid' and startup.get('status')=='ready'
                             and startup.get('playingAt') is not None
                             and s.get('startedAt')==startup.get('playingAt')
@@ -2748,6 +2752,8 @@ class DJAgent:
                  and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
         options = {'rolling_queue': True} if rolling else {}
         if voice:options['allow_grid_opening'] = True
+        if request.get('source')=='voice' and request.get('freshQueue'):
+            options['cue_led_opening'] = True
         try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')

@@ -159,6 +159,33 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(replacement['protectedIds'],['a','b'])
         self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
 
+    def test_failed_model_candidate_releases_refill_but_operator_pick_is_retained(self):
+        for source in ('planner','operator'):
+            with self.subTest(source=source):
+                self.session.update(active=False,phase='stopped',setPins=[])
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    executionPlan={'id':'plan','applied':True,'targetBpm':125})
+                self.session.revise_queue(['a','b','c','d'],source=source)
+                pending=self.session.state['queuedUpdate']
+                pending['status']='analyzing'
+                job=Mock(revision=pending['id'],done=True,error='Track analysis did not settle.',
+                         analysis_miss='c',catalog_miss=None,cache={},osc_reply_timeout=False)
+                job.snapshot.return_value={'message':job.error}
+                self.session.background_job=job
+                self.session.service_background(Mock(),24)
+                job.close.assert_called_once()
+                roller=RollingQueue()
+                roller.tick(self.session,24)
+                state=self.session.snapshot()
+                self.assertEqual([t['id'] for t in state['order']],['a','b'])
+                if source=='planner':
+                    self.assertEqual(roller.missed,{'c'})
+                    self.assertNotIn('c',[t['id'] for t in state['queuedUpdate']['tracks']])
+                else:
+                    self.assertEqual(state['queuedUpdate']['id'],pending['id'])
+                    self.assertEqual(state['queuedUpdate']['status'],'blocked')
+
     def test_timed_refill_starts_when_nine_upcoming_slots_remain(self):
         tracks = [track(chr(97+i)) for i in range(13)]
         self.session.update(candidates=tracks)
@@ -395,7 +422,7 @@ class QueuePlanningTests(unittest.TestCase):
             'status':'complete','query':search,'foundIds':[item['id'] for item in candidates]})
         agent.tick(force=True)
         self.assertEqual([item['id'] for item in self.session.snapshot()['order']],['requested','next'])
-        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True,allow_grid_opening=True)
+        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True,allow_grid_opening=True,cue_led_opening=True)
         evaluator.assert_not_called()
 
     def test_next_track_prefers_a_verified_cue_between_key_matches(self):

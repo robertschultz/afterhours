@@ -105,13 +105,25 @@ class QueuePlanningTests(unittest.TestCase):
         ]}
         order = [{**track('a'), 'artist': 'Opening Artist', 'genre': 'House'}]
         with patch('afterhours.rolling_queue.DISCOVERY', discovery):
-            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'House')):
+            for direction, expected, scope in (
+                ('', 'Related Artist Related Recording', ('Related Artist', 'Related Recording')),
+                ('House only', 'House', ('', '')),
+            ):
                 with self.subTest(direction=direction):
                     roller = RollingQueue()
                     roller.searched.add('opening artist')
                     session = Mock()
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(session.discover_more.call_args.args, (expected,))
+                    session.catalog_job.set_rolling_seed.assert_called_once_with(*scope)
+
+    def test_timed_artist_fallback_scopes_native_hits_to_credited_artist(self):
+        artist = {'artist': 'Justice', 'bpm': 124, 'genre': 'House'}
+        session = Mock()
+        with patch('afterhours.rolling_queue.DISCOVERY', dj_discovery.Discovery(clock=lambda: 1)):
+            self.assertTrue(RollingQueue().search(session, {}, [artist], 'house', True))
+        self.assertEqual(session.discover_more.call_args.args, ('Justice',))
+        session.catalog_job.set_rolling_seed.assert_called_once_with('Justice', '')
 
     def test_rolling_measured_set_uses_existing_background_verification(self):
         self.session.plan(['a','b'])

@@ -91,6 +91,24 @@ class DiscoveryTests(unittest.TestCase):
         job.phase='read';job.position=7;job.added=2;job.resume_search()
         self.assertEqual((job.phase,job.position,job.added),('begin',0,2))
 
+    def test_timed_search_only_shares_a_spare_scan_after_exact_load(self):
+        s = DJSession(threading.Lock())
+        s.update(active=True,phase='playing',entryCadence=[60,30])
+        s.catalog_job = Mock(done=False,rolling=True)
+        s.background_job = Mock()
+        s.background_job.navigation_idle.return_value = False
+
+        s.service_catalog(None,40)
+        s.catalog_job.step.assert_not_called()
+        s.background_job.navigation_idle.return_value = True
+        s.service_catalog(None,17)
+        s.catalog_job.step.assert_not_called()
+        s.service_catalog(None,20)
+        s.catalog_job.step.assert_called_once_with(None)
+        s.catalog_job.rolling = False
+        s.service_catalog(None,40)
+        s.catalog_job.step.assert_called_once()
+
 
 class QueueRevisionTests(unittest.TestCase):
     def prepared(self):

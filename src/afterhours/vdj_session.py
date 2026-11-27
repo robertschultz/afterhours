@@ -1289,7 +1289,14 @@ class DJSession:
         job=self.catalog_job
         # Audio timing has priority. Metadata work never loads a deck and stops
         # well before the beat-critical handoff. It resumes after that handoff.
-        if not job or job.done or seconds_available<(9 if getattr(job,'rolling',False) else 16) or self.background_job:return
+        if not job or job.done:return
+        rolling=getattr(job,'rolling',False)
+        if self.background_job:
+            if not (rolling and self.state.get('entryCadence') and seconds_available>=18
+                    and self.background_job.navigation_idle()):
+                return
+        elif seconds_available<(9 if rolling else 16):
+            return
         try:job.step(client)
         except (BridgeError,ValueError,OSError) as exc:
             job.done=True;job.publish('error',str(exc));self.event(str(exc),'catalog')

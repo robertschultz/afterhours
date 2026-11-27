@@ -39,7 +39,25 @@ class RollingQueue:
                 pending={}
             if pending.get('status') == 'blocked' and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
+            catalog = session.catalog_job
+            if timed_set and catalog and getattr(catalog, 'rolling', False):
+                self.live_matches.update(catalog.seen)
             if pending or session.background_job:
+                if (timed_set and pending.get('status') == 'analyzing' and pending.get('rollingTrackId')
+                        and slack >= 20 and session.background_job
+                        and session.background_job.revision == pending['id']
+                        and session.background_job.navigation_idle()
+                        and (not catalog or catalog.done)):
+                    staged = pending['tracks']
+                    used = {row['id'] for row in staged} | self.missed
+                    used.update(row['trackId'] for row in state.get('recordingAvailability', []))
+                    titles = {song_identity(row)[0] for row in staged} | self.missed_titles
+                    supply = sum(row['id'] in self.live_matches and row['id'] not in used
+                                 and song_identity(row)[0] not in titles for row in state['candidates'])
+                    if supply < 2:
+                        direction = str(state.get('agentDirection') or '')
+                        style = style_for(direction) or style_for(staged[-1].get('genre')) or 'house'
+                        self.search(session, state, staged, style, timed_set, lookahead=True)
                 return
 
             order = state['order']
@@ -70,9 +88,6 @@ class RollingQueue:
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
-            catalog = session.catalog_job
-            if timed_set and catalog and getattr(catalog, 'rolling', False):
-                self.live_matches.update(catalog.seen)
             style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
             if timed_set and not any(t['id'] in self.live_matches for t in candidates):
                 if (slack >= 26 and len(order)-state['index'] >= 2
@@ -132,7 +147,7 @@ class RollingQueue:
             if not self.search(session, state, order, style, timed_set) and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
 
-    def search(self, session, state, order, style, timed_set):
+    def search(self, session, state, order, style, timed_set, *, lookahead=False):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
         if timed_set:
@@ -157,6 +172,7 @@ class RollingQueue:
                 job.target = job.quota = 4
                 job.max_rows = 12
                 job.seconds = 18
-            session.update(rollingQueue={'status': 'searching', 'term': term})
+            if not lookahead:
+                session.update(rollingQueue={'status': 'searching', 'term': term})
             return True
         return False

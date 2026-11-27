@@ -34,6 +34,10 @@ class PreparationPool:
         choose=getattr(self.session,'preparation_decks',None)
         return choose() if choose else (3,4)
 
+    def navigation_idle(self):
+        """Catalog navigation is free once every preparation load is verified."""
+        return not self.pending and all(job.done or job.loaded is not None for job in self.jobs)
+
     def release(self,client,deck):
         """The set needs this deck now. End its preparation; its record goes back to the front of the line."""
         for job in self.jobs:

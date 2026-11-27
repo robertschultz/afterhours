@@ -20,6 +20,7 @@ def intent(text):
     value = re.sub(r"[.!?]+$", "", text.strip().casefold().replace('’', "'"))
     value = re.sub(r'\b(?:um|uh)\b|[,;]', ' ', value)
     value = ' '.join(value.split())
+    value = re.sub(r'^(?:hey )?dot |^that (?=transition (?:next|to the next track|into the next track)$)', '', value)
     # Speech commonly contains a repeated lead-in. Match the entire imperative,
     # never a keyword inside a question, negation, or future instruction.
     value = re.sub(r'\b(\w+)(?:\s+\1)+\b', r'\1', value)

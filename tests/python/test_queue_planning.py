@@ -343,6 +343,23 @@ class QueuePlanningTests(unittest.TestCase):
                 self.assertTrue(agent.advance_playback())
                 self.assertEqual(self.session.start.call_args.kwargs.get('rolling_queue',False),scope is None)
 
+    def test_beat_grid_opening_receipt_survives_a_rolling_refill(self):
+        agent=dj_agent.DJAgent(self.session, evaluator=Mock())
+        self.session.update(phase='playing',active=True,startedAt=123,index=0,
+                            telemetry={'decks':[{'id':'a','playing':True}]},
+                            startup={'mode':'native-beat-grid','status':'ready',
+                                     'requestedIds':['a','b'],'playingAt':123})
+        request={'status':'starting','source':'voice','sessionId':self.session.snapshot()['id'],
+                 'revision':agent.state['revision'],'orderIds':['a','b']}
+        agent.playback_request={**request}
+        self.assertTrue(agent.advance_playback())
+        self.assertEqual(agent.playback_request['status'],'playing')
+
+        self.session.update(startedAt=124)
+        agent.playback_request={**request}
+        self.assertTrue(agent.advance_playback())
+        self.assertEqual(agent.playback_request['status'],'failed')
+
     def test_voice_title_by_artist_starts_that_recording_with_a_distinct_followup(self):
         self.session.start=Mock()
         self.session.discover_more=Mock(side_effect=lambda _:self.session.update(

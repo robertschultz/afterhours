@@ -2720,8 +2720,13 @@ class DJAgent:
                      if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
             future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
+            grid_started = (startup.get('mode')=='native-beat-grid' and startup.get('status')=='ready'
+                            and startup.get('playingAt') is not None
+                            and s.get('startedAt')==startup.get('playingAt')
+                            and actual[:len(selected)]==selected)
+            measured_selection = actual==selected[:len(actual)] and (actual==selected or future==selected)
             if not (request['status']=='starting' and startup.get('requestedIds')==request['orderIds']
-                    and actual==selected[:len(actual)] and (actual==selected or future==selected)):
+                    and (grid_started or measured_selection)):
                 return fail('The selected set changed. The pending start was cancelled.')
         if request['status']=='starting':
             if s.get('phase') in ('playing','mixing') and any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):

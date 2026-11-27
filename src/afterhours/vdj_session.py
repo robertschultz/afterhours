@@ -2617,6 +2617,7 @@ class DJSession:
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
                 raise BridgeError('Pause both decks and turn Automix off before starting this set.')
             measured_opening = immediate
+            grid_opening = None
             if immediate:
                 from afterhours.background_analysis import SpareDeckUnavailable, guard_deck
                 try:
@@ -2630,7 +2631,9 @@ class DJSession:
                                            window_limit=queue_window)
                     grid_style = {**opening_style, 'mixStyle':'quick'}
                     snapshot.update(grid_style)
-                    self.update(**grid_style, startup=None, timing=None, executionPlan=None, analysis=None, aiReview=None)
+                    grid_opening = {'id':uuid.uuid4().hex,'mode':'native-beat-grid','status':'loading',
+                                    'requestedIds':[t['id'] for t in order]}
+                    self.update(**grid_style, startup=grid_opening, timing=None, executionPlan=None, analysis=None, aiReview=None)
                     measured_opening = False
                     self.event('VirtualDJ has no isolated spare decks. Using verified native beat-grid mixing.', 'technique')
             if planned and any(r['durationBeats'] for r in planned.get('tempoSchedule',[])) and as_bool(self.q(client,'pitch_lock','bool')):
@@ -2723,7 +2726,11 @@ class DJSession:
                 self.availability.require_track(order[0])
                 self.send(client, 'deck 1 play')
                 t=confirm_started(self,client,1,order[0]['id'],t['decks'][0]['beatPosition'])
-            self.update(phase='playing', startedAt=self.snapshot().get('startedAt') if measured_opening or resume else time.time(), endedAt=None, message=f"Playing {order[index]['title']}")
+            started = self.snapshot().get('startedAt') if measured_opening or resume else time.time()
+            if grid_opening:
+                grid_opening = {**grid_opening,'status':'ready','playingAt':started}
+            self.update(phase='playing', startedAt=started, endedAt=None, message=f"Playing {order[index]['title']}",
+                        **({'startup':grid_opening} if grid_opening else {}))
             with self.lock:
                 self.state['copilot'].update(mode='mix' if self.state['copilot']['mode']=='mix' else 'leading', held=False)
             self.event(f"Set {'resumed' if resume else 'started'} · {order[index]['title']}", 'playing')

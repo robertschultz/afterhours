@@ -20,6 +20,8 @@ class ManualHandbackTests(unittest.TestCase):
         phrases={'go ahead and beat match into the next track':'go',
                  'go ahead and start transitioning to the next track':'go',
                  'transition next':'go',
+                 'Dot, transition next':'go',
+                 'That transition to the next track':'go',
                  'could you please transition to the next track?':'go',
                  'take back over':'resume','you take over':'resume','resume automatic mixing':'resume'}
         for source in ('typed','voice'):

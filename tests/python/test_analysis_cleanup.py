@@ -218,12 +218,13 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual([r['deck'] for r in pool.snapshot()['decks']],[4])
         self.assertFalse(any('deck 4' in cmd for cmd in p.commands))
 
-    def test_normal_completion_failure_latches_and_stops_future_scheduling(self):
+    def test_normal_completion_failure_quarantines_only_the_unconfirmed_spare(self):
         s,p,j=self.owned();j.done=True;p.ignore_unload.add(3)
         s.background_job=j
         s.update(queuedUpdate={'id':'rev','status':'analyzing','tracks':[],'protectedIds':[],'reason':'fixture'})
-        with self.assertRaisesRegex(BridgeError,'unload was not confirmed'):s.service_background(p,20)
+        s.service_background(p,20)
         self.assertIsNone(s.background_job);self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(s.preparation_decks(),(4,))
         self.assertFalse(s.state['cleanupPending']['unknown'])
         self.assertEqual(s.state['cleanupPending']['analysis'][0]['deck'],3)
         self.assertEqual(s.state['queuedUpdate']['status'],'blocked')

@@ -89,6 +89,19 @@ class QueuePlanningTests(unittest.TestCase):
         RollingQueue().tick(self.session,25)
         self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
 
+    def test_rolling_avoids_a_catalog_title_variant_with_a_missing_article(self):
+        rows = [
+            {**track('a'), 'title':'Take Me to the King (feat. Kirk Franklin)', 'artist':'Tamela Mann'},
+            track('b'),
+            {**track('alternate'), 'title':'Take Me to King', 'artist':'Tamela Mann'},
+            track('new'),
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        RollingQueue().tick(self.session,25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
+
     def test_rolling_genre_follows_the_requested_direction(self):
         rows = [
             {**track('a'), 'genre':'Classic Rock'},

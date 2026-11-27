@@ -33,7 +33,11 @@ def base_song_title(track):
     suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
     base = re.sub(r'(?:\s*'+suffix+r')+\s*$', '', track['title'], flags=re.I)
     base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
-    return normalized(base)
+    words = normalized(base).split()
+    without_article = [word for word in words if word != 'the']
+    # Keep short names intact. Longer titles sometimes lose an article in
+    # catalog listings, even under the same artist credit.
+    return ' '.join(without_article if len(without_article) >= 3 else words)
 
 
 def failed_rolling_recording(pending):

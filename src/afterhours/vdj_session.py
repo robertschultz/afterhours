@@ -16,7 +16,7 @@ from afterhours.program_timeline import set_timeline
 import time
 import uuid
 
-from afterhours.dj_bridge import VirtualDJ, BridgeError, as_bool
+from afterhours.dj_bridge import VirtualDJ, BridgeError, OSCReplyTimeout, as_bool
 from afterhours.track_metadata import musical_key
 from afterhours.vdj_catalog import (folder_state, selection, identity, load_selected, search_literal, count_value,
                          paused_load_target, load_exact_recording)
@@ -1482,7 +1482,9 @@ class DJSession:
             self.event(f'Preparing {len(todo)} upcoming recordings on isolated decks C/D.','analysis')
         previous=(self.snapshot().get('backgroundAnalysis') or {}).get('message')
         try:job.step(client,seconds_available)
-        except (BridgeError,ValueError,OSError) as exc:job.error=str(exc);job.done=True
+        except (BridgeError,ValueError,OSError) as exc:
+            job.error=str(exc);job.done=True
+            job.osc_reply_timeout=isinstance(exc,OSCReplyTimeout)
         progress=job.snapshot();self.update(backgroundAnalysis=progress)
         if progress['message']!=previous:self.event(progress['message'],'analysis')
         if not job.done:
@@ -1504,7 +1506,23 @@ class DJSession:
                 # The deck ownership displayed before cleanup is stale after
                 # a successful unload, including when the queue itself failed.
                 progress=job.snapshot()
-            if job.error:raise BridgeError(job.error)
+            if job.error:
+                with self.lock:
+                    pending = self.state.get('queuedUpdate') or {}
+                    attempts = pending.get('oscReadRetries', 0)
+                    # A verified cleanup makes the exact spare-deck job safe
+                    # to start again. Never retry an ambiguous native write.
+                    if (getattr(job, 'osc_reply_timeout', False) is True
+                            and pending.get('id') == job.revision and pending.get('rollingTrackId')
+                            and attempts < 2 and self.state['active'] and self.state['phase'] == 'playing'
+                            and not self.state.get('resumeBlocked') and not self.cancel.is_set()
+                            and not self.state['copilot'].get('held') and self.state['copilot'].get('mode') != 'off'):
+                        pending.update(status='needs-analysis', oscReadRetries=attempts+1)
+                        self.update(backgroundAnalysis={**progress, 'status':'queued',
+                                    'message':'Retrying verified spare-deck preparation after a missed VirtualDJ reply.'})
+                        self.event('Missed VirtualDJ read during spare-deck analysis. Cleanup verified; retrying the same refill.', 'analysis')
+                        return
+                raise BridgeError(job.error)
             with self.lock:
                 s=self.snapshot();q=s.get('queuedUpdate')
                 if not q or q['id']!=job.revision:return
@@ -1891,8 +1909,14 @@ class DJSession:
         rows=cue_planner.measured_rows(evidence)
         unavailable=cue_planner.limited_audio(evidence,rows)
         if unavailable:raise cue_planner.LimitedAudio(unavailable)
+        readbacks = {}
         def at(offset, *, grid_anchor=False):
+            # Overlapping cue windows share beats on this paused recording.
+            # Replay verification of each candidate entry is still independent.
+            key = (offset, grid_anchor)
             guard()
+            if key in readbacks:
+                return readbacks[key]
             self.send(client,f'deck {deck} goto_first_beat')
             self.sleep(.12)
             if offset:
@@ -1903,9 +1927,10 @@ class DJSession:
             # origin for offset selection, using the same bounded allowance
             # as native first-beat analysis. Every playable cue and its replay
             # must still read within the recording; do not clamp the grid.
-            return (number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000),
-                    number(self.q(client,f'deck {deck} get_time elapsed absolute'),
-                           -6000 if grid_anchor else 0,1200000)/1000)
+            readbacks[key] = (number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000),
+                              number(self.q(client,f'deck {deck} get_time elapsed absolute'),
+                                     -6000 if grid_anchor else 0,1200000)/1000)
+            return readbacks[key]
         anchor,anchor_time=at(0,grid_anchor=True)
         span=cue_planner.excerpt_beats(seconds,target_bpm)
         preferred_span=span
@@ -2791,6 +2816,7 @@ class DJSession:
                             except (BridgeError, ValueError, OSError) as exc:
                                 job.error = str(exc)
                                 job.done = True
+                                job.osc_reply_timeout = isinstance(exc, OSCReplyTimeout)
                                 break
                             remaining = until-time.monotonic()
                             if remaining > 0:

@@ -31,6 +31,10 @@ class BridgeError(RuntimeError):
     pass
 
 
+class OSCReplyTimeout(BridgeError):
+    pass
+
+
 def osc_string(value: str) -> bytes:
     if "\0" in value:
         raise ValueError("OSC strings cannot contain NUL")
@@ -210,7 +214,7 @@ class VirtualDJ:
                     raise BridgeError(f"No usable value for {script!r}; command not verified")
                 return values[0]
         self.check_budget()
-        raise BridgeError(f"No OSC response from VirtualDJ. {SETUP_HINT}")
+        raise OSCReplyTimeout(f"No OSC response from VirtualDJ. {SETUP_HINT}")
 
     def status(self):
         # Establish a read-only response before any playback command is allowed.

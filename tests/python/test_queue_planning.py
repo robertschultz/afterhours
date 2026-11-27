@@ -41,6 +41,12 @@ class QueuePlanningTests(unittest.TestCase):
             queue_planning.placement(self.session.snapshot(), 'a')
         self.assertEqual([row['id'] for row in self.session.snapshot()['order']], ['a', 'b', 'c', 'd'])
 
+    def test_a_variable_grid_can_follow_a_steady_opening(self):
+        state = {'candidates': [track('fixed', bpm=106), track('variable', bpm=102)]}
+        pair = queue_planning.compatible_live_opening(
+            state, ['variable', 'fixed'], ['variable'], exclude_openers={'variable'})
+        self.assertEqual(pair, ['fixed', 'variable'])
+
     def test_quick_set_adopts_future_tracks_without_a_measured_plan(self):
         self.session.plan(['a', 'b'],mix_style='quick')
         self.session.update(index=0,active=True,phase='mixing')

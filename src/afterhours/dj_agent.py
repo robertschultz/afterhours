@@ -1932,6 +1932,7 @@ class DJAgent:
             latest_text=operator['text'] if operator else self.state['direction']
             recall=self.queue_mode=='steer' or re.search(r'\b(again|before|earlier|previous|last set|remember|same as)\b',latest_text,re.I)
             planning,history=session_curation.planning_view(s)
+            variable = set()
             if request.get('externalCatalogProbe') and request.get('status') == 'choosing':
                 scope = (s.get('catalogFolder') or {}).get('id')
                 ids = set(catalog.get('foundIds', []))
@@ -1947,7 +1948,6 @@ class DJAgent:
                                         if row.get('variableTempo')} if exact else set()
                         except (ValueError, OSError):
                             variable = set()  # No saved proof; native playback checks still decide.
-                        candidates = [row for row in candidates if row['id'] not in variable]
                     planning = {**planning, 'candidates': candidates}
             ranking_text=latest_text if pending else latest_text+' '+self.state['direction']
             packet={'operatorRequest':copy.deepcopy(operator),'mentionedAgents':copy.deepcopy(self.mentioned_agents) if pending else [],'djProfile':self.profile_context(),'profilePolicy':'Use this operator-authored profile as taste and persona preferences for future decisions. Current operator requests take precedence; never override protected tracks or execution safeguards.', 'direction':self.state['direction'],'messages':self.state['messages'][-12:],
@@ -1976,6 +1976,8 @@ class DJAgent:
             profile_id=packet['djProfile'].get('id') or ''
             feedback={row['trackId']:row for row in self.state['trackFeedback'] if row['profileId']==profile_id}
             for row in working_rows:
+                if row['id'] in variable:
+                    row['nativeGrid'] = 'variable; use after the first track'
                 if row['id'] in feedback:
                     value=feedback[row['id']]
                     row['operatorPreference']=value['preference']
@@ -2160,29 +2162,39 @@ class DJAgent:
                      'deferredTracks':None,'requestVerdicts':None,'direction':packet.get('direction',''),
                      'reply':'Mixing only is on. Your chosen records stay in order; Copilot times the blends.',
                      'reason':'Track selection stays with the operator in Mixing only.'}
-            try:result=validate_decision(raw,s)
+            tempo_error = None
+            try:
+                result = validate_decision(raw, s)
             except TempoFitError as exc:
-                request = self.playback_request or {}
+                tempo_error = exc
+            request = self.playback_request or {}
+            open_ended = (external and request.get('externalCatalogProbe') and request.get('id') == external.id
+                          and request.get('status') == 'choosing' and not s.get('active') and not s.get('order')
+                          and (request.get('scope') == 'ongoing'
+                               or (raw.get('sessionScope') or {}).get('mode') == 'ongoing'))
+            variable = {row['id'] for row in packet['music']['catalog'] if row.get('nativeGrid')}
+            unstable_first = bool(open_ended and raw.get('trackIds') and raw['trackIds'][0] in variable)
+            if tempo_error or unstable_first:
                 pair = None
-                if (external and request.get('externalCatalogProbe') and request.get('id') == external.id
-                        and request.get('status') == 'choosing' and not s.get('active') and not s.get('order')
-                        and (request.get('scope') == 'ongoing'
-                             or (raw.get('sessionScope') or {}).get('mode') == 'ongoing')):
+                if open_ended:
                     found = [row['id'] for row in packet['music']['catalog']
                              if row.get('searchMatch') and row.get('selectionEligible') is not False
                              and row['id'] in supplied_ids]
-                    pair = queue_planning.compatible_live_opening(s, found, raw['trackIds'])
+                    pair = queue_planning.compatible_live_opening(s, found, raw['trackIds'],
+                                                                  exclude_openers=variable)
                 if pair:
                     result = validate_decision({**raw, 'trackIds': pair, 'mixTransitions': None,
                         'tempoTargets': None, 'cueChoices': None, 'crowdChoice': None,
                         'selectionReview': None, 'deferredTracks': None, 'requestVerdicts': None,
                         'reply': 'Selected a compatible opening pair from the live catalog.',
-                        'reason': 'The proposed tempo route did not fit. These current catalog matches fit a measured opening.'}, s)
+                        'reason': 'These catalog matches support the opening tempo and a verified handoff.'}, s)
                 else:
                     held={t['trackId']:{k:t[k] for k in ('trackId','reason')} for t in packet['music'].get('deferredTracks',[])}
-                    held.update({t['id']:{'trackId':t['id'],'reason':exc.reasons[t['id']]} for t in exc.tracks})
+                    if tempo_error:
+                        held.update({t['id']:{'trackId':t['id'],'reason':tempo_error.reasons[t['id']]} for t in tempo_error.tracks})
+                    reason = str(tempo_error) if tempo_error else 'No compatible opening with a steady native grid was found.'
                     result=validate_decision({**raw,'trackIds':[],'mixTransitions':None,'tempoTargets':None,'cueChoices':None,'crowdChoice':None,'deferredTracks':list(held.values())[-12:],
-                        'reply':('Queue unchanged. '+str(exc))[:1600],'reason':'Tempo limit prevented this selection.'},s)
+                        'reply':('Queue unchanged. '+reason)[:1600],'reason':'Tempo limit prevented this selection.'},s)
                     hold_source='tempo-guard'
             supplied_ids=receipt.get('catalogIds',[t['id'] for t in packet['music']['catalog']])
             if result['trackInsertion']:

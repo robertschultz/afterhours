@@ -155,7 +155,7 @@ class MCPTests(unittest.TestCase):
             id='fresh-fixture', phase='idle', index=-1, order=[]))
         for row, bpm in zip(self.session.state['candidates'], [124, 150, 125]):
             row.update(bpm=bpm, engine={'folder_id': 'apple', 'selection_id': row['id']})
-        unstable = {'id': 'variable', 'title': 'Unsteady Swing', 'artist': 'Fixture', 'bpm': 125,
+        unstable = {'id': 'variable', 'title': 'Unsteady Swing', 'artist': 'Fixture', 'bpm': 150,
                     'engine': {'folder_id': 'apple', 'selection_id': 'variable'}}
         self.session.state['candidates'].append(unstable)
         self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
@@ -175,7 +175,8 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(self.agent.playback_request['orderIds'], ['a', 'c'])
         self.assertEqual(self.agent.playback_request['scope'], 'ongoing')
         self.provider.assert_called_once()
-        self.assertNotIn('variable', {row['id'] for row in self.provider.call_args.args[0]['music']['catalog']})
+        catalog = {row['id']: row for row in self.provider.call_args.args[0]['music']['catalog']}
+        self.assertIn('variable', catalog['variable']['nativeGrid'])
         self.session.start.assert_called_once()
 
     def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):

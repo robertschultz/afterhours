@@ -54,7 +54,7 @@ def quick_opening(session, query, found):
     return None
 
 
-def compatible_live_opening(session, ranked_ids, selected_ids):
+def compatible_live_opening(session, ranked_ids, selected_ids, *, exclude_openers=()):
     """Choose a feasible pair from live results for an open-ended direction."""
     tracks = {row['id']: row for row in session['candidates']}
     blocked = {row['trackId'] for row in session.get('recordingAvailability', [])}
@@ -64,6 +64,8 @@ def compatible_live_opening(session, ranked_ids, selected_ids):
     preference = {tid: index for index, tid in enumerate(selected_ids)}
     candidates.sort(key=lambda row: preference.get(row['id'], len(preference)))
     for first in candidates:
+        if first['id'] in exclude_openers:
+            continue
         following = sorted((row for row in candidates if row['id'] != first['id']),
                            key=lambda row: transition_cost(first, row, {}))
         for second in following:

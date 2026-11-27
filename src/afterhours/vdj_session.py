@@ -1107,6 +1107,12 @@ class DJSession:
             self.positions = {}
             self.archive_call('boundary')
             self.update(candidates=[], order=[], index=-1, transitions=[], telemetry=None,
+                        analysis=None, aiReview=None, executionPlan=None, preparationSelection=None,
+                        queuedUpdate=None, lastQueueApplication=None, lastQueueRepair=None,
+                        backgroundAnalysis=None, rollingQueue=None, timedContinuation=[],
+                        tempoTargets=None, tempoControl=None, mixPlans=[],
+                        entryCadence=None, loopHandoffs=False, timing=None, timingTrackId=None,
+                        transitionControl=None, startup=None, startedAt=None, endedAt=None,
                         setlist={'allowReorder':True,'lockedIds':[],'sourceById':{}},
                         query=query, artistFilter=artist, genreFilter=genre, bpmMin=bpm_min, bpmMax=bpm_max,
                         queueWindow=DEFAULT_QUEUE_WINDOW,

@@ -776,6 +776,26 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(s.snapshot()['phase'],'catalog-ready')
         self.assertFalse(any(' play' in c for c in sent))
 
+    def test_fresh_discovery_drops_the_previous_blocked_queue_before_searching(self):
+        s = DJSession(threading.Lock())
+        pool = tracks()[:2]
+        s.update(order=pool, queuedUpdate={'status':'blocked','tracks':pool},
+                 executionPlan={'applied':True}, startedAt=15, entryCadence=[60,30])
+        peer = Mock()
+        peer.status.return_value = {'automix':False,'decks':[{'playing':False}]}
+        found = [{'id':row['id'],'artist':'','metadata':row} for row in pool]
+        with patch.object(s,'_launch',side_effect=lambda work,phase:work(peer)), \
+                patch.object(s,'send'), patch.object(s,'sleep'), \
+                patch('afterhours.vdj_session.folder_state',return_value={'id':'crate','name':'Catalog'}), \
+                patch('afterhours.vdj_session.selection',side_effect=found+[found[-1]]*2):
+            result = s.discover('Fixture')
+        self.assertEqual(result['phase'],'catalog-ready')
+        self.assertEqual(result['order'],[])
+        self.assertIsNone(result['queuedUpdate'])
+        self.assertIsNone(result['executionPlan'])
+        self.assertIsNone(result['startedAt'])
+        self.assertIsNone(result['entryCadence'])
+
     def test_multi_search_is_bounded_and_deduplicated(self):
         self.assertEqual(search_terms('Goldie; Photek; LTJ Bukem; Goldie'), ['Goldie','Photek','LTJ Bukem'])
         for value in ('a;b;c;d;e', ' ; ; ', 'a" & play'):

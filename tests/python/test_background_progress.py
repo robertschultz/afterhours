@@ -2,14 +2,44 @@
 import copy
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from afterhours.dj_bridge import OSCReplyTimeout
+from afterhours.dj_bridge import BridgeError, OSCReplyTimeout
 
 from afterhours.vdj_session import DJSession
 
 
 class BackgroundProgressTests(unittest.TestCase):
+    def test_changed_muted_spare_is_quarantined_and_only_its_candidate_is_replaced(self):
+        for isolated in (True, False):
+            with self.subTest(isolated=isolated):
+                s = DJSession(threading.Lock())
+                tracks = [{'id': str(i), 'title': str(i)} for i in range(3)]
+                s.update(order=tracks[:2], active=True, phase='playing', index=0,
+                         rollingQueue={'status':'preparing'},
+                         queuedUpdate={'id':'refill','status':'analyzing','tracks':tracks,
+                                       'protectedIds':['0','1'],'rollingTrackId':'2'})
+                job = Mock(revision='refill', done=True, cache={}, analysis_miss='2', catalog_miss=None)
+                job.error = 'Different recording identity.'
+                job.snapshot.return_value = {'message':job.error}
+                job.close.side_effect = BridgeError('Spare identity changed.')
+                job.cleanup_descriptors.return_value = [{'version':1,'deck':3,'ownerId':'a'*32,
+                    'selectionId':'b'*64,'baseline':{'volume':1,'pfl':False,'effect':'Echo'}}]
+                s.background_job = job
+                client = Mock()
+                with patch('afterhours.vdj_session.guard_isolation',
+                           side_effect=None if isolated else BridgeError('Deck is not muted.')):
+                    if isolated:
+                        s.service_background(client,24)
+                        self.assertEqual(s.state['queuedUpdate']['analysisMissId'],'2')
+                        self.assertEqual(s.preparation_decks(),(4,))
+                    else:
+                        with self.assertRaisesRegex(BridgeError,'not muted'):
+                            s.service_background(client,24)
+                self.assertTrue(s.state['resumeBlocked'])
+                self.assertEqual(s.state['order'],tracks[:2])
+                client.send.assert_not_called()
+
     def test_missing_future_record_keeps_selected_queue_and_clears_released_deck_display(self):
         s=DJSession(threading.Lock());tracks=[{'id':str(i),'title':str(i)} for i in range(4)]
         pending={'id':'revision','status':'analyzing','tracks':copy.deepcopy(tracks),

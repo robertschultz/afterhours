@@ -32,7 +32,8 @@ class RollingQueue:
             pending = state.get('queuedUpdate') or {}
             timed_set = bool(state.get('entryCadence'))
             miss = failed_rolling_recording(pending)
-            if miss and not state.get('resumeBlocked') and not session.background_job:
+            if (miss and (not state.get('resumeBlocked') or session.quarantined_preparation_decks())
+                    and not session.background_job):
                 self.missed.add(miss)
                 if miss != pending.get('catalogMissId'):
                     rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
@@ -59,6 +60,10 @@ class RollingQueue:
             ids = [track['id'] for track in order]
             titles = {song_identity(track)[0] for track in order} | self.missed_titles
             unavailable = {row['trackId'] for row in state.get('recordingAvailability', [])}
+            if state.get('resumeBlocked'):
+                # Leave an unverified native Load alone until its deck is inspected.
+                unavailable.update('virtualdj:'+row['selectionId']
+                    for row in (state.get('cleanupPending') or {}).get('analysis', []) if row.get('selectionId'))
             tail = order[-1]
             artists = [normalized(track.get('artist')) for track in order[-2:]]
             genre = normalized(tail.get('genre'))

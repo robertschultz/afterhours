@@ -22,6 +22,7 @@ from afterhours.vdj_mixing import loop_cleanup_descriptor
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
 class SpareStreamRejected(BridgeError):pass
+class SpareLoadIdentityChanged(BridgeError):pass
 class SpareDeckUnavailable(BridgeError):pass
 
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
@@ -395,7 +396,7 @@ class BackgroundAnalysis:
                 self.request('isolate-loaded','',sid)
                 return
         if sid is not None:
-            raise BridgeError('VirtualDJ loaded a different recording identity on the muted analysis deck. '
+            raise SpareLoadIdentityChanged('VirtualDJ loaded a different recording identity on the muted analysis deck. '
                               'No repeat load or handoff was sent.')
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
 
@@ -475,7 +476,7 @@ class BackgroundAnalysis:
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
                                      and self.owned and self.loaded==track['engine']['selection_id'])
-            if isinstance(exc,SpareStreamRejected) or exact_analysis_failed:
+            if isinstance(exc,(SpareStreamRejected,SpareLoadIdentityChanged)) or exact_analysis_failed:
                 self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True

@@ -33,7 +33,7 @@ from afterhours import copilot_commands
 from afterhours import dj_settings
 from afterhours import deck_rotation
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
-from afterhours.background_analysis import cleanup_analysis_deck, merge_cleanup_pending
+from afterhours.background_analysis import cleanup_analysis_deck, guard_isolation, merge_cleanup_pending
 from afterhours.record_crate import RecordCrate, WORKING_LIMIT
 from afterhours.vdj_discovery import CatalogSearch
 from afterhours.recording_availability import RecordingAvailability, ProviderPreviewRestricted, PREVIEW_ONLY
@@ -1301,8 +1301,25 @@ class DJSession:
         A two-deck set keeps C and D. A four-deck set uses the decks outside
         the playing pair, the one needed last first.
         """
-        if len(self.decks)==2 or not self.pair_decks:return (3,4)
+        if len(self.decks)==2 or not self.pair_decks:
+            quarantined = self.quarantined_preparation_decks()
+            return tuple(deck for deck in (3,4) if deck not in quarantined)
         return tuple(reversed(deck_rotation.spares(*self.pair_decks,self.decks)))
+
+    def quarantined_preparation_decks(self):
+        with self.lock:
+            pending = self.state.get('cleanupPending') or {}
+            if (not self.state.get('resumeBlocked') or pending.get('unknown')
+                    or pending.get('ramps') or pending.get('loops')):
+                return ()
+            decks = tuple(row['deck'] for row in pending.get('analysis', ()))
+            return decks if all(deck in (3, 4) and deck not in self.decks for deck in decks) else ()
+
+    def verify_preparation_quarantine(self, client):
+        decks = self.quarantined_preparation_decks()
+        for deck in decks:
+            guard_isolation(client, deck)
+        return decks
 
     def release_preparation(self, client, deck):
         """The set needs this deck: end any preparation on it and put its record back in line."""
@@ -1576,6 +1593,7 @@ class DJSession:
                 self.event('Upcoming tracks verified. Local measured cue fitting is ready for the next safe handoff; no extra AI request.','queue-ready')
                 self.update(backgroundAnalysis={**progress,'status':'ready','message':'Upcoming tracks ready for a safe handoff.'})
         except (BridgeError,ValueError,OSError) as exc:
+            quarantined = cleanup_failed and bool(self.verify_preparation_quarantine(client))
             with self.lock:
                 if self.state.get('queuedUpdate') and self.state['queuedUpdate']['id']==job.revision:
                     failure=preview_failure(self.availability,self.state['queuedUpdate']['tracks'],str(exc))
@@ -1596,14 +1614,17 @@ class DJSession:
                             pending['rollingTrackIds'] = staged_ids
                     if not cleanup_failed and miss and miss in staged_ids:
                         pending['catalogMissId']=miss
-                    if not cleanup_failed and scan_miss and scan_miss in staged_ids:
+                    if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:
                         pending['analysisMissId']=scan_miss
                     if fitting and not cleanup_failed and isinstance(exc, ValueError) and len(staged_ids) == 1 and staged_ids[0]:
                         pending['measuredFitMissId'] = staged_ids[0]
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
-            if cleanup_failed:raise  # Stop scheduling; keep the already playing track untouched.
+            if quarantined:
+                self.event('The muted preparation deck is isolated and reserved for inspection. Playback continues on the verified decks.', 'analysis')
+            elif cleanup_failed:
+                raise  # Unconfirmed isolation still stops scheduling.
         finally:self.background_job=None
 
     def retry_background(self):
@@ -1680,7 +1701,7 @@ class DJSession:
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
             from afterhours.rolling_queue import failed_rolling_recording
-            replaceable = not self.state.get('resumeBlocked') and failed_rolling_recording(queued)
+            replaceable = (not self.state.get('resumeBlocked') or self.quarantined_preparation_decks()) and failed_rolling_recording(queued)
             if not staged and not (rolling and (not queued or replaceable)):
                 return 0
             # Native console controls can temporarily omit duration during
@@ -2560,7 +2581,8 @@ class DJSession:
         if queue_window > DEFAULT_QUEUE_WINDOW and not (entry_cadence and rolling_queue):
             raise ValueError('An extended queue window requires a measured rolling set with an entry cadence.')
         rolling = RollingQueue() if rolling_queue else None
-        if snapshot.get('resumeBlocked'):
+        quarantine = self.quarantined_preparation_decks()
+        if snapshot.get('resumeBlocked') and not quarantine:
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
         planned=snapshot.get('executionPlan')
         immediate=bool(immediate and not resume and not (planned or {}).get('applied'))
@@ -2653,6 +2675,7 @@ class DJSession:
                     ready(client,order[index],deck,target,index)
         def work(client):
             nonlocal order,planned
+            self.verify_preparation_quarantine(client)
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
                         entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[])
             if not immediate and not resume:self.update(startup=None)
@@ -2685,6 +2708,10 @@ class DJSession:
             # rotation it started with; a new one takes what the layout allows.
             saved=tuple(snapshot.get('deckRotation') or deck_rotation.TWO)
             self.decks=(saved if saved in (deck_rotation.TWO,deck_rotation.FOUR) else deck_rotation.TWO) if resume else self.choose_rotation(client)
+            if quarantine:
+                if resume and self.decks != deck_rotation.TWO:
+                    raise BridgeError('The retained four-deck set includes a quarantined deck.')
+                self.decks = deck_rotation.TWO
             self.active_deck=None;self.pair_decks=None
             self.update(deckRotation=list(self.decks))
             nxt=lambda deck:deck_rotation.following(deck,self.decks)
@@ -2996,6 +3023,7 @@ class DJSession:
                 if tempo_row and not self.tempo_ramp.done:
                     raise BridgeError('Tempo ramp was not confirmed before the handoff. No transition was started.')
                 fade_beats = window['fadeBeats']
+                self.verify_preparation_quarantine(client)
                 if self.mixer:
                     self.mixer.validate_armed(client)
                     observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)

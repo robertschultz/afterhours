@@ -35,6 +35,27 @@ class DiscoveryTests(unittest.TestCase):
                     with self.assertRaisesRegex(BridgeError,'folder changed'):job.step(None)
                     self.assertEqual(s.folder['id'],'old')
 
+    def test_exact_live_artist_opens_after_two_feasible_recordings(self):
+        session = DJSession(threading.Lock())
+        now = [0.0]
+        artist = 'Fleetwood Mac'
+        job = CatalogSearch(session, [artist], '', '', 40, 300,
+                            clock=lambda: now[0], opening_query='fleetwood mac')
+        rows = [{'id': tid, 'artist': artist, 'metadata': {
+            'id': tid, 'artist': artist, 'title': title, 'bpm': bpm,
+        }} for tid, title, bpm in [('a', 'Dreams', 120), ('b', 'You Make Loving Fun', 121)]]
+        with patch('afterhours.vdj_discovery.folder_state', return_value={'id': 'folder'}), \
+             patch('afterhours.vdj_discovery.selection', side_effect=rows), patch.object(session, 'send'):
+            job.step(None)
+            now[0] = 2
+            job.step(None)
+            job.step(None)
+            self.assertFalse(job.done)
+            job.step(None)
+        self.assertTrue(job.done)
+        self.assertEqual(session.snapshot()['catalogSearch']['foundIds'], ['a', 'b'])
+        self.assertEqual(job.examined, 2)
+
     def test_public_search_progress_retains_names_tempo_and_actual_read_count(self):
         s=DJSession(threading.Lock());now=[0.0]
         job=CatalogSearch(s,['John Summit','Dom Dolla'],'John Summit; Dom Dolla','Tech House',124,128,clock=lambda:now[0])

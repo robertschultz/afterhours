@@ -70,8 +70,15 @@ def listenbrainz_style(style, now, fetch):
 
 def style_for(request):
     text = normalized(request)
-    for style in ('tech house', 'deep house', 'house'):
-        if re.search(r'\b'+style+r'\b', text):
+    for style, aliases in (
+        ('tech house', 'tech house'), ('deep house', 'deep house'), ('house', 'house'),
+        ('hip hop', 'hip hop|hiphop|rap'), ('r&b', 'r b|rhythm and blues|rnb'),
+        ('rock', 'rock'), ('gospel', 'gospel|christian'), ('jazz', 'jazz'),
+        ('disco', 'disco'), ('funk', 'funk'), ('soul', 'soul'), ('reggae', 'reggae|dancehall'),
+        ('country', 'country'), ('latin', 'latin|reggaeton|salsa|bachata'), ('pop', 'pop'),
+        ('techno', 'techno'), ('drum and bass', 'drum and bass|drum bass|dnb'),
+    ):
+        if re.search(r'\b(?:'+aliases+r')\b', text):
             return style
     return ''
 
@@ -156,7 +163,7 @@ class Discovery:
             if hit:
                 result['danceChart'] = {'rank': hit['rank'], 'source': dance['source'],
                                         'observedAt': dance['observedAt']}
-        preferred = style_for(track.get('genre')) or 'house'
+        preferred = style_for(track.get('genre'))
         feed = self.fresh(preferred)
         if feed:
             hit = next((row for row in feed['rows'] if identity(row['title'], row['artist']) == key), None)

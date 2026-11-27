@@ -24,6 +24,23 @@ class PlaybackSession(ScenarioSession):
 
 
 class PlaybackRequestTests(unittest.TestCase):
+    def test_stop_during_voice_preparation_keeps_talk_available_for_play(self):
+        session, agent, evaluator = self.make(True)
+        agent.enable(True, 120, 6)
+        deadline = agent.deadline
+        agent.playback_request = {'status': 'starting'}
+        agent.awaiting_catalog = True
+        reply = agent.message('Stop.', source='voice', message_id='voice-stop')
+        self.assertEqual(session.calls.count(('stop',)), 1)
+        self.assertEqual(reply['messages'][-1]['transport'], 'stop')
+        self.assertEqual(reply['playbackRequest']['status'], 'cancelled')
+        self.assertFalse(agent.awaiting_catalog)
+        self.assertEqual((agent.remaining, agent.deadline), (6, deadline))
+        agent.message('Play the existing queue', source='voice', message_id='after-stop')
+        self.drain(agent)
+        self.assertEqual(session.calls.count(('start',)), 1)
+        evaluator.assert_not_called()
+
     def test_casual_start_uses_existing_queue_without_model_work(self):
         for text in ('go play some music', 'Can you go play some music?', 'go ahead and start the music'):
             with self.subTest(text=text):

@@ -3,7 +3,7 @@
 import math
 
 from afterhours import session_curation
-from afterhours.dj_discovery import credit, normalized
+from afterhours.dj_discovery import credit, normalized, style_for
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
 from afterhours.vdj_mixing import transition_recipe
@@ -41,9 +41,14 @@ def quick_opening(session, query, found):
         qualified=bool(title and first_title==title and artist in first_artists)
         if wanted!=first_title and wanted not in first_artists and not qualified:
             continue
-        followups=sorted((row for row in candidates if row['id']!=first['id']
-                          and (not qualified or normalized(row.get('title'))!=first_title)),
-                         key=lambda row: abs(first['bpm']-row['bpm']))
+        first_style = style_for(first.get('genre'))
+        followups = sorted((row for row in candidates if row['id'] != first['id']
+                            and (not qualified or normalized(row.get('title')) != first_title)
+                            and not row['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))),
+                           key=lambda row: (
+                               not bool(first_artists & credit(row.get('artist'))),
+                               bool(first_style and first_style != style_for(row.get('genre'))),
+                               abs(first['bpm'] - row['bpm'])))
         for second in followups:
             pair=[first['id'],second['id']]
             try:

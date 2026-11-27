@@ -1326,7 +1326,7 @@ class DJAgent:
             self.seen_context=context_key(self.session.snapshot())
             return self.snapshot()
 
-    def disable(self,preserve_playback=False):
+    def disable(self,preserve_playback=False,*,keep_talk=False):
         with self.lock:
             if not preserve_playback:
                 self.curation.end('revoked','Automatic curation was stopped.')
@@ -1345,7 +1345,8 @@ class DJAgent:
                 self.background_allowance=True
                 self.save();return self.snapshot()
             committed=preserve_playback and self.playback_request and self.playback_request['status']=='preparing' and self.pipeline and 'reviewRemaining' in self.pipeline
-            self.generation+=1;self.deadline=0;self.remaining=0
+            self.generation+=1
+            if not keep_talk:self.deadline=0;self.remaining=0
             self.background_allowance=False
             self.planner.cancel_evaluating('Evaluation ended before the decision was accepted.')
             if not committed:
@@ -1625,7 +1626,14 @@ class DJAgent:
                     current=self.session.snapshot()
                     message=continuation_message or execution_error(current) or current.get('message') or self.state['message']
                 elif transport=='stop':
-                    self.disable();self.session.stop(pause=True)
+                    self.disable(keep_talk=source=='voice' and voice_start)
+                    self.awaiting_catalog=False
+                    # Cancellation supersedes this worker's generation. Its late
+                    # result cannot hold the next explicit Play request.
+                    self.worker=None
+                    if self.playback_request and self.playback_request['status']=='starting':
+                        self.playback_request.update(status='cancelled',message='The operator stopped playback.')
+                    self.session.stop(pause=True)
                     message='Stopping the music. Waiting for deck confirmation.'
                 else:
                     with getattr(self.session,'lock',nullcontext()):
@@ -1638,7 +1646,8 @@ class DJAgent:
                     message=self.state['message']
                 self.state['messages'].extend([
                     {'id':message_id,'role':'user',**self._origin(source,external),'text':text.strip(),'at':self.clock(),'queueMode':queue_mode},
-                    {'id':message_id+'-reply','role':'assistant','source':'engine','text':message,'at':self.clock()}])
+                    {'id':message_id+'-reply','role':'assistant','source':'engine','text':message,'at':self.clock(),
+                     **({'transport':'stop','sessionId':self.session.snapshot()['id']} if transport=='stop' else {})}])
                 self.state['messages']=self.state['messages'][-24:]
                 self.save();return self.snapshot()
             if control:
@@ -1727,7 +1736,7 @@ class DJAgent:
                     _,artist=playback_requests.named_recording(query)
                     search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(search)
+                        self.session.discover_more(search, opening_query=query)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
                         return self.snapshot()
@@ -1838,6 +1847,7 @@ class DJAgent:
                     else:
                         self.awaiting_catalog=False
                         self.state['direction']=request['intent']
+                        self.session.update(agentDirection=request['intent'])
                         self.bind_playback()
                         self.advance_playback()
                         return

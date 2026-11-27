@@ -4,6 +4,17 @@ from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_non_house_genres_keep_their_own_ranking(self):
+        self.assertEqual(dj_discovery.style_for('Play Christian pop'), 'gospel')
+        self.assertEqual(dj_discovery.style_for('Classic Rock'), 'rock')
+        self.assertEqual(dj_discovery.style_for('R&B'), 'r&b')
+        self.assertEqual(dj_discovery.style_for('Hip-Hop/Rap'), 'hip hop')
+        pick = lambda row: (0, 0)
+        rock = {'id':'rock', 'title':'Rock track', 'artist':'Band A', 'genre':'Classic Rock'}
+        house = {'id':'house', 'title':'House track', 'artist':'Artist B', 'genre':'House'}
+        ranked, _ = dj_discovery.rank_candidates([house, rock], 'rock', [], [], pick)
+        self.assertEqual([row['id'] for row in ranked], ['rock', 'house'])
+
     def test_rolling_hints_reach_records_beyond_the_first_six(self):
         discovery = dj_discovery.Discovery(clock=lambda: 1)
         discovery.feeds['house'] = {'observedAt': 1, 'source': 'Test house chart',

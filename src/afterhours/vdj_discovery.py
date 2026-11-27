@@ -8,7 +8,7 @@ from afterhours.vdj_catalog import folder_state, selection, search_literal
 
 class CatalogSearch:
     def __init__(self, session, terms, artist, genre, bpm_min, bpm_max, clock=time.monotonic, recheck_missing=False,
-                 external_request_id=None,authorize=None,finish=None):
+                 external_request_id=None,authorize=None,finish=None, *, opening_query=None):
         self.session=session;self.terms=terms;self.clock=clock;self.folder=None
         self.external_request_id=external_request_id;self.authorize=authorize;self.external_finish=finish
         self.recheck_missing=recheck_missing
@@ -26,6 +26,7 @@ class CatalogSearch:
         # An explicit import or expansion must dig beyond known archive rows.
         opening=not session.snapshot().get('order') and not recheck_missing
         self.reuse_matches=opening
+        self.opening_query=opening_query if opening else None
         self.target=3 if opening else 6
         self.max_rows=12 if opening else 30
         self.seconds=25 if opening else 45
@@ -97,6 +98,11 @@ class CatalogSearch:
                 self.seen.add(track['id']);self.matched+=1
                 self.per_term+=int(inserted or self.reuse_matches)
                 self.added+=int(inserted)
+                if self.opening_query and self.matched>=2:
+                    from afterhours.queue_planning import quick_opening
+                    if quick_opening(s.snapshot(), self.opening_query, self.seen):
+                        self.finish('Live catalog found an opening and a feasible next slot.')
+                        return
         self.publish('searching',f'{self.added} new recordings found. Existing queue kept.')
         self.position+=1
         progress=self.matched if self.reuse_matches else self.added

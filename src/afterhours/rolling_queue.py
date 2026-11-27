@@ -1,9 +1,38 @@
 """Append compatible recordings within the running set's native worker."""
+import re
+
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
-from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
+from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
+
+
+# Adjacent styles give the DJ room to follow a compatible thread without
+# taking an unrelated track simply because its BPM happens to fit.
+STYLE_GROUPS = (
+    frozenset(('house', 'deep house', 'tech house', 'techno', 'disco')),
+    frozenset(('soul', 'funk', 'r&b', 'gospel', 'hip hop')),
+    frozenset(('rock', 'pop', 'funk', 'soul')),
+)
+
+
+def rolling_style(state, order):
+    return (style_for(state.get('agentDirection')) or
+            next((style for track in order if (style := style_for(track.get('genre')))), ''))
+
+
+def fits_style(track, style):
+    actual = style_for(track.get('genre'))
+    return (not style or not actual or actual == style
+            or any(style in group and actual in group for group in STYLE_GROUPS))
+
+
+def title_without_mix_suffix(track):
+    title = track['title']
+    # Providers may append the version to the title instead of filling Remix.
+    base = re.sub(r'\s*[\[(][^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*[\])]\s*$', '', title, flags=re.I)
+    return normalized(base)
 
 
 def failed_rolling_recording(pending):
@@ -59,6 +88,8 @@ class RollingQueue:
                 return
             ids = [track['id'] for track in order]
             titles = {song_identity(track)[0] for track in order} | self.missed_titles
+            song_versions = {(title_without_mix_suffix(track), artist)
+                             for track in order for artist in credit(track.get('artist'))}
             unavailable = {row['trackId'] for row in state.get('recordingAvailability', [])}
             if state.get('resumeBlocked'):
                 # Leave an unverified native Load alone until its deck is inspected.
@@ -77,19 +108,22 @@ class RollingQueue:
                         + (0 if same_genre else 2.5), candidate['id'])
 
             folder = (state.get('catalogFolder') or {}).get('id')
+            style = rolling_style(state, order)
             candidates = [track for track in state['candidates']
                           if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
                               or track['engine']['folder_id'] == folder)
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           # Continuous-mix cuts often duplicate the full
                           # recording and have a baked-in DJ transition.
-                          and not (timed_set and track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)')))
+                          and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
+                          and not any((title_without_mix_suffix(track), artist) in song_versions
+                                      for artist in credit(track.get('artist')))
+                          and fits_style(track, style)
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             catalog = session.catalog_job
             if timed_set and catalog and getattr(catalog, 'rolling', False):
                 self.live_matches.update(catalog.seen)
-            style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
             upcoming = len(order) - state['index'] - 1
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.

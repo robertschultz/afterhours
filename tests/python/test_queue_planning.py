@@ -63,6 +63,39 @@ class QueuePlanningTests(unittest.TestCase):
             queue_planning.placement(self.session.snapshot(),'far')
         self.assertIsNone(self.session.snapshot()['queuedUpdate'])
 
+    def test_rolling_avoids_repeating_the_same_song_in_a_different_mix(self):
+        rows = [
+            {**track('a'), 'title': 'Can’t Stop It (Aviators Remix)', 'artist': 'Cabin Crew'},
+            track('b'),
+            {**track('alternate'), 'title': 'Can’t Stop It (Club Mix)', 'artist': 'Cabin Crew'},
+            track('new'),
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a', 'b'], mix_style='quick')
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'})
+        RollingQueue().tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'], 'new')
+
+    def test_rolling_genre_follows_the_requested_direction(self):
+        rows = [
+            {**track('a'), 'genre':'Classic Rock'},
+            {**track('b'), 'genre':'Classic Rock'},
+            {**track('house'), 'genre':'House'},
+            {**track('rock'), 'genre':'Rock'},
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a', 'b'], mix_style='quick')
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'})
+        roller = RollingQueue()
+        roller.tick(self.session, 25)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['tracks'][-1]['id'], 'rock')
+
+        self.session.update(queuedUpdate=None, agentDirection='Switch to house')
+        roller.tick(self.session, 25)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['tracks'][-1]['id'], 'house')
+
     def test_rolling_quick_set_appends_as_each_track_starts(self):
         self.session.plan(['a','b'],mix_style='quick')
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
@@ -347,11 +380,11 @@ class QueuePlanningTests(unittest.TestCase):
         provider=Mock(return_value=({**decision(['c','d']), 'reply':'Opening pair selected.'}, {}))
         agent=dj_agent.DJAgent(self.session, evaluator=provider)
         agent.enable(True,seconds=120,requests=6)
-        self.session.discover_more=Mock(side_effect=lambda _: self.session.update(
+        self.session.discover_more=Mock(side_effect=lambda _, **__: self.session.update(
             phase='discovering',catalogSearch={'status':'searching'}))
         deadline=agent.deadline
         result=agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
-        self.session.discover_more.assert_called_once_with('daft punk')
+        self.session.discover_more.assert_called_once_with('daft punk',opening_query='daft punk')
         self.assertEqual(result['status'],'searching')
         provider.assert_not_called()
         self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','matched':2})
@@ -387,7 +420,7 @@ class QueuePlanningTests(unittest.TestCase):
         state=self.session.snapshot()
         request={'status':'preparing','source':'voice','sessionId':state['id'],
                  'revision':agent.state['revision'],'orderIds':[t['id'] for t in state['order']],
-                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk'}
+                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk','freshQueue':True}
         for scope in (None,'finite'):
             with self.subTest(scope=scope):
                 agent.playback_request={**request,'scope':scope}
@@ -414,14 +447,14 @@ class QueuePlanningTests(unittest.TestCase):
 
     def test_voice_title_by_artist_starts_that_recording_with_a_distinct_followup(self):
         self.session.start=Mock()
-        self.session.discover_more=Mock(side_effect=lambda _:self.session.update(
+        self.session.discover_more=Mock(side_effect=lambda _, **__:self.session.update(
             phase='discovering',catalogSearch={'status':'searching'}))
         evaluator=Mock(side_effect=AssertionError('Exact live matches should start without a planning call'))
         agent=dj_agent.DJAgent(self.session,evaluator=evaluator)
         agent.enable(True,seconds=120,requests=5)
         agent.message('Play Around the World by Daft Punk',source='voice',message_id='title-by-artist',approved=True)
         search='around the world by daft punk; daft punk'
-        self.session.discover_more.assert_called_once_with(search)
+        self.session.discover_more.assert_called_once_with(search,opening_query='around the world by daft punk')
         candidates=[{**track('cover'),'title':'Around the World','artist':'Cover Artist'},
                     {**track('requested'),'title':'Around the World','artist':'Daft Punk'},
                     {**track('remix',bpm=125.2),'title':'Around the World','artist':'Daft Punk'},

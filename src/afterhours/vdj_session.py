@@ -1190,7 +1190,7 @@ class DJSession:
             return self.snapshot()
 
     def discover_more(self, query, artist='', genre='', bpm_min=40, bpm_max=300, recheck_missing=False,
-                      external_request_id=None,authorize=None,finish=None):
+                      external_request_id=None,authorize=None,finish=None, *, opening_breadth=False):
         terms=search_terms(query)
         if not isinstance(artist,str) or len(artist)>120 or not isinstance(genre,str) or len(genre)>80:
             raise ValueError('Invalid catalog filters.')
@@ -1200,6 +1200,11 @@ class DJSession:
             if self.catalog_job and not self.catalog_job.done:raise ValueError('A crate search is already in progress.')
             job=CatalogSearch(self,terms,artist,genre,bpm_min,bpm_max,recheck_missing=recheck_missing,
                               external_request_id=external_request_id,authorize=authorize,finish=finish)
+            if opening_breadth:
+                job.target = 12
+                job.quota = (job.target + len(terms) - 1) // len(terms)
+                job.max_rows = 24
+                job.seconds = 35
             if self.state['active']:
                 if self.state['phase'] not in ('playing','mixing','loading'):
                     raise ValueError('Wait for current preparation to finish.')

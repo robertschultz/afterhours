@@ -1749,7 +1749,11 @@ class DJAgent:
                     try:
                         if external_fresh:
                             external.consume('discovery')
-                            self.session.discover_more(search, external_request_id=external.id, authorize=external.check)
+                            broad = re.sub(r'\s+music$', '', query).strip()
+                            if broad != query and len(broad) >= 3 and not artist:
+                                search = f'{broad}; {query}'
+                            self.session.discover_more(search, external_request_id=external.id, authorize=external.check,
+                                                       opening_breadth=True)
                         else:
                             self.session.discover_more(search)
                     except (ValueError,OSError,BridgeError) as exc:
@@ -1906,7 +1910,7 @@ class DJAgent:
             found_enough=(catalog.get('matched',catalog.get('added',len(s.get('candidates',[]))))>=2)
             if request.get('externalCatalogProbe'):
                 live_ids = set(catalog.get('foundIds', []))
-                found_enough = len({song_identity(row)[0] for row in s['candidates'] if row['id'] in live_ids}) >= 2
+                found_enough = len({song_identity(row)[0] for row in s['candidates'] if row['id'] in live_ids}) >= 5
             can_search=self.settings.state['discover'] and not mixing_only and self.search_rounds<2 and not (catalog_ready and found_enough)
             if (self.text_turn and not use_curation) and catalog_ready:can_search=False
             if catalog_ready:self.awaiting_catalog=False
@@ -2142,13 +2146,27 @@ class DJAgent:
                      'reason':'Track selection stays with the operator in Mixing only.'}
             try:result=validate_decision(raw,s)
             except TempoFitError as exc:
-                # A model can make a poor proposal. Preserve the working set,
-                # surface the exact execution constraint, and never retry a fee.
-                held={t['trackId']:{k:t[k] for k in ('trackId','reason')} for t in packet['music'].get('deferredTracks',[])}
-                held.update({t['id']:{'trackId':t['id'],'reason':exc.reasons[t['id']]} for t in exc.tracks})
-                result=validate_decision({**raw,'trackIds':[],'mixTransitions':None,'tempoTargets':None,'cueChoices':None,'crowdChoice':None,'deferredTracks':list(held.values())[-12:],
-                    'reply':('Queue unchanged. '+str(exc))[:1600],'reason':'Tempo limit prevented this selection.'},s)
-                hold_source='tempo-guard'
+                request = self.playback_request or {}
+                pair = None
+                if (external and request.get('externalCatalogProbe') and request.get('id') == external.id
+                        and request.get('status') == 'choosing' and not s.get('active') and not s.get('order')
+                        and (raw.get('sessionScope') or {}).get('mode') == 'ongoing'):
+                    found = [row['id'] for row in packet['music']['catalog']
+                             if row.get('searchMatch') and row.get('selectionEligible') is not False
+                             and row['id'] in supplied_ids]
+                    pair = queue_planning.compatible_live_opening(s, found, raw['trackIds'])
+                if pair:
+                    result = validate_decision({**raw, 'trackIds': pair, 'mixTransitions': None,
+                        'tempoTargets': None, 'cueChoices': None, 'crowdChoice': None,
+                        'selectionReview': None, 'deferredTracks': None, 'requestVerdicts': None,
+                        'reply': 'Selected a compatible opening pair from the live catalog.',
+                        'reason': 'The proposed tempo route did not fit. These current catalog matches fit a measured opening.'}, s)
+                else:
+                    held={t['trackId']:{k:t[k] for k in ('trackId','reason')} for t in packet['music'].get('deferredTracks',[])}
+                    held.update({t['id']:{'trackId':t['id'],'reason':exc.reasons[t['id']]} for t in exc.tracks})
+                    result=validate_decision({**raw,'trackIds':[],'mixTransitions':None,'tempoTargets':None,'cueChoices':None,'crowdChoice':None,'deferredTracks':list(held.values())[-12:],
+                        'reply':('Queue unchanged. '+str(exc))[:1600],'reason':'Tempo limit prevented this selection.'},s)
+                    hold_source='tempo-guard'
             supplied_ids=receipt.get('catalogIds',[t['id'] for t in packet['music']['catalog']])
             if result['trackInsertion']:
                 tid=result['trackInsertion']['trackId']

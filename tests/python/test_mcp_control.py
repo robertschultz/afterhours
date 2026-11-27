@@ -111,7 +111,7 @@ class MCPTests(unittest.TestCase):
 
         receipt = self.direct(text='Play Christmas music')
         self.provider.assert_not_called()
-        self.assertEqual(self.session.calls[-1][:2], ('discover', ('christmas music',)))
+        self.assertEqual(self.session.calls[-1][:2], ('discover', ('christmas; christmas music',)))
         self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
                             catalogSearch={'status': 'complete', 'foundIds': ['b', 'c']})
         self.agent.tick(force=True)
@@ -149,6 +149,27 @@ class MCPTests(unittest.TestCase):
         self.session.new_set.assert_not_called()
         self.session.start.assert_not_called()
         self.assertIsNone(self.agent.playback_request)
+
+    def test_open_ended_request_can_choose_live_tempo_fit_without_reasking_planner(self):
+        self.session.new_set = Mock(side_effect=lambda: self.session.update(
+            id='fresh-fixture', phase='idle', index=-1, order=[]))
+        for row, bpm in zip(self.session.state['candidates'], [124, 150, 125]):
+            row.update(bpm=bpm, engine={'folder_id': 'apple'})
+        self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
+            active=True, phase='loading'))
+        self.provider.return_value = ({**decision(['a', 'b']),
+                                       'sessionScope': {'mode': 'ongoing', 'message': 'Keep playing.'}}, {})
+
+        self.direct(text='Play Christmas music')
+        self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
+                            catalogSearch={'status': 'complete', 'foundIds': ['a', 'b', 'c']})
+        self.agent.tick(force=True)
+        settled(self.agent)
+        self.agent.tick()
+
+        self.assertEqual(self.agent.playback_request['orderIds'], ['a', 'c'])
+        self.provider.assert_called_once()
+        self.session.start.assert_called_once()
 
     def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):
         self.session.update(phase='takeover',active=False,

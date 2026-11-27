@@ -54,6 +54,28 @@ def quick_opening(session, query, found):
     return None
 
 
+def compatible_live_opening(session, ranked_ids, selected_ids):
+    """Choose a feasible pair from live results for an open-ended direction."""
+    tracks = {row['id']: row for row in session['candidates']}
+    blocked = {row['trackId'] for row in session.get('recordingAvailability', [])}
+    ranked_ids = list(dict.fromkeys(ranked_ids))[:12]
+    candidates = [tracks[tid] for tid in ranked_ids if tid in tracks and tid not in blocked
+                  and finite(tracks[tid].get('bpm')) and tracks[tid]['bpm'] > 0]
+    preference = {tid: index for index, tid in enumerate(selected_ids)}
+    candidates.sort(key=lambda row: preference.get(row['id'], len(preference)))
+    for first in candidates:
+        following = sorted((row for row in candidates if row['id'] != first['id']),
+                           key=lambda row: transition_cost(first, row, {}))
+        for second in following:
+            pair = [first['id'], second['id']]
+            try:
+                validate_order(pair, candidates, session.get('maxTempoShift', 8), session.get('secondsPerTrack', 30))
+            except ValueError:
+                continue
+            return pair
+    return None
+
+
 def placement(session, track_id):
     """Choose the least disruptive feasible insertion, preserving every existing ID."""
     staged = session.get('queuedUpdate') or {}

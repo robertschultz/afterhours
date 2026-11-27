@@ -192,10 +192,43 @@ class NativeHandoff:
         self.loop = None
         return 'released'
 
+    def finish_outro(self, client, deck, bpm, recording, observe, beats=8):
+        """Fade the confirmed playing deck gently before the set ends."""
+        prefix = f'deck {deck} '
+        if self.ramps or not as_bool(self.q(client,prefix+'play','bool')):
+            raise MixerControlChanged('The final deck changed before its outro.')
+        def verify_recording():
+            if identity(str(self.q(client,prefix+'get_filepath','text'))) != recording:
+                raise MixerControlChanged('The final recording changed during the outro.')
+        verify_recording()
+        level = value(self.q(client,prefix+'level'))
+        if level>.015:
+            self.ramps['outro']=deck
+            self.send(client,f"{prefix}repeat_start_fade 'afterhours_outro' {level:.6f} 0.000000 {beats}bt & {prefix}level")
+            deadline=time.monotonic()+beats*60/bpm+3
+            while time.monotonic()<deadline:
+                self.sleep(.12)
+                verify_recording()
+                observe(client,clock_only=True)
+                if (not as_bool(self.q(client,prefix+'play','bool'))
+                        or value(self.q(client,prefix+'level'))<=.015):
+                    break
+            else:
+                raise BridgeError('The final fade did not settle. The playing deck was left for manual control.')
+        if as_bool(self.q(client,prefix+'play','bool')):
+            self.send(client,prefix+'pause')
+            self.sleep(.12)
+            if as_bool(self.q(client,prefix+'play','bool')):
+                raise BridgeError('The final deck did not confirm pause.')
+        self.cancel_ramps(client)
+        verify_recording()
+        if level>.015:
+            self.send(client,f'{prefix}level {level*100:.6f}%')
+
     def cancel_ramps(self, client):
         if self.ramps:
             # Bypass a cancelled worker's send guard, exactly as owned EQ ramps.
-            client.send(f"deck {self.ramps['crossfade']} repeat_stop 'afterhours_crossfade'")
+            client.send(' & '.join(f"deck {deck} repeat_stop 'afterhours_{name}'" for name,deck in sorted(self.ramps.items())))
             self.ramps.clear()
 
 

@@ -105,7 +105,11 @@ class LiveVoice:
             self.cancel_connect=False
         history=startup_history(profile,self.agent.snapshot(),self.agent.session.snapshot())
         identity_note = ('Introduce yourself as Dot. Keep this booth identity throughout the conversation. '
-                         'DAWT animates Dot from your reply and confirmed engine activity. ' if presentation=='dawt' else '')
+                         'You are the onscreen floating cloud-shaped DJ, and your voice belongs to that character. '
+                         'Use DAWT stage telemetry for your visible movement, companions, headphones and venue. '
+                         'Describe these in the first person only when confirmed. Use the most recent dance if asked what you were just doing. '
+                         'When visual telemetry is unavailable, say you cannot tell the current pose. '
+                         'DAWT animates your replies and confirmed work. ' if presentation=='dawt' else '')
         handoff_identity = ('acknowledge the change and keep introducing yourself as Dot' if presentation=='dawt'
                             else 'continue as the newly assigned AI DJ')
         instructions=f'''You are {profile.get('name') or performer.title()}, the AI DJ in Afterhours. {identity_note}Use a relaxed, concise,

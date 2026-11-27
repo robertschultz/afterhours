@@ -428,6 +428,8 @@ class SessionTests(unittest.TestCase):
     def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False,late_background=False):
         """Deterministic peer simulation; this does not play or assess music."""
         s=DJSession(threading.Lock());pool=[{'id':str(i),'title':str(i),'bpm':155,'genre':'Drum & Bass','camelot':'2A'} for i in range(4)]
+        for track in pool:
+            track['engine']={'selection_id':identity(track['id'])}
         s.update(candidates=pool);s.plan([t['id'] for t in pool],seconds=seconds)
         from test_cue_planner import fixture
         from afterhours import ai_mix, cue_planner
@@ -610,6 +612,8 @@ class SessionTests(unittest.TestCase):
                 provider.assert_not_called()
             else:s.start(resume=control=='resume')
         result=s.snapshot();self.assertEqual(result['phase'],'completed')
+        outro = next(i for i,(command,_,_) in enumerate(sent) if "'afterhours_outro'" in command and 'repeat_start' in command)
+        self.assertTrue(any(command.endswith(' pause') for command,_,_ in sent[outro+1:]))
         if quick_insert:
             self.assertEqual(insertions,['2','3'])
             self.assertEqual(loads,[('0',1),('1',2),('2',1),('3',2)])

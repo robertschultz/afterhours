@@ -883,7 +883,7 @@ class DJSession:
         pending=merge_cleanup_pending(snapshot.get('cleanupPending'))
         names=pending.get('ramps') or []
         allowed={'afterhours_'+name for name in ('in_level','out_low','out_mid','out_vocal','out_instru',
-                 'in_low','in_mid','in_vocal','in_instru','out_high','crossfade')}|{tempo_planner.TempoRamp.NAME}
+                 'in_low','in_mid','in_vocal','in_instru','out_high','crossfade','outro')}|{tempo_planner.TempoRamp.NAME}
         stops=[]
         for descriptor in names:
             deck,separator,name=descriptor.partition(':')
@@ -3008,8 +3008,12 @@ class DJSession:
                         self.sleep(.12)
                 if revised_final:continue
                 if final:
-                    self.send(client, f'deck {active} pause')
-                    self.sleep(.15)
+                    self.update(phase='stopping',message='Fading out the final recording.')
+                    self.handoff=NativeHandoff(self.q,self.send,self.sleep)
+                    recording=(track.get('engine') or {}).get('selection_id')
+                    if recording is None:
+                        raise BridgeError('The final recording identity was unavailable for a verified outro.')
+                    self.handoff.finish_outro(client,active,current['bpm'],recording,self.telemetry)
                     t = self.telemetry(client)
                     if any(d.get('playing') for d in t['decks']):
                         raise BridgeError('Set finished; paused state is not confirmed. Inspect VirtualDJ.')

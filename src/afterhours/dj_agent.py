@@ -2748,7 +2748,7 @@ class DJAgent:
         request.update(status='starting',message='Starting the opening recording.')
         voice = request.get('source')=='voice'
         rolling=(voice and request.get('scope')!='finite' and self.settings.state['discover']
-                 and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
+                 and (request.get('scope')=='ongoing' or bool(request.get('freshQueue'))))
         options = {'rolling_queue': True} if rolling else {}
         if voice:options['allow_grid_opening'] = True
         if request.get('source')=='voice' and request.get('freshQueue'):

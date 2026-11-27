@@ -61,7 +61,11 @@ def track_analysis(tracks, database=DATABASE):
             if sid not in wanted:
                 song.clear();continue
             track=wanted[sid];info=song.find('Infos');scan=song.find('Scan')
-            duration=finite(info.get('SongLength')) if info is not None else None
+            # VirtualDJ may retain an older catalog length in the saved
+            # database. A fresh exact-deck total binds the whole-buffer proof.
+            duration = finite(track.get('nativeDuration'), .001)
+            if duration is None and info is not None:
+                duration = finite(info.get('SongLength'))
             points=[]
             for poi in song.findall('Poi')[:128]:
                 seconds=finite(poi.get('Pos'))

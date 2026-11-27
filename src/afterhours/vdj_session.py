@@ -2257,9 +2257,13 @@ class DJSession:
             bpm=number(self.q(client,f'deck {deck} get_bpm absolute'),40,300)
             if abs(bpm-original*2)>.05:raise BridgeError('Half-time grid correction was not confirmed.')
             self.event(f'{track["title"]}: half-time grid normalized from {original:.2f} to {bpm:.2f} BPM.','analysis')
-        updated={**track,'bpm':bpm,'key':key,'camelot':camelot,'engineChecked':True}
+        duration = number(self.q(client, f'deck {deck} get_time total absolute'), 1, 86_400_000) / 1000
+        if (as_bool(self.q(client, f'deck {deck} play', 'bool'))
+                or identity(str(self.q(client, f'deck {deck} get_filepath', 'text'))) != track['engine']['selection_id']):
+            raise BridgeError('The recording changed before its loaded duration was verified.')
+        updated={**track,'bpm':bpm,'key':key,'camelot':camelot,'engineChecked':True,'duration':duration}
         self.remember_record(updated,source='analysis',analysis='analyzed')
-        return updated
+        return {**updated, 'nativeDuration': duration}
 
     def prepare_deck(self, client, track, deck, target_bpm, cue=None, checked=None):
         self.availability.require_track(track)

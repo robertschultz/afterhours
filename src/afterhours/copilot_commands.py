@@ -166,7 +166,7 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
-def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, earliest_beat=None):
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, latest_beat=None, earliest_beat=None, allow_outro_bars=False):
     """Earliest verified exit with lead time, preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
@@ -198,14 +198,15 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         tolerance = 10 * current['bpm'] / 60
         earliest = max(earliest, target - tolerance)
         cadence_end = target + tolerance
+        latest_beat = min(latest_beat, cadence_end) if latest_beat is not None else cadence_end
     blend = 0 if final else fade_beats
     valid = []
     for candidate in source.get('cueCandidates', []):
         if candidate.get('replayVerified') is not True or candidate['maxBlendBeats'] < blend:
             continue
         exit_beat = candidate['exitBeat']
-        if entry_interval is None or final:
-            if exit_beat >= earliest:
+        if final or (entry_interval is None and not allow_outro_bars):
+            if exit_beat >= earliest and (latest_beat is None or exit_beat <= latest_beat):
                 valid.append(candidate)
             continue
         # Both endpoints of this audible outro were read from the native
@@ -214,7 +215,8 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         span = candidate['endBeat']-exit_beat
         first_bar = max(0, math.ceil((earliest-exit_beat)/4))
         last_bar = math.floor((min(span, candidate['maxBlendBeats'])-blend+1e-4)/4)
-        last_bar = min(last_bar, math.floor((cadence_end-exit_beat)/4))
+        if latest_beat is not None:
+            last_bar = min(last_bar, math.floor((latest_beat-exit_beat)/4))
         if first_bar > last_bar:
             continue
         bars = min(last_bar, max(first_bar, round((target-exit_beat)/4)))

@@ -202,6 +202,23 @@ class CopilotControlTests(unittest.TestCase):
         self.assertEqual(window['endBeat'], 148)
         self.assertLessEqual(window['endBeat'], s.state['executionPlan']['selections'][0]['endBeat'])
 
+    def test_delayed_mixer_check_can_only_retry_within_the_bounded_verified_outro(self):
+        s = running()
+        current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}
+        window = cc.retime(s.snapshot(), current, 16, entry_interval=25, latest_beat=132)
+        self.assertEqual((window['mixAtBeat'], window['endBeat']), (132, 148))
+        with self.assertRaisesRegex(ValueError, 'No verified handoff'):
+            cc.retime(s.snapshot(), current, 16, entry_interval=25, latest_beat=131)
+
+    def test_untimed_tempo_recovery_can_use_a_later_verified_bar(self):
+        s = running()
+        current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}
+        window = cc.retime(s.snapshot(), current, 16, earliest_beat=132, latest_beat=136,
+                           allow_outro_bars=True)
+        self.assertEqual((window['entryBeat'],window['mixAtBeat'],window['endBeat']), (64,132,148))
+        self.assertNotIn('requestedEntryInterval',window)
+        with self.assertRaisesRegex(ValueError, 'No verified handoff'):
+            cc.retime(s.snapshot(),current,32,earliest_beat=132,latest_beat=136,allow_outro_bars=True)
     def test_go_failure_keeps_hold_and_does_not_seek_or_mix(self):
         s=running(); self.command(s,'hold')
         s.state['telemetry']['decks'][0]['beatPosition']=140

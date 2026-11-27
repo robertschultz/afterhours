@@ -123,8 +123,24 @@ class NativeRamp(unittest.TestCase):
         self.assertTrue(self.ramp.done)
         self.setup_ramp()
         self.tick(4,125)
+        self.tick(38.1,125.85)
+        self.assertFalse(self.ramp.done)
         with self.assertRaisesRegex(BridgeError, 'endpoint'):
-            self.tick(38.1,125.85)
+            self.tick(44,125.85)
+
+    def test_a_verified_later_handoff_can_accommodate_a_slow_native_ramp(self):
+        self.setup_ramp()
+        self.tick(4,125,handoff_beat=44)
+        self.tick(42,125.82,handoff_beat=52)
+        self.tick(46,125.96,handoff_beat=52)
+        self.assertTrue(self.ramp.done)
+        self.assertEqual(len(self.sent),2)  # One ramp and one stop; no pitch jump.
+
+    def test_a_ramp_cannot_use_the_handoff_beat_for_settling(self):
+        self.setup_ramp()
+        self.tick(4,125,handoff_beat=44)
+        with self.assertRaisesRegex(BridgeError,'endpoint'):
+            self.tick(43,125.85,handoff_beat=44)
 
     def test_missed_window_bad_range_and_linked_pitch_send_no_ramp(self):
         for field,value in [('pitch_lock',True),('deck 1 get_filepath','swapped'),('deck 1 pitch_range',.001)]:

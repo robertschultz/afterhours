@@ -170,14 +170,21 @@ class TempoRamp:
         self.samples.append({'beat':beat,'bpm':current['bpm']});self.samples=self.samples[-64:]
         if beat>=self.start+row['durationBeats']:
             error = abs(current['bpm']-row['toBpm'])
-            settled = beat>self.start+row['durationBeats']+2
+            ramp_end = self.start+row['durationBeats']
+            settled = beat>ramp_end+2
+            # Native beat-timed fades can lag their nominal deck beat while
+            # the deck's own tempo is changing. Use the measured settle
+            # margin, and up to two more bars only with a verified later exit.
+            deadline = ramp_end+row['settleBeats']
+            if handoff_beat is not None:
+                deadline = min(deadline+8, handoff_beat-1)
             # Native pitch ramp quantization can settle a few hundredths of
             # a BPM from target. Keep the tight early readback, then accept
             # the settled endpoint only inside the handoff's matching budget.
             if error <= .03 or (settled and error <= .10):
                 self.cancel(client);self.done=True
                 self.event(f'Tempo confirmed at {current["bpm"]:.2f} BPM.','tempo-complete')
-            elif settled:
+            elif beat>=deadline:
                 self.cancel(client);raise BridgeError('Tempo ramp endpoint was not confirmed. No transition was started.')
         return {'status':'complete' if self.done else 'ramping','fromBpm':row['fromBpm'],
                 'targetBpm':row['toBpm'],'progress':progress,'observedBpm':current['bpm']}

@@ -2847,6 +2847,7 @@ class DJSession:
                 revised_final=False
                 waiting_for_continuation=False
                 stems_check_at=0
+                extended_tempo_window=False
                 while True:
                     # A near-boundary sample still reads identity, transport,
                     # tempo, meter and phase. Defer only console UI readbacks.
@@ -2854,8 +2855,25 @@ class DJSession:
                         clock_only=not final and current['beatPosition'] >= goal-12)
                     current = t['decks'][active-1]
                     if tempo_row:
+                        ramp = self.tempo_ramp
+                        if (not final and ramp.running and not ramp.done and not extended_tempo_window
+                                and current['beatPosition']>=goal-8
+                                and abs(current['bpm']-tempo_row['toBpm'])>.10):
+                            try:
+                                later = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
+                                    actual_entry=window, earliest_beat=goal+4, latest_beat=goal+16,
+                                    entry_interval=entry_cadence[index % len(entry_cadence)] if entry_cadence else None,
+                                    allow_outro_bars=True)
+                            except ValueError:
+                                pass  # Keep the original verified exit and enforce its tempo guard.
+                            else:
+                                window = {**later, 'basis':'tempo-settled-measured-exit'}
+                                start_beat, goal = window['entryBeat'], window['mixAtBeat']
+                                self.update(targetBeat=goal, timing=dict(window), segmentBeats=window['segmentBeats'])
+                                self.event('Giving the native tempo ramp more time at a later verified bar.', 'timing')
+                            extended_tempo_window=True
                         control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1],
-                            handoff_beat=goal if entry_cadence and not final else None)
+                            handoff_beat=None if final else goal)
                         self.update(tempoControl=control)
                     change = self.service_copilot(client, current, incoming, ready, target, window)
                     if change:

@@ -8,7 +8,8 @@ import json
 import math
 import re
 import time
-from afterhours.audio_analysis import REPORTS, PLUGIN, read_scan, validate_scan, verified_energy, restore_effect
+from afterhours.audio_analysis import (REPORTS, PLUGIN, PAUSED_SCAN_TIMEOUT, read_scan, validate_scan,
+                                       verified_energy, restore_effect, stable_scan_interval)
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity
 
@@ -62,8 +63,7 @@ def verified_waveform(sid,duration,source_digest,root=REPORTS):
                 receipt.get('sourceReportDigest')!=source_digest or receipt.get('reportDigest')!=digest or
                 receipt.get('audioSaved') is not False or receipt.get('method')!='two-stable-waveforms-and-verified-analysis' or
                 type(receipt.get('passes')) is not int or receipt['passes']<2 or
-                type(receipt.get('stableForSeconds')) not in (int,float) or
-                not 1<=receipt['stableForSeconds']<=40 or abs(data['duration']-duration)>.05):return None
+                not stable_scan_interval(receipt) or abs(data['duration']-duration)>.05):return None
         details=validate_waveform(data,receipt['soundEndSeconds'],feature_digest)
         if details['envelopeDigest']!=receipt.get('envelopeDigest'):return None
         return {'trackId':'virtualdj:'+sid,'sourceReportDigest':source_digest,'reportDigest':digest,
@@ -74,7 +74,7 @@ def verified_waveform(sid,duration,source_digest,root=REPORTS):
 
 
 def scan_waveform(client,track,evidence,check=lambda:None,wait=time.sleep,
-                  root=REPORTS,clock=time.monotonic,timeout=40, deck=1, isolated=None):
+                  root=REPORTS,clock=time.monotonic,timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None):
     isolated=deck in (3,4) if isolated is None else isolated is True
     if deck not in ((1,2,3,4) if isolated else (1,)):raise ValueError('Analysis uses paused deck A or an isolated spare deck.')
     sid=track['engine']['selection_id'];duration=evidence['duration']

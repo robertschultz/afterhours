@@ -121,6 +121,24 @@ class AudioAnalysisTests(unittest.TestCase):
             data['features'][0]['rmsDb'] = -40; path.write_text(json.dumps(data))
             self.assertIsNone(verified_energy(SID, 10, root))
 
+    def test_spare_scan_receipt_accepts_a_bounded_delay_between_matching_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            peer = Peer(root)
+
+            def wait_past_handoff(seconds):
+                peer.wait(50.15 if seconds == 1.05 else seconds)
+
+            receipt = scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock,
+                                 wait=wait_past_handoff, timeout=120)
+            self.assertEqual(receipt['passes'], 2)
+            self.assertGreater(receipt['stableForSeconds'], 40)
+            self.assertIsNotNone(verified_energy(SID, 10, root))
+            path = root/(SID+'.verified.json')
+            receipt['scanWallSeconds'] = 121
+            path.write_text(json.dumps(receipt))
+            self.assertIsNone(verified_energy(SID, 10, root))
+
     def test_transport_recording_and_active_effect_guards_send_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             for field in ('playing', 'changed', 'active'):

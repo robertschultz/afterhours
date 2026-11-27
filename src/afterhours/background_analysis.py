@@ -14,7 +14,7 @@ import time
 import uuid
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
-from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN
+from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN, SPARE_SCAN_TIMEOUT
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
 from afterhours.vdj_mixing import loop_cleanup_descriptor
@@ -425,11 +425,11 @@ class BackgroundAnalysis:
                     # Timed sets need verified audio features and replayed
                     # cues, but can skip the separate display waveform pass.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
-                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
+                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                     evidence=track_analysis([checked])['tracks'][0]
                     if not timed:
                         self.message='Preparing waveform · '+track['title']
-                        scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
+                        scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
                 timed_option = {'timed': True} if timed else {}
                 evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],

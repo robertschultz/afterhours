@@ -3,6 +3,7 @@ import queue,threading,time,unittest
 from unittest.mock import Mock,patch
 from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
+from afterhours.native_analysis import NativeAnalysisDatabaseUpdating
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession
 
@@ -23,6 +24,30 @@ class Peer:
 
 class BackgroundTests(unittest.TestCase):
     def job(self):return BackgroundAnalysis(DJSession(threading.Lock()),'revision',[{'id':'test','title':'Test'}])
+
+    def test_database_write_retries_reads_without_using_the_native_mailbox(self):
+        job = self.job()
+        track = job.tracks[0]
+        initial_message = job.message
+        job.wait = Mock()
+        job.request = Mock(side_effect=AssertionError('Database retries must not access VirtualDJ.'))
+        with patch('afterhours.background_analysis.track_analysis',
+                   side_effect=[NativeAnalysisDatabaseUpdating(), {'tracks': [track]}]) as read:
+            self.assertEqual(job.read_evidence(track), track)
+        self.assertEqual(read.call_count, 2)
+        job.wait.assert_called_once_with(1)
+        job.request.assert_not_called()
+        self.assertEqual(job.message, initial_message)
+
+    def test_persistent_database_parse_failure_holds_without_partial_evidence(self):
+        job = self.job()
+        job.wait = Mock()
+        with patch('afterhours.background_analysis.track_analysis',
+                   side_effect=NativeAnalysisDatabaseUpdating()) as read:
+            with self.assertRaises(NativeAnalysisDatabaseUpdating):
+                job.read_evidence(job.tracks[0])
+        self.assertEqual(read.call_count, 6)
+        self.assertEqual([call.args[0] for call in job.wait.call_args_list], [1, 2, 4, 8, 12])
     def test_two_deck_alias_and_in_use_deck_send_nothing(self):
         for values in ({'get_decks':2,'deck 3 get_deck':1},{'deck 3 loaded':True},{'deck 3 play':True},{'deck 3 effect_active 1':True}):
             peer=Peer();peer.values.update(values);job=self.job();job.start(peer)

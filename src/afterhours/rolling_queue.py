@@ -22,15 +22,15 @@ class RollingQueue:
             if slack < 4 or session.cancel.is_set():
                 return
             pending = state.get('queuedUpdate') or {}
-            timed_set = bool(state.get('entryCadence'))
+            sustained_set = bool(state.get('entryCadence') or state.get('cueDriven'))
             miss = pending.get('catalogMissId')
-            if timed_set:
+            if sustained_set:
                 miss = miss or pending.get('analysisMissId') or pending.get('measuredFitMissId')
             attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
             if (miss and pending.get('status')=='blocked' and miss in attempted
                     and not state.get('resumeBlocked') and not session.background_job):
                 self.missed.add(miss)
-                if timed_set:
+                if sustained_set:
                     rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
                     if rejected:
                         self.missed_titles.add(song_identity(rejected)[0])
@@ -44,9 +44,9 @@ class RollingQueue:
 
             order = state['order']
             # Two spare decks still prepare at most two recordings at once.
-            # Start replenishing timed sets earlier so a slow decode or search
+            # Start replenishing sustained sets earlier so a slow decode or search
             # does not consume all of the upcoming 30-second slots.
-            if not order or len(order) - state['index'] > (10 if timed_set else 3):
+            if not order or len(order) - state['index'] > (10 if sustained_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
@@ -68,26 +68,26 @@ class RollingQueue:
 
             folder = (state.get('catalogFolder') or {}).get('id')
             candidates = [track for track in state['candidates']
-                          if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
+                          if (not sustained_set or not folder or not track.get('engine', {}).get('folder_id')
                               or track['engine']['folder_id'] == folder)
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             catalog = session.catalog_job
-            if timed_set and catalog and getattr(catalog, 'rolling', False):
+            if sustained_set and catalog and getattr(catalog, 'rolling', False):
                 self.live_matches.update(catalog.seen)
             style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
             upcoming = len(order) - state['index'] - 1
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.
             urgent_refill = upcoming <= 2 and bool(candidates)
-            if timed_set and not urgent_refill and not any(t['id'] in self.live_matches for t in candidates):
+            if sustained_set and not urgent_refill and not any(t['id'] in self.live_matches for t in candidates):
                 if (slack >= 26 and len(order)-state['index'] >= 2
-                        and (not catalog or catalog.done) and self.search(session, state, order, style, timed_set)):
+                        and (not catalog or catalog.done) and self.search(session, state, order, style, sustained_set)):
                     return
                 if catalog and not catalog.done and slack >= 22:
                     return
-            if timed_set:
+            if sustained_set:
                 candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
                     0 if track['id'] in self.live_matches else 1,
                     transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)),
@@ -103,7 +103,7 @@ class RollingQueue:
             # A second isolated deck can work ahead while the immediate
             # incoming recording is being verified. With less runway, start
             # just one transport preparation.
-            batch = 2 if timed_set and slack >= 23 and len(order) > state['index']+1 else 1
+            batch = 2 if sustained_set and slack >= 23 and len(order) > state['index']+1 else 1
             for track in candidates:
                 if session.cancel.is_set():
                     return
@@ -124,7 +124,7 @@ class RollingQueue:
                     queued['rollingTrackIds'] = selected
                 if deferred:
                     session.update(timedContinuation=[t for t in deferred if t['id'] not in selected])
-                if timed_set:
+                if sustained_set:
                     for track in picked:
                         session.event(f"Selected {track['title']} for a measured queue slot.", 'queue',
                                       trackId=track['id'], currentCatalogMatch=track['id'] in self.live_matches,
@@ -136,13 +136,13 @@ class RollingQueue:
                 return
             if slack < (9 if quick else 18):
                 return
-            if not self.search(session, state, order, style, timed_set) and state['rollingQueue'].get('status') != 'held':
+            if not self.search(session, state, order, style, sustained_set) and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
 
-    def search(self, session, state, order, style, timed_set):
+    def search(self, session, state, order, style, sustained_set):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
-        if timed_set:
+        if sustained_set:
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
@@ -163,7 +163,7 @@ class RollingQueue:
                 continue
             job = session.catalog_job
             job.rolling = True
-            if timed_set:
+            if sustained_set:
                 job.reuse_matches = True
                 job.target = job.quota = 4
                 job.max_rows = 12

@@ -165,8 +165,9 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
-def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None):
-    """Earliest verified exit with lead time, preserving the actual entry.
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None,
+           latest_beat=None, cue_driven=False):
+    """Choose a verified future exit while preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
     never sought or restarted, and a pending tempo ramp keeps its settle margin.
@@ -181,13 +182,19 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     position = current.get('beatPosition')
     if type(position) not in (int, float) or not math.isfinite(position):
         raise ValueError('The native beat position is unavailable.')
+    cue_driven = cue_driven and not final
+    if cue_driven and (type(current.get('bpm')) not in (int, float) or
+                       not math.isfinite(current['bpm']) or current['bpm'] <= 0):
+        raise ValueError('The native playing tempo is unavailable.')
+    entry = actual_entry or cue
     earliest = position+8  # two bars for bounded readbacks; never an instant cut
+    if cue_driven:
+        earliest = max(earliest, entry['entryBeat'] + max(32, fade_beats * 2))
     rows = plan.get('tempoSchedule') or []
     if index < len(rows):
         row = rows[index]
         earliest = max(earliest, cue['entryBeat']+row['startOffsetBeats']+row['durationBeats']+row['settleBeats'])
     source = next((t for t in (snapshot.get('analysis') or {}).get('tracks', []) if t['id'] == current['id']), {})
-    entry = actual_entry or cue
     target = earliest if entry_interval is None else entry['entryBeat'] + entry_interval * current['bpm'] / 60
     if entry_interval is not None and not final:
         # A timed run can flex to a nearby verified bar. A window several
@@ -195,6 +202,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         tolerance = 10 * current['bpm'] / 60
         earliest = max(earliest, target - tolerance)
         cadence_end = target + tolerance
+        latest_beat = min(latest_beat, cadence_end) if latest_beat is not None else cadence_end
     blend = 0 if final else fade_beats
     valid = []
     for candidate in source.get('cueCandidates', []):
@@ -202,7 +210,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
             continue
         exit_beat = candidate['exitBeat']
         if entry_interval is None or final:
-            if exit_beat >= earliest:
+            if exit_beat >= earliest and (latest_beat is None or exit_beat <= latest_beat):
                 valid.append(candidate)
             continue
         # Both endpoints of this audible outro were read from the native
@@ -211,7 +219,8 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         span = candidate['endBeat']-exit_beat
         first_bar = max(0, math.ceil((earliest-exit_beat)/4))
         last_bar = math.floor((min(span, candidate['maxBlendBeats'])-blend+1e-4)/4)
-        last_bar = min(last_bar, math.floor((cadence_end-exit_beat)/4))
+        if latest_beat is not None:
+            last_bar = min(last_bar, math.floor((latest_beat-exit_beat)/4))
         if first_bar > last_bar:
             continue
         bars = min(last_bar, max(first_bar, round((target-exit_beat)/4)))
@@ -223,11 +232,26 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     if not valid:
         timing = ' within the requested cadence' if entry_interval is not None and not final else ' ahead'
         raise ValueError(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
-    selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
+    if cue_driven:
+        incoming = plan['selections'][index+1]['entry']
+        measured = [candidate for candidate in valid
+                    if candidate['exit']['rmsDb'] > -40 and candidate['exit']['silentFraction'] <= .05
+                    and candidate['endBeat'] - candidate['exitBeat'] >= blend - .2]
+        if not measured:
+            raise ValueError('No verified phrase with enough audible material remains for this handoff.')
+        scores = [(c, *cue_planner.rank_phrase_exit(c, incoming, source.get('points') or [], current['bpm']))
+                  for c in measured]
+        selected, _, exit_evidence = min(scores, key=lambda row: (round(row[1], 1), row[0]['exitBeat']))
+    else:
+        selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
                   segmentBeats=window['endBeat']-entry['entryBeat'],
                   basis='operator-steered-measured-exit', originalCandidateId=cue['id'])
+    if cue_driven:
+        window.update(basis='cue-driven-phrase-exit',
+                      plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'],
+                      exitEvidence=exit_evidence)
     if entry_interval is not None:
         window.update(basis='cadence-measured-exit', requestedEntryInterval=entry_interval,
                       plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'])

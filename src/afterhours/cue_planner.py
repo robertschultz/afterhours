@@ -71,7 +71,16 @@ def excerpt_beats(seconds, target_bpm):
     return min((32,64,128,256,512,1024,2048), key=lambda n: abs(n-desired))
 
 
-def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8, *, timed=False, span_beats=None):
+def native_exit_markers(points):
+    for point in points:
+        label = point.get('label', '')
+        if (point.get('type') == 'remix' and label.startswith(('Break ', 'End Break '))
+                or point.get('type') == 'automix' and label in ('tempoEnd', 'cutEnd', 'fadeEnd')):
+            yield point
+
+
+def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, limit=8, *,
+                    timed=False, span_beats=None, cue_driven=False):
     """Rank candidate grid offsets locally; native seek/readback follows."""
     span = excerpt_beats(seconds, target_bpm) if span_beats is None else span_beats
     blend = min(32 if seconds <= 30 else 64, span//2)
@@ -83,8 +92,18 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         raise ValueError('The measured recording has no usable signal.')
     median = statistics.median(levels)
     possibilities=[]
+    stop_offset = min(4000, int((end-anchor_seconds)/period))
+    marked_offsets = set()
+    if cue_driven:
+        # Test the bar at each native marker using the same audio and replay
+        # requirements as ordinary windows.
+        marked_offsets = {
+            4 * round(((p['seconds'] - anchor_seconds) / period - span) / 4)
+            for p in native_exit_markers(evidence['points'])
+        }
+        marked_offsets = {offset for offset in marked_offsets if 0 <= offset < stop_offset}
     # Four-bar steps let the evidence move away from a misleading fixed offset.
-    for offset in range(0, min(4000, int((end-anchor_seconds)/period)), 16):
+    for offset in sorted(set(range(0, stop_offset, 16)) | marked_offsets):
         entry = anchor_seconds+offset*period
         exit_at = entry+span*period
         finish = exit_at+blend*period
@@ -110,7 +129,15 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         if len(ranked)>=min(early_count,limit):break
         if all(abs(offset-other)>=early_spacing for other in ranked):
             ranked.append(offset)
-    for _,offset in sorted(possibilities,reverse=True):
+    quality_order = sorted(possibilities, reverse=True)
+    marked_count = 0
+    for _,offset in quality_order:
+        if len(ranked) >= limit or marked_count >= 3:
+            break
+        if offset in marked_offsets and all(abs(offset - other) >= 16 for other in ranked):
+            ranked.append(offset)
+            marked_count += 1
+    for _,offset in quality_order:
         if len(ranked)>=limit:break
         if all(abs(offset-other)>=32 for other in ranked):
             ranked.append(offset)
@@ -399,7 +426,7 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         max_beats=min(cues[i]['maxBlendBeats'],cues[i+1]['maxBlendBeats'],preferred_beats)
         choices = (8, 16)
         reason_detail = ''
-        if snapshot.get('entryCadence'):
+        if snapshot.get('entryCadence') or snapshot.get('cueDriven'):
             outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
             level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
             bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
@@ -431,6 +458,36 @@ def verify_receipts(report):
     """Check the exact local measurements again before paid planning or transport."""
     for track in report['tracks']:
         measured_rows(track)
+
+
+def rank_phrase_exit(candidate, incoming, points, bpm):
+    """Score audible section movement and overlap fit using measured audio."""
+    outgoing = candidate['exit']
+    level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
+    bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
+    level_change = abs(candidate['exitChangeDb'])
+    bass_change = abs(candidate['exitBassChangeDb'])
+    boundary_score = min(8.0, level_change + .55 * bass_change)
+    penalty = .38 * level_gap + .21 * bass_gap + .16 * outgoing['levelVariationDb']
+    evidence = {
+        'sectionLevelChangeDb': candidate['exitChangeDb'],
+        'sectionBassChangeDb': candidate['exitBassChangeDb'],
+        'incomingLevelGapDb': round(level_gap, 2),
+        'incomingBassGapDb': round(bass_gap, 2),
+        'phraseConfidence': candidate.get('phraseConfidence', 'estimated'),
+    }
+    # An engine-estimated marker can corroborate a nearby measured exit.
+    # It cannot move that exit or supply an otherwise unmeasured beat.
+    marker_window = 4 * 60 / bpm
+    markers = [point for point in native_exit_markers(points)
+               if abs(point['seconds'] - candidate['exitSeconds']) <= marker_window]
+    if markers:
+        marker = min(markers, key=lambda point: abs(point['seconds'] - candidate['exitSeconds']))
+        distance = marker['seconds'] - candidate['exitSeconds']
+        boundary_score += 1.6 * (1 - abs(distance) / marker_window)
+        evidence['nativeMarker'] = {'id': marker.get('id'), 'label': marker['label'],
+                                    'offsetSeconds': round(distance, 3)}
+    return penalty - boundary_score, evidence
 
 
 def execution_window(cue, current, fade_beats, final=False):

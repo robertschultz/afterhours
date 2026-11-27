@@ -4,6 +4,22 @@ from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_public_artist_relationships_require_an_unambiguous_seed(self):
+        seed = '11111111-1111-1111-1111-111111111111'
+        artists = {'artists': [{'id':seed, 'name':'Fleetwood Mac'}]}
+        radio = {seed:[{'similar_artist_name':'Fleetwood Mac'}],
+                 'another':[{'similar_artist_name':'Stevie Nicks'}, {'similar_artist_name':'Stevie Nicks'}]}
+        calls = []
+        replies = iter((artists, radio))
+        def fetch(url):
+            calls.append(url)
+            return next(replies)
+        self.assertEqual(dj_discovery.similar_artists('Fleetwood Mac', fetch), ('Stevie Nicks',))
+        self.assertIn(seed, calls[-1])
+        self.assertIn('pop_begin=55', calls[-1])
+        ambiguous = {'artists': artists['artists'] + [{'id':'another', 'name':'Fleetwood Mac'}]}
+        self.assertEqual(dj_discovery.similar_artists('Fleetwood Mac', lambda _:ambiguous), ())
+
     def test_non_house_genres_keep_their_own_ranking(self):
         self.assertEqual(dj_discovery.style_for('Play Christian pop'), 'gospel')
         self.assertEqual(dj_discovery.style_for('Classic Rock'), 'rock')

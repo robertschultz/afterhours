@@ -11,7 +11,7 @@ from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 # Adjacent styles give the DJ room to follow a compatible thread without
 # taking an unrelated track simply because its BPM happens to fit.
 STYLE_GROUPS = (
-    frozenset(('house', 'deep house', 'tech house', 'techno', 'disco')),
+    frozenset(('house', 'deep house', 'tech house', 'techno', 'disco', 'dance')),
     frozenset(('soul', 'funk', 'r&b', 'gospel', 'hip hop')),
     frozenset(('rock', 'pop', 'funk', 'soul')),
 )
@@ -96,6 +96,7 @@ class RollingQueue:
                 unavailable.update('virtualdj:'+row['selectionId']
                     for row in (state.get('cleanupPending') or {}).get('analysis', []) if row.get('selectionId'))
             tail = order[-1]
+            DISCOVERY.neighbors(tail.get('artist'))
             artists = [normalized(track.get('artist')) for track in order[-2:]]
             genre = normalized(tail.get('genre'))
 
@@ -192,6 +193,7 @@ class RollingQueue:
         if timed_set or state.get('mixStyle') == 'phrase':
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
+            terms += list(DISCOVERY.neighbors(tail.get('artist')))
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
             if style == 'house' and not style_for(state.get('agentDirection')):
                 for related in ('deep house', 'tech house'):

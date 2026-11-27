@@ -5,7 +5,7 @@ import threading
 import time
 import unicodedata
 from collections import Counter
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -13,6 +13,7 @@ from afterhours.paths import data_root
 
 DANCE = 'https://itunes.apple.com/us/rss/topsongs/limit=50/genre=17/json'
 LISTENBRAINZ = 'https://api.listenbrainz.org/1/'
+MUSICBRAINZ = 'https://musicbrainz.org/ws/2/artist'
 HOUSE_STYLES = ('house', 'deep house', 'tech house')
 MAX_AGE = 3 * 86400
 FEED_ERRORS = (OSError, URLError, ValueError, KeyError, TypeError, AttributeError)
@@ -31,7 +32,7 @@ def identity(title, artist):
 
 
 def read_json(url):
-    request = Request(url, headers={'User-Agent': 'Afterhours/1.0 DJ chart discovery', 'Accept': 'application/json'})
+    request = Request(url, headers={'User-Agent': 'Afterhours/1.0 (https://github.com/robertschultz/afterhours)', 'Accept': 'application/json'})
     with urlopen(request, timeout=7) as response:
         content = response.read(1_000_001)
     if len(content) > 1_000_000:
@@ -68,6 +69,32 @@ def listenbrainz_style(style, now, fetch):
     return {'source': 'ListenBrainz genre-tagged popularity', 'observedAt': now, 'style': style, 'rows': rows}
 
 
+def similar_artists(artist, fetch):
+    escaped = artist.replace('\\', '\\\\').replace('"', '\\"')
+    search = urlencode({'query': f'artist:"{escaped}"', 'fmt': 'json', 'limit': 6})
+    rows = fetch(MUSICBRAINZ + '?' + search).get('artists', [])
+    # A fuzzy resolver could quietly associate the set with a different artist.
+    exact = {row.get('id') for row in rows if normalized(row.get('name')) == normalized(artist)}
+    if len(exact) != 1:
+        return ()
+    mbid = exact.pop()
+    if not re.fullmatch(r'[a-f0-9-]{36}', str(mbid)):
+        return ()
+    options = {'mode': 'easy', 'max_similar_artists': 8, 'max_recordings_per_artist': 2,
+               'pop_begin': 55, 'pop_end': 100}
+    radio = fetch(LISTENBRAINZ + 'lb-radio/artist/' + mbid + '?' + urlencode(options))
+    artists = {}
+    for group in radio.values():
+        if not isinstance(group, list):
+            continue
+        for row in group:
+            name = row.get('similar_artist_name')
+            key = normalized(name)
+            if key and key != normalized(artist) and isinstance(name, str):
+                artists.setdefault(key, name.strip())
+    return tuple(artists.values())[:8]
+
+
 def style_for(request):
     text = normalized(request)
     for style, aliases in (
@@ -80,7 +107,7 @@ def style_for(request):
     ):
         if re.search(r'\b(?:'+aliases+r')\b', text):
             return style
-    return ''
+    return 'dance' if text == 'dance' else ''
 
 
 def set_slot(request):
@@ -102,6 +129,59 @@ class Discovery:
         self.stop = threading.Event()
         self.worker = None
         self.feeds = {}
+        self.artist_lock = threading.Lock()
+        self.artist_cache = {}
+        self.artist_pending = {}
+        self.artist_worker = None
+        self.last_artist_lookup = -1.0
+
+    def neighbors(self, artist):
+        """Schedule public artist metadata without blocking the playback worker."""
+        name = re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(artist or ''), maxsplit=1, flags=re.I)[0].strip()
+        key = normalized(name)
+        if len(key) < 2 or len(name) > 120 or self.stop.is_set():
+            return ()
+        with self.artist_lock:
+            cached = self.artist_cache.get(key)
+            if cached and self.clock() < cached[0]:
+                return cached[1]
+            if key not in self.artist_pending and len(self.artist_pending) < 6:
+                self.artist_pending[key] = name
+            if self.artist_worker is None:
+                self.artist_worker = threading.Thread(target=self.read_artist_queue, name='afterhours-related-artists', daemon=True)
+                self.artist_worker.start()
+        return ()
+
+    def read_artist_queue(self):
+        while True:
+            with self.artist_lock:
+                if self.stop.is_set() or not self.artist_pending:
+                    self.artist_pending.clear()
+                    self.artist_worker = None
+                    return
+                key = next(iter(self.artist_pending))
+                name = self.artist_pending[key]
+            if self.stop.wait(max(0, 1.1 - (time.monotonic() - self.last_artist_lookup))):
+                continue
+            try:
+                self.last_artist_lookup = time.monotonic()
+                rows = similar_artists(name, self.fetch)
+            except HTTPError as exc:
+                rows = ()
+                if exc.code == 503 and not self.stop.wait(2):
+                    try:
+                        self.last_artist_lookup = time.monotonic()
+                        rows = similar_artists(name, self.fetch)
+                    except FEED_ERRORS:
+                        pass
+            except FEED_ERRORS:
+                rows = ()
+            with self.artist_lock:
+                self.artist_pending.pop(key, None)
+                self.artist_cache[key] = (self.clock() + (21600 if rows else 600), rows)
+                if len(self.artist_cache) > 128:
+                    self.artist_cache.pop(next(iter(self.artist_cache)))
+
 
     def refresh(self):
         now = self.clock()

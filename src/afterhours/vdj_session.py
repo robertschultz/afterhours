@@ -2434,7 +2434,7 @@ class DJSession:
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
-              allow_opening_catalog_fallback=False):
+              allow_opening_catalog_fallback=False, rolling_category=None):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
@@ -2442,7 +2442,7 @@ class DJSession:
         entry_cadence = validate_entry_cadence(entry_cadence)
         if (entry_cadence or loop_handoffs) and snapshot['mixStyle'] != 'phrase':
             raise ValueError('Timed entries and outgoing loops require a measured phrase-mixing set.')
-        rolling = RollingQueue() if rolling_queue else None
+        rolling = RollingQueue(rolling_category, snapshot.get('agentDirection')) if rolling_queue else None
         if snapshot.get('resumeBlocked'):
             raise ValueError('Native automation cleanup is unconfirmed. Stop playback and verify cleanup before starting another set.')
         planned=snapshot.get('executionPlan')

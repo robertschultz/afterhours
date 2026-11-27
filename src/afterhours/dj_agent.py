@@ -1756,6 +1756,8 @@ class DJAgent:
                                 # A category request gives no last track. Put
                                 # it on the rolling native queue after opening.
                                 self.playback_request['scope'] = 'ongoing'
+                                if broad in ('christmas', 'xmas', 'holiday'):
+                                    self.playback_request['rollingCategory'] = 'christmas'
                             self.session.discover_more(search, external_request_id=external.id, authorize=external.check,
                                                        opening_breadth=True)
                         else:
@@ -2817,6 +2819,8 @@ class DJAgent:
                        and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
                       or (request.get('source')=='mcp' and request.get('freshQueue'))))
         options = {'rolling_queue': True} if rolling else {}
+        if rolling and request.get('rollingCategory'):
+            options['rolling_category'] = request['rollingCategory']
         if request.get('source')=='mcp' and request.get('freshQueue') and request.get('scope')=='ongoing':
             options['allow_opening_catalog_fallback'] = True
         try:self.session.start(initialize_mixer=True,immediate=True,**options)

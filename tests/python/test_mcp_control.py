@@ -120,7 +120,7 @@ class MCPTests(unittest.TestCase):
 
         self.session.new_set.assert_called_once_with()
         self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True,
-                                                   allow_opening_catalog_fallback=True)
+                                                   allow_opening_catalog_fallback=True, rolling_category='christmas')
         packet = self.provider.call_args.args[0]
         self.assertEqual({row['id'] for row in packet['music']['catalog']}, {'b', 'c'})
         request = self.agent.playback_request

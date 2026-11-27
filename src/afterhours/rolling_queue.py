@@ -1,21 +1,25 @@
 """Append compatible recordings within the running set's native worker."""
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
-from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
+from afterhours.dj_discovery import DISCOVERY, matches_category, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import song_identity
 
 
 class RollingQueue:
-    def __init__(self):
+    def __init__(self, category=None, direction=None):
         self.searched = set()
         self.missed = set()
         self.live_matches = set()
         self.missed_titles = set()
+        self.category = category
+        self.direction = direction
 
     def tick(self, session, slack):
         with session.lock:
             state = session.snapshot()
+            if self.category and state.get('agentDirection') != self.direction:
+                self.category = None  # A newer requested direction now owns the set.
             if (not state.get('rollingQueue') or not state['active'] or state['phase'] != 'playing' or dj_settings.lead(state) != 'all'
                     or not state['setlist']['allowReorder'] or state['copilot'].get('held')):
                 return
@@ -65,10 +69,11 @@ class RollingQueue:
 
             folder = (state.get('catalogFolder') or {}).get('id')
             candidates = [track for track in state['candidates']
-                          if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
+                          if (not (timed_set or self.category) or not folder or not track.get('engine', {}).get('folder_id')
                               or track['engine']['folder_id'] == folder)
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
+                          and matches_category(self.category, track)
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             catalog = session.catalog_job
             if timed_set and catalog and getattr(catalog, 'rolling', False):
@@ -135,7 +140,11 @@ class RollingQueue:
     def search(self, session, state, order, style, timed_set):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
-        if timed_set:
+        if self.category:
+            terms = [self.category, f'{self.category} music',
+                     *(['holiday'] if self.category == 'christmas' else []),
+                     *(f'{artist} {self.category}' for artist in terms if artist)]
+        elif timed_set:
             suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]

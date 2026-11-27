@@ -150,6 +150,11 @@ def cleanup_analysis_deck(client, descriptor):
             if as_bool(client.query(f'deck {deck} loaded','bool')):
                 raise BridgeError(f'Analysis deck {deck} changed during cleanup; ownership was retained.')
             row['loadPending']=False;descriptor['loadPending']=False
+            # VirtualDJ retains its disk-error flag on an empty deck. Clear
+            # the failed selection before another Load can inherit that flag.
+            row['unloadRequested']=True;descriptor['unloadRequested']=True
+            client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                        f'deck {deck} deck_has_error ? deck {deck} unload : nothing')
         return loaded
     def owned_empty():
         guard_deck(client, deck)
@@ -182,6 +187,8 @@ def cleanup_analysis_deck(client, descriptor):
         empty = owned_empty()
     if empty is None:
         raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
+    if descriptor['unloadRequested'] and as_bool(client.query(f'deck {deck} deck_has_error','bool')):
+        raise BridgeError(f'Analysis deck {deck} still reports a load error after unload; ownership was retained.')
     if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
         return
     descriptor['restoreRequested']=True

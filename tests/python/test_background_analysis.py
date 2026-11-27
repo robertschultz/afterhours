@@ -9,7 +9,7 @@ from afterhours.vdj_session import DJSession
 class Peer:
     def __init__(self):
         self.commands=[];self.queries=[];self.values={'get_decks':4,'deck 3 get_deck':3,
-            'deck 3 loaded':False,'deck 3 play':False,'deck 3 volume':1,'deck 3 pfl':False,
+            'deck 3 loaded':False,'deck 3 play':False,'deck 3 volume':1,'deck 3 pfl':False,'deck 3 deck_has_error':False,
             'deck 3 get_effect_name 1':'Flanger','deck 3 effect_active 1':False,'deck 3 get_filepath':'test'}
     def query(self,s,k=None):self.queries.append(s);return self.values[s]
     def send(self,s):

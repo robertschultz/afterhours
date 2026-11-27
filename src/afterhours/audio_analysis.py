@@ -21,6 +21,8 @@ from afterhours.paths import analysis_reports
 REPORTS = analysis_reports()
 PLUGIN = 'Afterhours Analysis'
 MAX_SCAN_SECONDS = 1200
+PAUSED_SCAN_TIMEOUT = 40
+SPARE_SCAN_TIMEOUT = 120
 
 
 class AudioAnalysisTimeout(BridgeError):
@@ -29,6 +31,14 @@ class AudioAnalysisTimeout(BridgeError):
 
 def bounded(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def stable_scan_interval(receipt):
+    stable = receipt.get('stableForSeconds')
+    if 'scanWallSeconds' not in receipt:
+        return bounded(stable, 1, PAUSED_SCAN_TIMEOUT)
+    return (bounded(stable, 1, SPARE_SCAN_TIMEOUT)
+            and bounded(receipt['scanWallSeconds'], stable, SPARE_SCAN_TIMEOUT))
 
 
 def exceeds_scan_duration(track):
@@ -123,7 +133,7 @@ def restore_effect(client, deck, previous, wait=time.sleep, clock=time.monotonic
 
 
 def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
-               root=REPORTS, clock=time.monotonic, timeout=40, deck=1, isolated=None):
+               root=REPORTS, clock=time.monotonic, timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None):
     """One bounded scan operation. The caller owns the OSC connection lock.
 
     An isolated deck is a spare one held paused, at zero volume and off the
@@ -247,7 +257,7 @@ def verified_energy(recording_id, duration, root=REPORTS):
                 receipt.get('reportDigest') != digest or receipt.get('audioSaved') is not False or
                 receipt.get('method') != 'two-stable-scans-and-native-sound-end' or
                 type(receipt.get('passes')) is not int or receipt['passes'] < 2 or
-                not bounded(receipt.get('stableForSeconds'), 1, 40) or
+                not stable_scan_interval(receipt) or
                 not bounded(duration, .001, MAX_SCAN_SECONDS) or abs(duration-data['duration']) > .05):
             return None
         details = validate_scan(data, receipt['soundEndSeconds'])

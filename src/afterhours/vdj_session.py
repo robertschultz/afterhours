@@ -2515,7 +2515,8 @@ class DJSession:
         def work(client):
             nonlocal order,planned
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
-                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[])
+                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[],
+                        timingTrackId=None)
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -2676,7 +2677,7 @@ class DJSession:
                 resume_window = None
                 start_beat, goal = window['entryBeat'], window['mixAtBeat']
                 self.update(segmentBeats=window['segmentBeats'], targetBeat=goal, fadeBeats=window['fadeBeats'],
-                            timing=dict(window), message=f"Playing {track['title']}")
+                            timing=dict(window), timingTrackId=track['id'], message=f"Playing {track['title']}")
                 if resume and index == resumed_index:
                     self._copilot_result('confirmed', 'Copilot resumed from the playing recording at a verified future cue.')
                 revised_final=False
@@ -2991,9 +2992,13 @@ class DJSession:
         current_index=next((i for i,v in enumerate(s['order']) if v['id']==deck.get('id')),-1)
         next_track=s['order'][current_index+1] if 0<=current_index<len(s['order'])-1 else None
         cue=next((v for v in (s.get('executionPlan') or {}).get('selections',[]) if v['trackId']==deck.get('id')),None)
-        exit_beat=cue['exitBeat'] if cue else None
+        timed_active = s.get('active') and bool(s.get('entryCadence'))
+        # The crossfader can expose the incoming recording before its next
+        # timed exit is armed. Its saved cue is not the live timed exit.
+        exit_beat=cue['exitBeat'] if cue and not timed_active else None
         scheduled=(s.get('timing') or {}).get('mixAtBeat')
         if (s.get('active') and s['phase'] in ('playing','mixing') and current_index==index and
+                (not timed_active or s.get('timingTrackId') == deck.get('id')) and
                 ((s.get('executionPlan') or {}).get('applied') or
                  (s.get('mixStyle')=='quick' and (s.get('timing') or {}).get('basis')=='native-beat-grid')) and
                 type(scheduled) in (int,float) and math.isfinite(scheduled)):

@@ -2502,7 +2502,8 @@ class DJSession:
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
-              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
+              held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
+              allow_grid_opening=False):
         from afterhours.rolling_queue import RollingQueue
 
         self.dig_restart()
@@ -2525,7 +2526,12 @@ class DJSession:
         if ((snapshot['phase'] not in (('ready', 'completed', 'stopped', 'takeover', 'error') if immediate else ('ready', 'completed', 'stopped', 'takeover'))
              and not (resume and copilot_commands.resumable(snapshot))) or len(snapshot['order']) < 2):
             raise ValueError('Build a set before starting playback.')
-        if immediate:planned=None
+        # Start-first playback prepares measured handoffs after the opener.
+        # A fresh voice request can inherit the last stopped set's quick mode.
+        opening_style = {'mixStyle': 'phrase', 'quickBlendSeconds': None, 'quickTargetBpm': None} if immediate else {}
+        if immediate:
+            planned=None
+            snapshot.update(opening_style)
         order = validate_order([t['id'] for t in snapshot['order']], snapshot['candidates'], snapshot.get('maxTempoShift',8),
                                snapshot['secondsPerTrack'],snapshot.get('tempoTargets'),
                                frozen=(planned or {}).get('tempoSchedule'),opening=(planned or {}).get('targetBpm'),
@@ -2610,6 +2616,26 @@ class DJSession:
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
                 raise BridgeError('Pause both decks and turn Automix off before starting this set.')
+            measured_opening = immediate
+            grid_opening = None
+            if immediate:
+                from afterhours.background_analysis import SpareDeckUnavailable, guard_deck
+                try:
+                    guard_deck(client,3)
+                    guard_deck(client,4)
+                except SpareDeckUnavailable:
+                    if not allow_grid_opening or entry_cadence or loop_handoffs:
+                        raise BridgeError('Use a four-deck VirtualDJ layout for measured mixing. No playback was started.')
+                    order = validate_order([t['id'] for t in order], snapshot['candidates'], snapshot.get('maxTempoShift',8),
+                                           snapshot['secondsPerTrack'], snapshot.get('tempoTargets'), fixed=True,
+                                           window_limit=queue_window)
+                    grid_style = {**opening_style, 'mixStyle':'quick'}
+                    snapshot.update(grid_style)
+                    grid_opening = {'id':uuid.uuid4().hex,'mode':'native-beat-grid','status':'loading',
+                                    'requestedIds':[t['id'] for t in order]}
+                    self.update(**grid_style, startup=grid_opening, timing=None, executionPlan=None, analysis=None, aiReview=None)
+                    measured_opening = False
+                    self.event('VirtualDJ has no isolated spare decks. Using verified native beat-grid mixing.', 'technique')
             if planned and any(r['durationBeats'] for r in planned.get('tempoSchedule',[])) and as_bool(self.q(client,'pitch_lock','bool')):
                 raise BridgeError('Turn off linked pitch before starting a set with tempo ramps. Playback was not started.')
             # The decks this set plays through. A resumed set keeps the
@@ -2625,8 +2651,9 @@ class DJSession:
             if snapshot['mixStyle']=='quick':self.update(quickTargetBpm=target)
             resume_window = None
             paused_current = False
-            if immediate:
+            if measured_opening:
                 from afterhours.opening_playback import start_and_prepare
+                self.update(**opening_style)
                 order,planned,t,resume_window=start_and_prepare(self,client,order)
                 target=planned['targetBpm'];active,index=1,0
             elif resume:
@@ -2670,7 +2697,7 @@ class DJSession:
                     raise BridgeError('Opening deck and mixer state were not confirmed; playback was not started.')
                 active, index = 1, 0
             entries = {d['deck']: round(d['beatPosition']) for d in t['decks']}
-            if snapshot['mixStyle']=='phrase' and not immediate:
+            if snapshot['mixStyle']=='phrase' and not measured_opening:
                 self.mixer = TransitionMixer(self.q,self.send)
                 if resume:
                     self.mixer.resume_preflight(client,active,snapshot.get('mixerBaselines'),adopt_playing=adopt_mixer,
@@ -2695,11 +2722,15 @@ class DJSession:
                 self.send(client,f'deck {active} play')
                 t=confirm_started(self,client,active,order[index]['id'],checked['beatPosition'])
                 copilot_commands.playing_pair({**snapshot,'telemetry':t})
-            if not resume and not immediate:
+            if not resume and not measured_opening:
                 self.availability.require_track(order[0])
                 self.send(client, 'deck 1 play')
                 t=confirm_started(self,client,1,order[0]['id'],t['decks'][0]['beatPosition'])
-            self.update(phase='playing', startedAt=self.snapshot().get('startedAt') if immediate or resume else time.time(), endedAt=None, message=f"Playing {order[index]['title']}")
+            started = self.snapshot().get('startedAt') if measured_opening or resume else time.time()
+            if grid_opening:
+                grid_opening = {**grid_opening,'status':'ready','playingAt':started}
+            self.update(phase='playing', startedAt=started, endedAt=None, message=f"Playing {order[index]['title']}",
+                        **({'startup':grid_opening} if grid_opening else {}))
             with self.lock:
                 self.state['copilot'].update(mode='mix' if self.state['copilot']['mode']=='mix' else 'leading', held=False)
             self.event(f"Set {'resumed' if resume else 'started'} · {order[index]['title']}", 'playing')
@@ -2755,7 +2786,7 @@ class DJSession:
                     try:
                         resume_window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
                             entry_interval=entry_cadence[index % len(entry_cadence)],
-                            actual_entry=resume_window if immediate and index == 0 else None,
+                            actual_entry=resume_window if measured_opening and index == 0 else None,
                             earliest_beat=self.tempo_ramp.minimum_handoff_beat(current['beatPosition']) if tempo_row else None)
                     except ValueError as exc:
                         if resume_window is None:

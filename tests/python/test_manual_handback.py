@@ -19,6 +19,9 @@ class ManualHandbackTests(unittest.TestCase):
     def test_typed_and_voice_handback_phrases_resume_once_without_a_provider(self):
         phrases={'go ahead and beat match into the next track':'go',
                  'go ahead and start transitioning to the next track':'go',
+                 'transition next':'go',
+                 'Dot, transition next':'go',
+                 'That transition to the next track':'go',
                  'could you please transition to the next track?':'go',
                  'take back over':'resume','you take over':'resume','resume automatic mixing':'resume'}
         for source in ('typed','voice'):

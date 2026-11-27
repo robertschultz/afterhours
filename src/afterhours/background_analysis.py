@@ -22,6 +22,7 @@ from afterhours.vdj_mixing import loop_cleanup_descriptor
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
 class SpareStreamRejected(BridgeError):pass
+class SpareDeckUnavailable(BridgeError):pass
 
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
 
@@ -40,7 +41,7 @@ def guard_deck(client, deck=3):
     # Any of the four decks can be a spare in a four-deck rotation; which ones
     # are spare right now is the preparation pool's decision, never this guard's.
     if type(deck) is not int or deck not in (1,2,3,4) or float(client.query('get_decks'))<4 or float(client.query(f'deck {deck} get_deck'))!=deck:
-        raise BridgeError('Background analysis needs a four-deck VirtualDJ layout; The analysis deck must not alias A/B.')
+        raise SpareDeckUnavailable('Background analysis needs a four-deck VirtualDJ layout; The analysis deck must not alias A/B.')
 
 def guard_isolation(client, deck=3):
     guard_deck(client,deck)

@@ -2720,8 +2720,13 @@ class DJAgent:
                      if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
             future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
+            grid_started = (startup.get('mode')=='native-beat-grid' and startup.get('status')=='ready'
+                            and startup.get('playingAt') is not None
+                            and s.get('startedAt')==startup.get('playingAt')
+                            and actual[:len(selected)]==selected)
+            measured_selection = actual==selected[:len(actual)] and (actual==selected or future==selected)
             if not (request['status']=='starting' and startup.get('requestedIds')==request['orderIds']
-                    and actual==selected[:len(actual)] and (actual==selected or future==selected)):
+                    and (grid_started or measured_selection)):
                 return fail('The selected set changed. The pending start was cancelled.')
         if request['status']=='starting':
             if s.get('phase') in ('playing','mixing') and any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):
@@ -2736,9 +2741,12 @@ class DJAgent:
         if any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):
             return fail('A deck started manually. The pending automatic start was cancelled.')
         request.update(status='starting',message='Starting the opening recording.')
-        rolling=(request.get('source')=='voice' and request.get('scope')!='finite' and self.settings.state['discover']
+        voice = request.get('source')=='voice'
+        rolling=(voice and request.get('scope')!='finite' and self.settings.state['discover']
                  and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
-        try:self.session.start(initialize_mixer=True,immediate=True,**({'rolling_queue':True} if rolling else {}))
+        options = {'rolling_queue': True} if rolling else {}
+        if voice:options['allow_grid_opening'] = True
+        try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')
         self.save();return True

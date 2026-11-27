@@ -2364,6 +2364,26 @@ class DJSession:
         cue_planner.verify_receipts(prepared['analysis'])
         return order,prepared
 
+    def refresh_preparing_queue(self, order):
+        """Refit cues after a native key update without rescanning unchanged candidates."""
+        with self.lock:
+            queued = self.state.get('queuedUpdate')
+            if not queued:
+                return
+            checked = {track['id']: track for track in order}
+            queued['tracks'] = [copy.deepcopy(checked.get(track['id'], track)) for track in queued['tracks']]
+            job = self.background_job
+            owned = job is not None and job.revision == queued['id'] and (
+                queued['status'] == 'analyzing' or bool(queued.get('partialPrepared')))
+            if owned:
+                queued.update(status='analyzing', prepared=None)
+            else:
+                queued.update(id=uuid.uuid4().hex, status='needs-analysis', prepared=None)
+            # The eventual fit uses the refreshed protected prefix. No plan
+            # compiled using the previous key survives, even a partial plan.
+            for key in ('partialTracks', 'partialPrepared', 'error', 'failure'):
+                queued.pop(key, None)
+
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
         from afterhours.rolling_queue import RollingQueue
@@ -2432,13 +2452,7 @@ class DJSession:
                 self.prepare_deck(client,revised[index],deck,target,cue=newplan['selections'][index],checked=exc.track)
                 newplan['applied']=True
                 self.update(order=revised,**prepared,mixPlans=newplan['transitions'])
-                with self.lock:
-                    queued=self.state.get('queuedUpdate')
-                    if queued:
-                        checked_by_id={t['id']:t for t in revised}
-                        queued['tracks']=[copy.deepcopy(checked_by_id.get(t['id'],t)) for t in queued['tracks']]
-                        queued.update(id=uuid.uuid4().hex,status='needs-analysis',prepared=None)
-                        queued.pop('error',None);queued.pop('failure',None)
+                self.refresh_preparing_queue(revised)
                 order,planned=revised,newplan
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
         def work(client):

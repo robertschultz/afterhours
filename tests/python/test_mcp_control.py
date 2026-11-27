@@ -158,7 +158,7 @@ class MCPTests(unittest.TestCase):
         self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
             active=True, phase='loading'))
         self.provider.return_value = ({**decision(['a', 'b']),
-                                       'sessionScope': {'mode': 'ongoing', 'message': 'Keep playing.'}}, {})
+                                       'sessionScope': {'mode': 'finite', 'message': 'Use the available small batch.'}}, {})
 
         self.direct(text='Play Christmas music')
         self.session.update(phase='catalog-ready', catalogFolder={'id': 'apple'},
@@ -168,6 +168,7 @@ class MCPTests(unittest.TestCase):
         self.agent.tick()
 
         self.assertEqual(self.agent.playback_request['orderIds'], ['a', 'c'])
+        self.assertEqual(self.agent.playback_request['scope'], 'ongoing')
         self.provider.assert_called_once()
         self.session.start.assert_called_once()
 

@@ -1752,6 +1752,9 @@ class DJAgent:
                             broad = re.sub(r'\s+music$', '', query).strip()
                             if broad != query and len(broad) >= 3 and not artist:
                                 search = f'{broad}; {query}'
+                                # A category request gives no last track. Put
+                                # it on the rolling native queue after opening.
+                                self.playback_request['scope'] = 'ongoing'
                             self.session.discover_more(search, external_request_id=external.id, authorize=external.check,
                                                        opening_breadth=True)
                         else:
@@ -2013,6 +2016,7 @@ class DJAgent:
                      self.curation.expiry(night_end(self.settings.state.get('plan'),self.clock())))
                 packet['sessionIntent']={'request':request.get('intent','Start the selected set.'),'startApproved':not request.get('decisionRequired',False),
                     'awaitingClarification':request.get('status')=='clarifying',
+                    **({'requestedScope':request['scope']} if request.get('externalCatalogProbe') and request.get('scope') else {}),
                     'ongoingCurationApproved':request.get('curationApproved',False),
                     'curationLimit':({'seconds':max(0,int(end-self.clock())),'decisions':session_curation.DECISIONS}
                         if request.get('curationApproved') else {'seconds':max(0,int(self.deadline-self.clock())),'decisions':self.remaining})}
@@ -2150,7 +2154,8 @@ class DJAgent:
                 pair = None
                 if (external and request.get('externalCatalogProbe') and request.get('id') == external.id
                         and request.get('status') == 'choosing' and not s.get('active') and not s.get('order')
-                        and (raw.get('sessionScope') or {}).get('mode') == 'ongoing'):
+                        and (request.get('scope') == 'ongoing'
+                             or (raw.get('sessionScope') or {}).get('mode') == 'ongoing')):
                     found = [row['id'] for row in packet['music']['catalog']
                              if row.get('searchMatch') and row.get('selectionEligible') is not False
                              and row['id'] in supplied_ids]
@@ -2601,6 +2606,8 @@ class DJAgent:
                  request.get('sessionId')==session['id'] and request.get('revision')==revision and
                  self.clock()<request.get('expiresAt',0))
         if scope is None:return
+        if pending and request.get('externalCatalogProbe') and request.get('scope') == 'ongoing' and scope['mode'] == 'finite':
+            scope = result['sessionScope'] = {'mode': 'ongoing', 'message': 'Keep playing the requested music.'}
         if scope['mode']=='clarify':
             if pending:
                 request.update(status='clarifying',message=scope['message'])

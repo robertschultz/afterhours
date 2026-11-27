@@ -71,6 +71,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNone(queue_planning.quick_opening(room,'Daft Punk',{'a','c'}))
         self.assertIsNone(queue_planning.quick_opening(room,'A mood',{'a','b','c'}))
 
+    def test_sparse_live_results_only_reuse_a_cached_followup_with_same_artist_and_source(self):
+        opener = {'id':'a', 'title':'First', 'artist':'Forrest Frank', 'bpm':118,
+                  'catalog':{'provider':'online-a'}}
+        matching = {**opener, 'id':'b', 'title':'Second', 'bpm':120}
+        wrong_artist = {**opener, 'id':'c', 'title':'Unrelated', 'artist':'Other'}
+        another_provider = {**opener, 'id':'d', 'title':'Third', 'catalog':{'provider':'online-b'}}
+        state = {'candidates':[opener, wrong_artist, another_provider, matching]}
+        self.assertEqual(queue_planning.quick_opening(state,'Forrest Frank',{'a'}),['a','b'])
+        self.assertIsNone(queue_planning.quick_opening(state,'Forrest Frank',{'c'}))
+        self.assertIsNone(queue_planning.quick_opening({'candidates':state['candidates'][:-1]},'Forrest Frank',{'a'}))
+
     def test_peak_slot_prefers_energy_and_credited_collaborators(self):
         anchor={'id':'anchor','artist':'Alex','genre':'House'}
         collab={'id':'collab','artist':'Alex, Jules','energy':.4,'genre':'House'}

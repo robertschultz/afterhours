@@ -1013,37 +1013,7 @@ class DJSession:
             # A lost connection never justifies replaying Start/Load/Mix. An
             # explicit Stop sends the idempotent pause command once, separately.
             if self.stop_audio:
-                try:
-                    stopped_crossfader=None
-                    with self.factory(self.port, timeout=.5, budget_seconds=3) as stop:
-                        # Every deck the set plays through, wherever the rotation stood.
-                        stop.send(' & '.join(f'deck {deck} pause' for deck in self.decks))
-                        paused = not any(as_bool(stop.query(f'deck {deck} play', 'bool')) for deck in self.decks)
-                        if paused:
-                            self.retry_paused_cleanup(stop)
-                            if self.handoff:
-                                try:stopped_crossfader=number(stop.query('crossfader'),0,1)
-                                except (BridgeError,OSError):pass
-                        if paused and self.mixer:
-                            # Restore only while confirmed paused. This cleanup
-                            # deliberately bypasses the canceled worker checks.
-                            for deck,controls in self.mixer.baselines.items():
-                                stop.send(' & '.join(f'deck {deck} {name} {v*100:.4f}%' for name,v in controls.items()))
-                    self.update(message=('Both decks are paused. Native cleanup remains unconfirmed; inspect VirtualDJ.'
-                                         if self.snapshot().get('resumeBlocked') else 'Set stopped. Both decks are paused.') if paused else
-                                'Stop sent; paused state is unconfirmed. Check VirtualDJ.')
-                    with self.lock:
-                        telemetry = self.state.get('telemetry')
-                        if telemetry and paused:
-                            for deck in telemetry['decks']:
-                                deck['playing'] = False
-                            if stopped_crossfader is not None:
-                                telemetry['crossfader']=stopped_crossfader
-                            if self.handoff is None or stopped_crossfader is not None:
-                                telemetry['sampledAt']=time.time()
-                        if paused:self.state.update(activeHandoff=None,transitionControl=None)
-                except (BridgeError, OSError):
-                    self.update(message='Stop could not be confirmed. Pause the decks in VirtualDJ.')
+                self.confirm_native_stop()
             terminal=self.snapshot()
             if terminal['phase'] in ('stopped','error') and terminal.get('startedAt'):
                 # Stop may be repeated after completion to verify paused decks
@@ -1065,6 +1035,56 @@ class DJSession:
             self.handoff = None
             self.tempo_ramp = None
             self.control_lock.release()
+
+    def confirm_native_stop(self):
+        """Settle transport independently of spare-deck cleanup."""
+        stopped_crossfader = None
+        cleanup_verified = True
+        try:
+            with self.factory(self.port, timeout=.5, budget_seconds=3) as client:
+                client.send(' & '.join(f'deck {deck} pause' for deck in self.decks))
+                paused = not any(as_bool(client.query(f'deck {deck} play', 'bool')) for deck in self.decks)
+                if paused:
+                    try:
+                        self.retry_paused_cleanup(client)
+                    except (BridgeError, OSError) as exc:
+                        self.event(str(exc), 'error')
+                        cleanup_verified = False
+                        # Cleanup can fail on an isolated spare even when the
+                        # audible channels stopped. Read their transport again.
+                        paused = not any(as_bool(client.query(f'deck {deck} play', 'bool')) for deck in self.decks)
+                if paused:
+                    if self.handoff:
+                        try:
+                            stopped_crossfader = number(client.query('crossfader'), 0, 1)
+                        except (BridgeError, OSError):
+                            pass
+                    if self.mixer:
+                        try:
+                            for deck, controls in self.mixer.baselines.items():
+                                client.send(' & '.join(f'deck {deck} {name} {v*100:.4f}%' for name, v in controls.items()))
+                        except (BridgeError, OSError):
+                            cleanup_verified = False
+        except (BridgeError, OSError):
+            self.update(message='Stop could not be confirmed. Pause the decks in VirtualDJ.')
+            return
+        if not paused:
+            self.update(message='Stop sent; paused state is unconfirmed. Check VirtualDJ.')
+            return
+        with self.lock:
+            telemetry = self.state.get('telemetry')
+            if telemetry:
+                for deck in telemetry['decks']:
+                    if deck['deck'] in self.decks:
+                        deck['playing'] = False
+                if stopped_crossfader is not None:
+                    telemetry['crossfader'] = stopped_crossfader
+                if self.handoff is None or stopped_crossfader is not None:
+                    telemetry['sampledAt'] = time.time()
+            deck_label = 'Both decks' if len(self.decks) == 2 else 'All set decks'
+            suffix = ' Automation cleanup still needs inspection.' if not cleanup_verified or self.state.get('resumeBlocked') else ''
+            self.update(message=f'Set stopped. {deck_label} are paused.' + suffix,
+                        activeHandoff=None, transitionControl=None)
 
     def stop(self, pause=True):
         with self.lock:
@@ -2873,6 +2893,7 @@ class DJSession:
                     self._copilot_result('confirmed', 'Copilot resumed from the playing recording at a verified future cue.')
                 revised_final=False
                 waiting_for_continuation=False
+                retried_mixer_window=False
                 stems_check_at=0
                 extended_tempo_window=False
                 while True:
@@ -2952,6 +2973,31 @@ class DJSession:
                         else:
                             self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
                     if current['beatPosition'] >= goal and runway<16:
+                        if self.mixer and not final:
+                            # Confirm the native guards before the last beat
+                            # check. Slow readback can consume this bar.
+                            self.verify_preparation_quarantine(client)
+                            self.mixer.validate_armed(client)
+                            observed = number(self.q(client, f'deck {active} get_beatpos'), -10000, 100000)
+                            if observed < goal:
+                                raise MixerControlChanged('The outgoing beat clock moved before the handoff. No transition was sent.')
+                            current = {**current, 'beatPosition': observed}
+                            if observed-goal > 1:
+                                if retried_mixer_window:
+                                    raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
+                                try:
+                                    interval = entry_cadence[index % len(entry_cadence)] if entry_cadence else None
+                                    lead = min(16, current['bpm']*8/60) if interval is not None else 32
+                                    window = copilot_commands.retime(self.snapshot(), current, recipe['fadeBeats'],
+                                        entry_interval=interval, actual_entry=window, latest_beat=goal+lead,
+                                        allow_outro_bars=True)
+                                except ValueError as exc:
+                                    raise BridgeError('Mixer checks missed the transition window. '+str(exc)) from exc
+                                retried_mixer_window = True
+                                start_beat, goal = window['entryBeat'], window['mixAtBeat']
+                                self.update(targetBeat=goal, timing=dict(window), segmentBeats=window['segmentBeats'])
+                                self.event('Mixer readback arrived late. Waiting for a nearby verified bar.', 'timing')
+                                continue
                         if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:
                                 raise BridgeError('The analyzed transition window was missed. Scheduling stopped; no substitute cue was used.')
@@ -3030,13 +3076,8 @@ class DJSession:
                 if tempo_row and not self.tempo_ramp.done:
                     raise BridgeError('Tempo ramp was not confirmed before the handoff. No transition was started.')
                 fade_beats = window['fadeBeats']
-                self.verify_preparation_quarantine(client)
-                if self.mixer:
-                    self.mixer.validate_armed(client)
-                    observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
-                    if observed-goal>1:
-                        raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
-                    current={**current,'beatPosition':observed}
+                if not self.mixer:
+                    self.verify_preparation_quarantine(client)
                 self.availability.require_track(expected)
                 self.update(phase='mixing', message=f"Mixing {track['title']} → {expected['title']}")
                 self.event(f"{fade_beats//4}-bar blend · {track['title']} → {expected['title']}", 'mix')

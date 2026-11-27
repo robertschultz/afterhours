@@ -98,7 +98,7 @@ class CatalogSearch:
                 self.seen.add(track['id']);self.matched+=1
                 self.per_term+=int(inserted or self.reuse_matches)
                 self.added+=int(inserted)
-                if self.opening_query and self.matched>=2:
+                if self.opening_query:
                     from afterhours.queue_planning import quick_opening
                     if quick_opening(s.snapshot(), self.opening_query, self.seen):
                         self.finish('Live catalog found an opening and a feasible next slot.')

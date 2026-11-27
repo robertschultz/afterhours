@@ -28,25 +28,31 @@ def transition_cost(outgoing, incoming, cues):
 
 
 def quick_opening(session, query, found):
-    """Use an exact live match and a feasible next slot before audio analysis."""
+    """Use a live opener and a feasible next slot before audio analysis."""
     wanted=normalized(query)
     title,artist=named_recording(query)
     title,artist=normalized(title),normalized(artist)
     blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
     candidates=[row for row in session.get('candidates',[])
-                if row['id'] in found and row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
-    for first in candidates:
+                if row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
+    for first in (row for row in candidates if row['id'] in found):
         first_title=normalized(first.get('title'))
         first_artists=credit(first.get('artist'))
         qualified=bool(title and first_title==title and artist in first_artists)
         if wanted!=first_title and wanted not in first_artists and not qualified:
             continue
         first_style = style_for(first.get('genre'))
+        provider = (first.get('catalog') or {}).get('provider')
+        def same_artist(row):
+            return bool(first_artists & credit(row.get('artist')))
+        # A cached followup is only a preparation candidate. It must be
+        # looked up again by exact identity before it can become audible.
         followups = sorted((row for row in candidates if row['id'] != first['id']
+                            and (row['id'] in found or (provider and same_artist(row)
+                                and (row.get('catalog') or {}).get('provider') == provider))
                             and (not qualified or normalized(row.get('title')) != first_title)
                             and not row['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))),
-                           key=lambda row: (
-                               not bool(first_artists & credit(row.get('artist'))),
+                           key=lambda row: (row['id'] not in found, not same_artist(row),
                                bool(first_style and first_style != style_for(row.get('genre'))),
                                abs(first['bpm'] - row['bpm'])))
         for second in followups:

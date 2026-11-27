@@ -16,7 +16,7 @@ from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN, SPARE_SCAN_TIMEOUT
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
+from afterhours.native_analysis import NativeAnalysisDatabaseUpdating, NativeAnalysisUnsettled, track_analysis
 from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
@@ -394,6 +394,24 @@ class BackgroundAnalysis:
             raise BridgeError('VirtualDJ loaded a different recording identity on the muted analysis deck. '
                               'No repeat load or handoff was sent.')
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
+
+    def read_evidence(self, track):
+        """Give a native database rewrite time to finish without loading again."""
+        message = self.message
+        delays = (1, 2, 4, 8, 12)
+        for delay in (*delays, None):
+            self.check()
+            try:
+                evidence = track_analysis([track])['tracks'][0]
+            except NativeAnalysisDatabaseUpdating:
+                if delay is None:
+                    raise
+                self.message = 'Waiting for VirtualDJ to finish writing its analysis database.'
+                self.wait(delay)
+                continue
+            self.message = message
+            return evidence
+
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
         from afterhours.cue_planner import LimitedAudio
@@ -418,7 +436,7 @@ class BackgroundAnalysis:
                         cue_planner.measured_rows(cached);self.result.append(cached);continue
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
-                evidence=track_analysis([checked])['tracks'][0]
+                evidence=self.read_evidence(checked)
                 waveform_ready = timed or bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])
                 if not evidence.get('energyMap') or not waveform_ready:
@@ -426,7 +444,7 @@ class BackgroundAnalysis:
                     # cues, but can skip the separate display waveform pass.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
                     scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
-                    evidence=track_analysis([checked])['tracks'][0]
+                    evidence=self.read_evidence(checked)
                     if not timed:
                         self.message='Preparing waveform · '+track['title']
                         scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)

@@ -13,6 +13,10 @@ class NativeAnalysisUnsettled(BridgeError):
     """A confirmed, paused recording never exposed a stable native grid."""
 
 
+class NativeAnalysisDatabaseUpdating(ValueError):
+    """The native database could not be parsed as a complete document."""
+
+
 DATABASE = Path.home() / 'Library/Application Support/VirtualDJ/database.xml'
 
 
@@ -57,7 +61,8 @@ def track_analysis(tracks, database=DATABASE):
                                        'No verified decoded-audio energy map is available.']}
             song.clear()
     except ET.ParseError as exc:
-        raise ValueError('VirtualDJ is updating its analysis database. Try preparing again.') from exc
+        raise NativeAnalysisDatabaseUpdating(
+            'VirtualDJ is updating its analysis database. Try preparing again.') from exc
     items=[]
     for track in tracks:
         sid=track['engine']['selection_id']

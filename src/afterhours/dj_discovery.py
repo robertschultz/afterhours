@@ -165,7 +165,7 @@ class Discovery:
                                              'style': preferred, 'observedAt': feed['observedAt']}
         return result
 
-    def hints(self, style, planned):
+    def hints(self, style, planned, *, searched=()):
         feed = self.fresh(style)
         if not feed:
             return []
@@ -177,7 +177,8 @@ class Discovery:
         current = [row for row in rows if row.get('releaseYear', 0) >= time.gmtime(self.clock()).tm_year-1]
         for row in current[:2] + rows[:len(rows)//2:2] + rows[len(rows)//2::2] + rows:
             artist = credit(row['artist'])
-            if artist & used or identity(row['title'], row['artist']) in known:
+            query = normalized(f"{row['artist']} {row['title']}")
+            if query in searched or artist & used or identity(row['title'], row['artist']) in known:
                 continue
             used.update(artist)
             results.append({**row, 'source': feed['source'], 'style': style, 'observedAt': feed['observedAt']})

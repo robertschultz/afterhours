@@ -136,9 +136,13 @@ class RollingQueue:
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
         if timed_set:
-            suggestions = DISCOVERY.hints(style, order)
+            suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
+            if style == 'house' and not style_for(state.get('agentDirection')):
+                for related in ('deep house', 'tech house'):
+                    terms += [f"{row['artist']} {row['title']}"
+                              for row in DISCOVERY.hints(related, order, searched=self.searched)]
             terms += [str(tail.get('genre') or style).strip(), style]
         for term in terms:
             key = normalized(term)

@@ -4,6 +4,18 @@ from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_rolling_hints_reach_records_beyond_the_first_six(self):
+        discovery = dj_discovery.Discovery(clock=lambda: 1)
+        discovery.feeds['house'] = {'observedAt': 1, 'source': 'Test house chart',
+                                    'rows': [{'title': f'Track {index}', 'artist': f'Artist {index}',
+                                              'percentile': 100 - index} for index in range(15)]}
+        first = discovery.hints('house', [])
+        searched = {dj_discovery.normalized(f"{row['artist']} {row['title']}") for row in first}
+        second = discovery.hints('house', [], searched=searched)
+        self.assertEqual(len(first), 6)
+        self.assertEqual(len(second), 6)
+        self.assertFalse({row['title'] for row in first} & {row['title'] for row in second})
+
     def test_style_feed_uses_recording_evidence_and_real_artist_credit(self):
         recording = '5ad1a2e9-60a7-4c07-ad68-f6cb7995f75e'
         feeds = iter([

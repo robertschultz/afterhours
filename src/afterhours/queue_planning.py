@@ -6,6 +6,7 @@ from afterhours import session_curation
 from afterhours.dj_discovery import credit, normalized
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
+from afterhours.stem_profiles import cue_pair
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, validate_order
 
@@ -24,6 +25,9 @@ def transition_cost(outgoing, incoming, cues):
     for field, weight in (('rmsDb', .12), ('bassDb', .08)):
         if finite(exit_window.get(field)) and finite(entry_window.get(field)):
             cost += abs(exit_window[field] - entry_window[field]) * weight
+    stem_fit = cue_pair(outgoing['id'],incoming['id'],cues.get(outgoing['id'],{}),cues.get(incoming['id'],{}))
+    if stem_fit:
+        cost += stem_fit['scoreAdjustment']
     return cost
 
 

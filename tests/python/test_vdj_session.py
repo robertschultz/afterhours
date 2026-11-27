@@ -791,6 +791,24 @@ class SessionTests(unittest.TestCase):
                 validate_order(ids,tracks())
         self.assertEqual([t['id'] for t in validate_order(['b','a'],tracks())],['b','a'])
 
+    def test_extended_rolling_window_requires_measured_timed_playback(self):
+        session = DJSession(threading.Lock())
+        records = [{'id': str(i), 'title': f'Song {i}', 'bpm': 120} for i in range(21)]
+        session.update(candidates=records, phase='catalog-ready')
+        selected = [track['id'] for track in records[:16]]
+        with self.assertRaisesRegex(ValueError, '2–12'):
+            session.plan(selected)
+        with self.assertRaisesRegex(ValueError, '12–20'):
+            session.plan(selected, mix_style='quick', queue_window=16)
+        with self.assertRaisesRegex(ValueError, '12–20'):
+            session.plan(selected, queue_window=21)
+        self.assertEqual(len(session.plan(selected, queue_window=16)['order']), 16)
+        with self.assertRaisesRegex(ValueError, 'requires a measured entry cadence'):
+            session.prepare_analysis()
+        with self.assertRaisesRegex(ValueError, 'requires a measured rolling set'):
+            session.start(entry_cadence=[60, 30])
+        self.assertEqual(session.plan(selected[:2])['queueWindow'], 12)
+
     def test_measured_queue_rejects_tracks_beyond_native_scan_limit(self):
         catalog=tracks()
         catalog[0]['duration']=3374.95

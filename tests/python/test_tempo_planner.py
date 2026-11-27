@@ -96,9 +96,11 @@ class NativeRamp(unittest.TestCase):
             'deck 1 pitch_range':.08,'deck 1 pitch':.5,'deck 1 get_filepath':'0'}
         self.client=Mock();self.client.send.side_effect=self.sent.append
         self.ramp=TempoRamp(lambda c,s,k=None:self.readings[s],lambda c,s:self.sent.append(s))
-        self.row={'fromBpm':125,'toBpm':126,'startOffsetBeats':4,'durationBeats':32,'maxPitchPercent':8,'reason':'Gradual lift'}
+        self.row={'fromBpm':125,'toBpm':126,'startOffsetBeats':4,'durationBeats':32,'settleBeats':8,'maxPitchPercent':8,'reason':'Gradual lift'}
         self.ramp.arm(tracks([125])[0],1,self.row,0)
-    def tick(self,beat,bpm):return self.ramp.tick(self.client,{'id':'0','playing':True,'beatPosition':beat,'bpm':bpm},{'playing':False})
+    def tick(self,beat,bpm,*,handoff_beat=None):
+        return self.ramp.tick(self.client,{'id':'0','playing':True,'beatPosition':beat,'bpm':bpm},
+                              {'playing':False},handoff_beat=handoff_beat)
     def test_one_native_ramp_and_verified_endpoint(self):
         self.setup_ramp();self.tick(1,125);self.assertEqual(self.sent,[])
         self.tick(4,125);self.tick(20,125.5);self.tick(36,126)
@@ -132,6 +134,35 @@ class NativeRamp(unittest.TestCase):
         self.setup_ramp()
         with self.assertRaises(BridgeError):self.tick(7,125)
         self.assertFalse(self.sent)
+
+    def test_timed_ramp_can_start_on_the_next_bar_after_preload(self):
+        self.setup_ramp()
+        self.ramp.arm(tracks([125])[0],1,{**self.row,'startOffsetBeats':12},64)
+        self.assertEqual(self.tick(79.5,125,handoff_beat=128)['status'],'waiting')
+        self.assertFalse(self.sent)
+        self.tick(80.2,125,handoff_beat=128)
+        self.assertIn('32bt & deck 1 pitch',self.sent[0])
+        self.tick(112.5,126,handoff_beat=128)
+        self.assertTrue(self.ramp.done)
+
+    def test_delayed_preload_requires_a_later_verified_handoff_for_the_full_ramp(self):
+        self.setup_ramp()
+        self.ramp.arm(tracks([125])[0], 1, {**self.row, 'startOffsetBeats':12, 'durationBeats':40}, 0)
+        self.assertEqual(self.ramp.minimum_handoff_beat(19.1), 70)
+        with self.assertRaisesRegex(BridgeError, 'No compressed ramp'):
+            self.tick(19.1, 125, handoff_beat=64)
+        self.assertFalse(self.sent)
+        self.assertEqual(self.tick(19.1, 125, handoff_beat=72)['status'], 'waiting')
+        self.tick(20.2, 125, handoff_beat=72)
+        self.assertIn('40bt & deck 1 pitch', self.sent[0])
+        self.assertAlmostEqual(self.ramp.minimum_handoff_beat(25), 70.2)
+
+    def test_timed_ramp_stays_held_if_full_length_cannot_fit(self):
+        self.setup_ramp()
+        with self.assertRaisesRegex(BridgeError,'No compressed ramp'):
+            self.tick(7.5,125,handoff_beat=48)
+        self.assertFalse(self.sent)
+
     def test_operator_pitch_change_cancels_instead_of_catching_up(self):
         self.setup_ramp();self.tick(4,125)
         with self.assertRaises(BridgeError):self.tick(20,128)

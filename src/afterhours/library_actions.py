@@ -1,6 +1,8 @@
 """Operator crate actions using the same catalog identities and guarded engine."""
 import copy
 from afterhours.dj_bridge import BridgeError
+from afterhours.session_curation import history_ids
+from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW
 
 
 def library_action(session,data):
@@ -12,7 +14,9 @@ def library_action(session,data):
         if action=='queue':
             order=(s.get('queuedUpdate') or {}).get('tracks') or s['order'];ids=[t['id'] for t in order]
             if track['id'] in ids:return s
-            if len(ids)>=12:raise ValueError('The upcoming set holds twelve tracks. Remove a future track in Setlist first.')
+            queue_window=s.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+            if len(ids)-len(history_ids(s))>=queue_window:
+                raise ValueError(f'The upcoming set holds {queue_window} tracks. Remove a future track in Setlist first.')
             ids.append(track['id'])
             if len(ids)==1:
                 if s['active'] or any(d.get('playing') for d in (s.get('telemetry') or {}).get('decks',[])):raise ValueError('Stop manual playback before building a new set.')

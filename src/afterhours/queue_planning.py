@@ -7,7 +7,7 @@ from afterhours.dj_discovery import credit, normalized
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
 from afterhours.vdj_mixing import transition_recipe
-from afterhours.vdj_session import validate_order
+from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, validate_order
 
 
 def finite(value):
@@ -81,7 +81,8 @@ def placement(session, track_id):
     opening = plan.get('targetBpm')
     if quick and session.get('order'):opening=session.get('quickTargetBpm') or session['order'][0]['bpm']
     history = session_curation.history_ids(session)
-    if len(ids) - len(history) >= 12:
+    queue_window = session.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+    if len(ids) - len(history) >= queue_window:
         raise ValueError('The current queue window is full. Wait for it to advance or remove an upcoming track.')
     choices = []
     for slot in range(first_slot, len(ids) + 1):
@@ -89,7 +90,7 @@ def placement(session, track_id):
         try:
             validate_order(revised, session.get('candidates', []), session.get('maxTempoShift', 8),
                            session.get('secondsPerTrack', 30), targets, frozen or None,
-                           opening if protected else None, fixed=quick, history_prefix=history)
+                           opening if protected else None, fixed=quick, history_prefix=history, window_limit=queue_window)
         except ValueError:
             continue
         before = order[slot - 1]

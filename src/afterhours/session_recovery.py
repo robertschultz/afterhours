@@ -10,10 +10,11 @@ import threading
 import uuid
 from afterhours.dj_bridge import BridgeError
 from afterhours.background_analysis import merge_cleanup_pending
+from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, MAX_TIMED_QUEUE_WINDOW
 
 FIELDS=('candidates','order','setlist','secondsPerTrack','excerptBars','maxTempoShift',
         'mixStyle','quickBlendSeconds','tempoTargets','query','artistFilter','genreFilter','bpmMin','bpmMax',
-        'analysis','aiReview','resumeBlocked','cleanupPending','recoveryHistory','recoveryRemainder')
+        'analysis','aiReview','queueWindow','resumeBlocked','cleanupPending','recoveryHistory','recoveryRemainder')
 MAX_BYTES=2_000_000
 
 
@@ -35,9 +36,10 @@ def recovery_state(session):
                      tempoTargets=pending.get('tempoTargets'))
         saved['setlist']['sourceById'].update(pending.get('sourceById',{}))
     order_ids=[track['id'] for track in saved['order']]
-    if len(order_ids)>12:
+    queue_window=saved.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+    if len(order_ids)>queue_window:
         if (type(index) is not int or not 0<index<len(order_ids) or index>256 or
-                not 1<=len(order_ids)-index<=12 or order_ids[:index]!=current_ids[:index]):
+                not 1<=len(order_ids)-index<=queue_window or order_ids[:index]!=current_ids[:index]):
             raise ValueError('The long queue has no valid heard-history boundary.')
         saved['recoveryWindow']={'heardIds':order_ids[:index],'remainingIds':order_ids[index:]}
     ids=set(order_ids)
@@ -62,6 +64,9 @@ def _restore_window(saved):
     history=_audit_tracks(saved.get('recoveryHistory',[]))
     remainder=_audit_tracks(saved.get('recoveryRemainder',[]))
     if len(remainder)>1:raise ValueError('Saved recovery remainder is invalid.')
+    queue_window=saved.get('queueWindow',DEFAULT_QUEUE_WINDOW)
+    if type(queue_window) is not int or not DEFAULT_QUEUE_WINDOW<=queue_window<=MAX_TIMED_QUEUE_WINDOW:
+        raise ValueError('Saved queue window is invalid.')
     window=saved.get('recoveryWindow')
     if window is None:
         # A new selected queue supersedes the old final-single recovery note.
@@ -69,9 +74,9 @@ def _restore_window(saved):
         return saved,history,remainder,False
     order=saved.get('order')
     if (not isinstance(window,dict) or set(window)!={'heardIds','remainingIds'} or
-            not isinstance(order,list) or not 13<=len(order)<=268 or
+            not isinstance(order,list) or not queue_window<len(order)<=256+queue_window or
             not isinstance(window['heardIds'],list) or not 1<=len(window['heardIds'])<=256 or
-            not isinstance(window['remainingIds'],list) or not 1<=len(window['remainingIds'])<=12 or
+            not isinstance(window['remainingIds'],list) or not 1<=len(window['remainingIds'])<=queue_window or
             any(not isinstance(t,dict) or not isinstance(t.get('id'),str) for t in order)):
         raise ValueError('Saved long queue history is invalid.')
     ids=[t['id'] for t in order]

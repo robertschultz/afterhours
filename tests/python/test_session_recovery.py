@@ -47,6 +47,21 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(again.state['recoveryHistory'],restored['recoveryHistory'])
             self.assertEqual(again.state['order'],original[24:])
 
+    def test_timed_extended_queue_recovers_exact_remaining_order_without_playing(self):
+        source = self.long_session(index=11)
+        source.update(queueWindow=20, entryCadence=[60, 30], mixStyle='phrase')
+        remaining = source.state['order'][11:]
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionRecovery(Path(directory) / 'queue.json')
+            store.save(source)
+            target = session()
+            self.assertTrue(store.restore(target)['restored'])
+            state = target.snapshot()
+        self.assertEqual(state['order'], remaining)
+        self.assertEqual(state['queueWindow'], 20)
+        self.assertNotIn('entryCadence', state)
+        self.assertFalse(state['active'])
+
     def test_final_remaining_record_survives_in_catalog_without_replaying_history(self):
         source=self.long_session(index=27)
         with tempfile.TemporaryDirectory() as directory:

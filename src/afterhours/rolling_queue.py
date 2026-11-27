@@ -27,14 +27,15 @@ class RollingQueue:
                 return
             pending = state.get('queuedUpdate') or {}
             timed_set = bool(state.get('entryCadence'))
+            replace_failed_preparation = timed_set or bool(self.category)
             miss = pending.get('catalogMissId')
-            if timed_set:
+            if replace_failed_preparation:
                 miss = miss or pending.get('analysisMissId') or pending.get('measuredFitMissId')
             attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
             if (miss and pending.get('status')=='blocked' and miss in attempted
                     and not state.get('resumeBlocked') and not session.background_job):
                 self.missed.add(miss)
-                if timed_set:
+                if replace_failed_preparation:
                     rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
                     if rejected:
                         self.missed_titles.add(song_identity(rejected)[0])

@@ -1612,7 +1612,7 @@ class DJSession:
             self.event('Prepared queue revision adopted at the handoff. Playing cue preserved.','queue-applied')
             return copy.deepcopy(order),copy.deepcopy(plan)
 
-    def final_preparation_runway(self, track, index, current):
+    def final_preparation_runway(self, track, index, current, *, scoped=False):
         """Time to prepare a staged continuation on the existing recording."""
         with self.lock:
             if self.state['copilot']['mode']=='off':return 0
@@ -1622,7 +1622,7 @@ class DJSession:
                     and len(tracks)>index+1 and tracks[index]['id']==track['id'])
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching'))
-            replaceable=queued.get('catalogMissId') or (self.state.get('entryCadence') and
+            replaceable=queued.get('catalogMissId') or ((self.state.get('entryCadence') or scoped) and
                 (queued.get('measuredFitMissId') or queued.get('analysisMissId')))
             if not staged and not (rolling and (not queued or replaceable)):
                 return 0
@@ -2739,7 +2739,7 @@ class DJSession:
                             continue
                     self.update(segmentProgress=max(0, min(1, (current['beatPosition'] - start_beat) / (window['endBeat']-start_beat))))
                     slack=(goal-current['beatPosition'])*60/max(40,current['bpm'])
-                    runway=self.final_preparation_runway(track,index,current) if final and planned else 0
+                    runway=self.final_preparation_runway(track,index,current,scoped=bool(rolling and rolling.category)) if final and planned else 0
                     if current['beatPosition']>=goal and runway>=16 and not waiting_for_continuation:
                         waiting_for_continuation=True
                         self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')

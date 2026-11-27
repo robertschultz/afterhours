@@ -148,6 +148,24 @@ class QueuePlanningTests(unittest.TestCase):
         roller.tick(self.session, 22)
         self.assertIsNone(roller.category)
 
+    def test_scoped_refill_replaces_a_conclusive_measured_fit_failure(self):
+        self.session.update(candidates=[{**track(tid), 'genre': 'Christmas: Pop'}
+                                        for tid in ('a', 'b', 'c', 'd')])
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status': 'ready'},
+                            executionPlan={'id': 'plan', 'applied': True, 'targetBpm': 125},
+                            agentDirection='Christmas favorites')
+        roller = RollingQueue('christmas', 'Christmas favorites')
+        roller.tick(self.session, 22)
+        pending = self.session.state['queuedUpdate']
+        rejected = pending['rollingTrackId']
+        pending.update(status='blocked', measuredFitMissId=rejected)
+        current = {'position': 45, 'controls': {'durationMs': 180000}}
+        self.assertGreater(self.session.final_preparation_runway({'id': 'b'}, 1, current, scoped=True), 16)
+        roller.tick(self.session, 22)
+        self.assertIn(rejected, roller.missed)
+        self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], rejected)
+
     def test_rolling_replaces_only_its_failed_catalog_lookup_after_cleanup(self):
         self.session.plan(['a','b'])
         self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},

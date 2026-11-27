@@ -21,6 +21,7 @@ from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
+class SpareStreamRejected(BridgeError):pass
 
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
 
@@ -361,7 +362,12 @@ class BackgroundAnalysis:
                 # A streamed load can briefly occupy the host decoder. Retry
                 # only its bounded readbacks, never the uncertain Load action.
                 self.check();continue
-            if failed:raise BridgeError('Stream could not be prepared on the analysis deck.')
+            if failed:
+                message = 'Stream could not be prepared on the analysis deck.'
+                exact = track['engine']['selection_id']
+                if self.owned and self.requested_load == exact and sid in (None, exact):
+                    raise SpareStreamRejected(message)
+                raise BridgeError(message)
             if sid==track['engine']['selection_id']:
                 self.loaded=sid
                 self.request('isolate-loaded','',sid)
@@ -423,8 +429,9 @@ class BackgroundAnalysis:
         except Exception as exc:
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
-            if (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
-                    and self.owned and self.loaded==track['engine']['selection_id']):
+            exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+                                     and self.owned and self.loaded==track['engine']['selection_id'])
+            if isinstance(exc,SpareStreamRejected) or exact_analysis_failed:
                 self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True

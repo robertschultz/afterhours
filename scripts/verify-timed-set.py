@@ -105,7 +105,13 @@ def main():
     provider_sequence = []
     deadline = time.monotonic() + args.seconds + 45
     while time.monotonic() < deadline:
-        state = request(SESSION)
+        state = request(SESSION+'?view=live')
+        # A completed handoff advances the playing index. Fetch its full
+        # evidence only when it can have changed, keeping the native worker
+        # free of repeated long-set analysis serialization.
+        seconds_playing = time.time() - state['startedAt'] if state.get('startedAt') else 0
+        if state['index'] > counts['handoffs'] or not state['active'] or seconds_playing >= args.seconds:
+            state = request(SESSION)
         if state['id'] != session:
             raise RuntimeError('A different set replaced the observed session.')
         order = state['order']
@@ -126,7 +132,7 @@ def main():
                 emit('selection', foundInCurrentSearch=event['currentCatalogMatch'], detail=event['text'],
                      musicEvidence=event['musicEvidence'], at=event['at'])
             last_event = event['at']
-        for row in state['transitions'][counts['handoffs']:]:
+        for row in state.get('transitions', [])[counts['handoffs']:]:
             if last_entry is None:
                 last_entry = state['startedAt']
                 provider_sequence.append(providers.get(row['from']))

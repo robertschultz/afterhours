@@ -28,10 +28,11 @@ def fits_style(track, style):
             or any(style in group and actual in group for group in STYLE_GROUPS))
 
 
-def title_without_mix_suffix(track):
-    title = track['title']
-    # Providers may append the version to the title instead of filling Remix.
-    base = re.sub(r'\s*[\[(][^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*[\])]\s*$', '', title, flags=re.I)
+def base_song_title(track):
+    # Providers may include featured artists and release versions in the title.
+    suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
+    base = re.sub(r'(?:\s*'+suffix+r')+\s*$', '', track['title'], flags=re.I)
+    base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
     return normalized(base)
 
 
@@ -88,7 +89,7 @@ class RollingQueue:
                 return
             ids = [track['id'] for track in order]
             titles = {song_identity(track)[0] for track in order} | self.missed_titles
-            song_versions = {(title_without_mix_suffix(track), artist)
+            song_versions = {(base_song_title(track), artist)
                              for track in order for artist in credit(track.get('artist'))}
             unavailable = {row['trackId'] for row in state.get('recordingAvailability', [])}
             if state.get('resumeBlocked'):
@@ -118,7 +119,7 @@ class RollingQueue:
                           # recording and have a baked-in DJ transition.
                           and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
-                          and not any((title_without_mix_suffix(track), artist) in song_versions
+                          and not any((base_song_title(track), artist) in song_versions
                                       for artist in credit(track.get('artist')))
                           and fits_style(track, style)
                           and finite(track.get('bpm')) and track['bpm'] > 0]

@@ -94,6 +94,49 @@ class MCPTests(unittest.TestCase):
         receipt=self.control.receipt(self.music['credential'],reply['requestId'])
         self.assertEqual((receipt['status'],receipt['reasonCode']),('blocked','selection-held'))
 
+    def test_idle_external_named_play_replaces_finished_queue_before_planning(self):
+        self.session.update(phase='completed', index=19, startedAt=self.now - 900)
+        self.session.state['order'] *= 7
+        self.session.new_set = Mock(side_effect=lambda: self.session.update(
+            id='fresh-fixture', phase='idle', index=-1, order=[], queuedUpdate=None,
+            startedAt=None, executionPlan=None))
+        self.session.start = Mock(side_effect=lambda **kwargs: self.session.update(
+            active=True, phase='loading'))
+        self.provider.return_value = (decision(['b', 'c']), {})
+
+        receipt = self.direct(text='Play Christmas music')
+        settled(self.agent)
+        self.agent.tick()
+
+        self.session.new_set.assert_called_once_with()
+        self.session.start.assert_called_once_with(initialize_mixer=True, immediate=True, rolling_queue=True)
+        request = self.agent.playback_request
+        self.assertEqual((request['sessionId'], request['orderIds']), ('fresh-fixture', ['b', 'c']))
+        self.assertEqual(request['externalRequestId'], receipt['commandId'])
+        self.assertEqual(self.control.receipt(self.music['credential'], receipt['requestId'])['status'], 'pending')
+        self.session.update(phase='playing', telemetry={'decks': [{'id': 'b', 'playing': True}]})
+        self.agent.tick()
+        self.assertEqual(self.control.receipt(self.music['credential'], receipt['requestId'])['status'], 'confirmed')
+
+    def test_live_named_direction_cannot_restart_set_when_the_original_ends(self):
+        self.session.update(phase='playing', active=True, index=1,
+                            telemetry={'decks': [{'id': 'b', 'playing': True}]})
+        self.session.new_set = Mock()
+        self.session.start = Mock()
+
+        def planner(*args, **kwargs):
+            self.session.update(phase='completed', active=False, index=2,
+                                telemetry={'decks': [{'id': 'c', 'playing': False}]})
+            return decision(), {}
+
+        self.provider.side_effect = planner
+        self.direct(text='Play Christmas music')
+        settled(self.agent)
+        self.agent.tick()
+        self.session.new_set.assert_not_called()
+        self.session.start.assert_not_called()
+        self.assertIsNone(self.agent.playback_request)
+
     def test_manual_takeover_returns_specific_hold_and_leaves_deck_alone(self):
         self.session.update(phase='takeover',active=False,
                             telemetry={'decks':[{'deck':1,'id':'a','playing':True}]})

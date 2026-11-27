@@ -4,7 +4,7 @@ import re
 import threading
 import unittest
 from contextlib import nullcontext
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_session import DJSession, Cancelled, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
 from test_vdj_catalog import CatalogPeer
@@ -18,6 +18,31 @@ def tracks():
 
 
 class SessionTests(unittest.TestCase):
+    def test_suspect_playing_transport_is_confirmed_without_dispatching_controls(self):
+        session = DJSession(threading.Lock())
+        client = Mock()
+        paused = {'deck': 2, 'loaded': True, 'id': 'expected', 'playing': False}
+        playing = {**paused, 'playing': True, 'beatPosition': 133}
+        fresh = {'decks': [{}, playing]}
+        for suspect in (BridgeError('OSC read timed out'), {'decks': [{}, paused]},
+                        {'decks': [{}, {'deck': 2, 'unavailable': True}]}):
+            with self.subTest(suspect=suspect), patch.object(session, 'telemetry', side_effect=[suspect, fresh]) as telemetry:
+                self.assertIs(session.read_playing_transport(client, 2, 'expected'), fresh)
+                self.assertEqual(telemetry.call_args_list, [call(client, clock_only=False), call(client, clock_only=True)])
+        client.send.assert_not_called()
+
+    def test_confirmed_transport_change_or_failed_read_stops_scheduling(self):
+        session = DJSession(threading.Lock())
+        client = Mock()
+        paused = {'deck': 2, 'loaded': True, 'id': 'expected', 'playing': False}
+        for row, reason in ((paused, 'Deck B is paused'),
+                            ({**paused, 'id': 'replacement', 'playing': True}, 'Deck B no longer holds the expected recording'),
+                            ({'deck': 2, 'unavailable': True}, 'Deck B transport could not be verified')):
+            with self.subTest(row=row), patch.object(session, 'telemetry', side_effect=[{'decks': [{}, paused]}, {'decks': [{}, row]}]):
+                with self.assertRaisesRegex(BridgeError, reason):
+                    session.read_playing_transport(client, 2, 'expected')
+        client.send.assert_not_called()
+
     def test_unexpected_worker_failure_logs_code_locations_without_request_data(self):
         s = DJSession(threading.Lock(), client_factory=lambda *args, **kwargs: nullcontext(None))
         invoked = []

@@ -2190,7 +2190,7 @@ class DJSession:
                 return
         raise BridgeError('Track load remains unconfirmed. No repeat load or Play was sent.')
 
-    def telemetry(self, client, observing=False, preloading=False):
+    def telemetry(self, client, observing=False, preloading=False, *, clock_only=False):
         q = (lambda client,script,kind=None: client.query(script,kind)) if observing else self.q
         def read_deck(deck):
             loaded = as_bool(q(client, f'deck {deck} loaded', 'bool'))
@@ -2245,13 +2245,14 @@ class DJSession:
             raise BridgeError('The audible deck clock is unavailable.')
         # Keep controls visible outside transitions. The mixer already reads EQ
         # on its timing loop; avoid adding six queries to that critical path.
-        mixing = self.snapshot().get('phase') == 'mixing'
+        with self.lock:
+            mixing = self.state['phase'] == 'mixing'
         for d in decks:
             deck = d['deck']
             cached = self.eq_readings.get(deck)
             if cached and cached['trackId'] != d.get('id'):
                 cached = None
-            if not mixing and not preloading and not d.get('unavailable') and not d.get('standby') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and not d.get('standby') and (
                     not cached or time.time() - cached['sampledAt'] >= .75):
                 try:
                     values = {name: number(q(client, f'deck {deck} {name}'), 0, 1)
@@ -2271,7 +2272,7 @@ class DJSession:
             cached = self.console_readings.get(d['deck'])
             if cached and cached['trackId'] != d.get('id'): cached = None
             if d.get('standby'): continue
-            if not preloading and not d.get('unavailable') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and (
                     not cached or time.time()-cached['values']['sampledAt'] >= .5):
                 values = bounded_controls(client, d['deck'], d.get('loaded') is True)
                 # A load from hardware while reading cannot attach old metadata
@@ -2284,10 +2285,41 @@ class DJSession:
                 cached={'trackId':d.get('id'),'values':values}
                 self.console_readings[d['deck']]=cached
             if cached:
-                d['controls']=live_controls(client,d['deck'],cached['values']) if not preloading else cached['values']
+                d['controls'] = (cached['values'] if mixing or clock_only or preloading
+                                 else live_controls(client,d['deck'],cached['values']))
         result = {'decks': decks, 'crossfader': crossfader, 'sampledAt': time.time()}
         self.update(telemetry=result)
         return result
+
+    def read_playing_transport(self, client, deck, track_id, *, clock_only=False):
+        """Confirm a suspect scheduling sample before acting on it."""
+        try:
+            reading = self.telemetry(client, clock_only=clock_only)
+        except (BridgeError, OSError):
+            reading = {}
+        current = reading.get('decks', [])
+        current = current[deck - 1] if len(current) >= deck else {}
+        if current.get('id') == track_id and current.get('playing') is True:
+            return reading
+
+        # The first sample spans multiple native reads and can include optional
+        # console work. Recheck using only the native clock and transport.
+        try:
+            confirmed = self.telemetry(client, clock_only=True)
+        except (BridgeError, OSError) as exc:
+            raise BridgeError(f'Deck {deck_rotation.letter(deck)} transport could not be verified. Automatic mixing stopped.') from exc
+        fresh = confirmed['decks'][deck - 1]
+        label = f'Deck {deck_rotation.letter(deck)}'
+        if fresh.get('unavailable') or fresh.get('loaded') is None:
+            raise BridgeError(f'{label} transport could not be verified. Automatic mixing stopped.')
+        if fresh.get('id') != track_id:
+            raise BridgeError(f'{label} no longer holds the expected recording. Automatic mixing stopped.')
+        if fresh.get('playing') is not True:
+            raise BridgeError(f'{label} is paused. Automatic mixing stopped.')
+        self.event(f'{label} clock and playback confirmed on a fresh read. Continuing the set.', 'timing',
+                   deck=deck, firstLoaded=current.get('loaded'), firstPlaying=current.get('playing'),
+                   firstIdentityMatched=current.get('id') == track_id)
+        return confirmed
 
     def analyze_deck(self, client, track, deck, clock=None):
         self.availability.require_track(track)
@@ -2816,10 +2848,11 @@ class DJSession:
                 waiting_for_continuation=False
                 stems_check_at=0
                 while True:
-                    t = self.telemetry(client)
+                    # A near-boundary sample still reads identity, transport,
+                    # tempo, meter and phase. Defer only console UI readbacks.
+                    t = self.read_playing_transport(client, active, track['id'],
+                        clock_only=not final and current['beatPosition'] >= goal-12)
                     current = t['decks'][active-1]
-                    if current['id'] != track['id'] or not current['playing']:
-                        raise BridgeError('A deck changed or was paused. Scheduling stopped for manual control.')
                     if tempo_row:
                         control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1],
                             handoff_beat=goal if entry_cadence and not final else None)

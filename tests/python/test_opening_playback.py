@@ -46,10 +46,13 @@ class OpeningTests(unittest.TestCase):
         self.check_opening('leading',rolling=True)
 
     def test_playing_opening_adopts_a_small_native_grid_refinement(self):
-        self.check_opening('leading',refined=True)
+        self.check_opening('leading',refined=155.5)
 
     def test_playing_opening_holds_if_pitch_changed(self):
-        self.check_opening('leading',refined=True,manual_pitch=True)
+        self.check_opening('leading',refined=155.5,manual_pitch=True)
+
+    def test_playing_opening_adopts_independently_measured_grid_over_initial_default(self):
+        self.check_opening('leading',refined=151,corroborated=True)
 
     def test_start_first_uses_measured_strategy_after_a_quick_set(self):
         s,_,_,_,_=self.setup_session()
@@ -89,17 +92,18 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual([call.args[1]['id'] for call in s.prepare_deck.call_args_list],['0','1'])
         self.assertNotIn('deck 1 play', trace)
 
-    def check_opening(self,mode,rolling=False,refined=False,manual_pitch=False):
+    def check_opening(self,mode,rolling=False,refined=None,manual_pitch=False,corroborated=False):
         s,report,trace,playing,beat=self.setup_session()
         if refined:
+            if corroborated:report['tracks'][0]['bpm']=refined
             read_telemetry=s.telemetry
             native_query=s.q
             def read_refined(client):
                 value=read_telemetry(client)
-                if 'close-analysis' in trace:value['decks'][0]['bpm']=155.5
+                if 'close-analysis' in trace:value['decks'][0]['bpm']=refined
                 return value
             def query_refined(client,script,kind=None):
-                if script=='deck 1 get_bpm absolute' and not manual_pitch:return 155.5
+                if script=='deck 1 get_bpm absolute' and not manual_pitch:return refined
                 return native_query(client,script,kind)
             s.telemetry=read_refined;s.q=query_refined
         s.state['copilot']['mode']=mode
@@ -138,7 +142,7 @@ class OpeningTests(unittest.TestCase):
             self.assertEqual(s.state['queuedUpdate']['rollingTrackId'],'2')
             self.assertEqual([t['id'] for t in s.state['timedContinuation']],['3'])
         self.assertTrue(playing[0]);self.assertEqual(s.state['startup']['status'],'ready')
-        self.assertEqual(s.state['startup']['targetBpm'],155.5 if refined else 155)
+        self.assertEqual(s.state['startup']['targetBpm'],refined or 155)
         self.assertEqual(s.state['copilot']['mode'],mode)
         review=s.state['aiReview']
         recovered=ai_mix.validate_plan({k:review.get(k) for k in ai_mix.PLAN_SCHEMA['properties']},s.state['analysis'],30)

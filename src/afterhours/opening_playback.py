@@ -206,11 +206,15 @@ def start_and_prepare(session,client,requested):
                 or t['decks'][1].get('playing') or t['decks'][1].get('id')!=initial_incoming):
             raise BridgeError('The opening decks changed. Background preparation yielded to manual control.')
         if abs(current['bpm']-target)>.15:
-            # VirtualDJ can refine its grid after playback starts. Check the
-            # unpitched deck reading before adopting a small native correction.
+            # VirtualDJ can initially report a catalog/default tempo before
+            # the decoded grid is ready. A larger change needs agreement
+            # between both native decks and the independently replayed grid.
             native=number(s.q(client,'deck 1 get_bpm absolute'),40,300)
-            if (abs(current['bpm']-native)>.15 or abs(native/target-1)>.02
-                    or abs(native/measured[first['id']]['bpm']-1)>.02):
+            measured_bpm=measured[first['id']]['bpm']
+            small_change=abs(native/target-1)<=.02 and abs(native/measured_bpm-1)<=.02
+            if abs(current['bpm']-native)>.15 or not (small_change or abs(native-measured_bpm)<=.15):
+                s.event('Opening deck tempo did not match the confirmed analysis grid.', 'analysis',
+                        firstBpm=target, observedBpm=current['bpm'], nativeBpm=native, measuredBpm=measured_bpm)
                 raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
             startup['targetBpm']=current['bpm']
             s.event(f'Opening grid refined to {current["bpm"]:.2f} BPM. Preparing the handoff at the observed tempo.',

@@ -242,6 +242,21 @@ class CopilotControlTests(unittest.TestCase):
         with self.assertRaises(cc.NoVerifiedHandoff):
             cc.automatic_timed_window(session.snapshot(), current, 32, 15)
 
+    def test_timed_recovery_uses_the_closest_measured_bar_when_the_first_exit_is_early(self):
+        snapshot = running().snapshot()
+        current = {**snapshot['telemetry']['decks'][0], 'beatPosition':23.34,'bpm':127.5967636}
+        first = {**snapshot['executionPlan']['selections'][0], 'entryBeat':0, 'exitBeat':64,
+                 'endBeat':96, 'maxBlendBeats':32}
+        later = {**first, 'id':'later', 'exitBeat':259, 'endBeat':323, 'maxBlendBeats':64}
+        snapshot['executionPlan']['selections'][0] = first
+        snapshot['analysis']['tracks'][0]['cueCandidates'] = [first, later]
+        recovered = cc.automatic_timed_window(snapshot, current, 8, 60, earliest_beat=63.55)
+        self.assertEqual(recovered['basis'], 'cadence-recovery-measured-exit')
+        self.assertEqual((recovered['mixAtBeat'],recovered['endBeat']),(88,96))
+        self.assertAlmostEqual(recovered['plannedEntryInterval'],41.38,places=2)
+        bounded = cc.automatic_timed_window(snapshot, current, 8, 60, earliest_beat=63.55, latest_beat=80)
+        self.assertEqual(bounded['mixAtBeat'],80)
+
     def test_untimed_tempo_recovery_can_use_a_later_verified_bar(self):
         s = running()
         current = {**s.state['telemetry']['decks'][0], 'beatPosition': 123}

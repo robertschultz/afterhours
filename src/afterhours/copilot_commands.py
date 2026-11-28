@@ -170,7 +170,7 @@ class NoVerifiedHandoff(ValueError):
     """No replay-verified exit fits the current timing constraints."""
 
 
-def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, latest_beat=None, earliest_beat=None, allow_outro_bars=False):
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, latest_beat=None, earliest_beat=None, allow_outro_bars=False, cadence_recovery=False):
     """Earliest verified exit with lead time, preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
@@ -197,7 +197,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     source = next((t for t in (snapshot.get('analysis') or {}).get('tracks', []) if t['id'] == current['id']), {})
     entry = actual_entry or cue
     target = earliest if entry_interval is None else entry['entryBeat'] + entry_interval * current['bpm'] / 60
-    if entry_interval is not None and not final:
+    if entry_interval is not None and not final and not cadence_recovery:
         # A timed run can flex to a nearby verified bar. A window several
         # minutes later belongs to cue-led pacing, not the requested cadence.
         tolerance = 10 * current['bpm'] / 60
@@ -254,12 +254,10 @@ def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_ent
         return retime(snapshot, current, fade_beats, entry_interval=seconds,
                       actual_entry=actual_entry, earliest_beat=earliest_beat, latest_beat=latest_beat)
     except NoVerifiedHandoff:
-        window = retime(snapshot, current, fade_beats, actual_entry=actual_entry,
-                        earliest_beat=earliest_beat, latest_beat=latest_beat, allow_outro_bars=True)
-        planned = (window['mixAtBeat'] - window['entryBeat']) * 60 / current['bpm']
-        window.update(basis='cadence-recovery-measured-exit', requestedEntryInterval=seconds,
-                      plannedEntryInterval=planned, scheduledBpm=current['bpm'],
-                      cadenceTargetBeat=window['entryBeat'] + seconds*current['bpm']/60)
+        window = retime(snapshot, current, fade_beats, entry_interval=seconds,
+                        actual_entry=actual_entry, earliest_beat=earliest_beat, latest_beat=latest_beat,
+                        cadence_recovery=True)
+        window['basis'] = 'cadence-recovery-measured-exit'
         return window
 
 

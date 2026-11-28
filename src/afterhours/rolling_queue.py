@@ -1,13 +1,26 @@
 """Append compatible recordings within the running set's native worker."""
 from afterhours import dj_settings
+from afterhours.algorhythm_refill import AlgorhythmRefill, linked_apple_recording
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import song_identity
 
 
+def discovery_style(state, order):
+    requested = style_for(state.get('agentDirection'))
+    opening = normalized(order[0].get('genre'))
+    latest = order[-1].get('genre')
+    if requested:
+        return requested
+    if opening and opening not in ('dance', 'electronic', 'music', 'unknown'):
+        return opening
+    return style_for(latest) or normalized(latest)
+
+
 class RollingQueue:
     def __init__(self):
+        self.algorhythm = AlgorhythmRefill()
         self.searched = set()
         self.missed = set()
         self.live_matches = set()
@@ -73,7 +86,10 @@ class RollingQueue:
             catalog = session.catalog_job
             if timed_set and catalog and getattr(catalog, 'rolling', False):
                 self.live_matches.update(catalog.seen)
-            style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
+            style = style_for(state.get('agentDirection')) or style_for(tail.get('genre')) or 'house'
+            if self.algorhythm.enabled and len(order) - state['index'] - 1 <= 2:
+                self.algorhythm.hints(state, order, discovery_style(state, order), (),
+                                     activity=session.event, searched=self.searched)
             if timed_set and not any(t['id'] in self.live_matches for t in candidates):
                 if (slack >= 26 and len(order)-state['index'] >= 2
                         and (not catalog or catalog.done) and self.search(session, state, order, style, timed_set)):
@@ -135,12 +151,15 @@ class RollingQueue:
     def search(self, session, state, order, style, timed_set):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        leads = self.algorhythm.hints(state, order, discovery_style(state, order), (),
+                                     activity=session.event, searched=self.searched)
+        identified = {f"{lead['artist']} {lead['title']}": lead for lead in leads}
         if timed_set:
             suggestions = DISCOVERY.hints(style, order)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
             terms += [str(tail.get('genre') or style).strip(), style]
-        for term in terms:
+        for term in (*identified, *terms):
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:
                 continue
@@ -152,6 +171,10 @@ class RollingQueue:
                 continue
             job = session.catalog_job
             job.rolling = True
+            if lead := identified.get(term):
+                linked = linked_apple_recording(lead.get('public_reference'), lead.get('source_url'))
+                job.set_rolling_seed(lead['artist'], lead['title'], version=lead.get('version'),
+                                     exact_credits=True, linked_provider_reference=linked)
             if timed_set:
                 job.reuse_matches = True
                 job.target = job.quota = 4

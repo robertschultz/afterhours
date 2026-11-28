@@ -299,7 +299,7 @@ def allowed(script, mutation, deck=3):
     # unscoped audio command. Catalog navigation is shared but carries no audio action.
     if deck not in (1,2,3,4) or re.search(rf'deck\s+(?!{deck}\b)\S+',script):return False
     if script.startswith(f'deck {deck} '):
-        verbs=('get_', 'loaded','play','deck_has_error','effect_active','volume','pfl','pitch') if not mutation else (
+        verbs=('get_', 'loaded','play','deck_has_error','effect_active','volume','pfl','pitch','is_fluid') if not mutation else (
             'master_tempo on','goto_first_beat','goto ','set_bpm ','effect_select 1 ',
             'effect_active 1 ','effect_button 1 ')
         return script[7:].startswith(verbs) and '&' not in script

@@ -2285,7 +2285,16 @@ class DJSession:
         unavailable=cue_planner.limited_audio(evidence,rows)
         if unavailable:raise cue_planner.LimitedAudio(unavailable)
         readbacks = {}
+        fast_offsets = False
+        duration = evidence['duration']
+
+        def read_position(grid_anchor=False):
+            return (number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000),
+                    number(self.q(client,f'deck {deck} get_time elapsed absolute'),
+                           -6000 if grid_anchor else 0,1200000)/1000)
+
         def at(offset, *, grid_anchor=False):
+            nonlocal fast_offsets
             # Overlapping cue windows share beats on this paused recording.
             # Replay verification of each candidate entry is still independent.
             key = (offset, grid_anchor)
@@ -2293,6 +2302,19 @@ class DJSession:
             if key in readbacks:
                 return readbacks[key]
             guard()
+            if offset and fast_offsets:
+                expected_time = anchor_time + offset * 60 / track['bpm']
+                if 0 <= expected_time < duration:
+                    self.send(client,f'deck {deck} goto {expected_time/duration*100:.9f}%')
+                    self.sleep(.12)
+                    beat, seconds = read_position()
+                    if abs(beat-anchor-offset) <= .05 and abs(seconds-expected_time) <= .02:
+                        readbacks[key] = (beat, seconds)
+                        return readbacks[key]
+                    # Keep the native grid authoritative if a fixed-grid
+                    # estimate or the percentage readback doesn't match.
+                    fast_offsets = False
+                    guard()
             self.send(client,f'deck {deck} goto_first_beat')
             self.sleep(.12)
             if offset:
@@ -2303,11 +2325,14 @@ class DJSession:
             # origin for offset selection, using the same bounded allowance
             # as native first-beat analysis. Every playable cue and its replay
             # must still read within the recording; do not clamp the grid.
-            readbacks[key] = (number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000),
-                              number(self.q(client,f'deck {deck} get_time elapsed absolute'),
-                                     -6000 if grid_anchor else 0,1200000)/1000)
+            readbacks[key] = read_position(grid_anchor)
             return readbacks[key]
         anchor,anchor_time=at(0,grid_anchor=True)
+        if timed:
+            try:
+                fast_offsets = not as_bool(self.q(client,f'deck {deck} is_fluid','bool'))
+            except BridgeError:
+                pass  # The ordinary native beat seeks still work.
         span=cue_planner.excerpt_beats(seconds,target_bpm)
         preferred_span=span
         # Requested pacing can exceed a short recording's verified audio.

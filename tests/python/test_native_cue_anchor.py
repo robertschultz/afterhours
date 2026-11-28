@@ -26,11 +26,14 @@ class PausedGridPeer:
         self.volume = 0
         self.pfl = False
         self.wrong_recording = False
+        self.fluid = False
+        self.first_percent_offset = 0
 
     def query(self, script, kind=None):
         fixed = {'get_decks': 4, 'deck 3 get_deck': 3,
                  'deck 3 play': self.playing, 'deck 3 volume': self.volume,
                  'deck 3 pfl': self.pfl,
+                 'deck 3 is_fluid': self.fluid,
                  'deck 3 get_filepath': 'changed.flac' if self.wrong_recording else self.locator}
         if script in fixed:
             return fixed[script]
@@ -57,6 +60,8 @@ class PausedGridPeer:
             self.stage = 'candidate'
         elif amount.endswith('%'):
             self.position = float(amount[:-1]) * self.duration / 100
+            self.position += self.first_percent_offset
+            self.first_percent_offset = 0
             self.beat = (self.position - self.anchor) * 155 / 60
             self.stage = 'replay'
         else:
@@ -64,13 +69,13 @@ class PausedGridPeer:
 
 
 class NativeCueAnchorTests(unittest.TestCase):
-    def measure(self, peer, seconds=30):
+    def measure(self, peer, seconds=30, *, timed=False):
         rows, report, _ = fixture(count=1)
         report['tracks'][0]['duration'] = peer.duration
         track = {**report['tracks'][0], 'engine': {'selection_id': identity(peer.locator)}}
         session = DJSession(threading.Lock())
         with patch('afterhours.cue_planner.measured_rows', return_value=rows), patch.object(session, 'sleep'):
-            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3)
+            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3, timed=timed)
 
     def test_negative_native_anchor_keeps_actual_grid_and_all_cues_in_audio(self):
         peer = PausedGridPeer()
@@ -92,6 +97,28 @@ class NativeCueAnchorTests(unittest.TestCase):
         self.assertEqual(len(relative_seeks),len(set(relative_seeks)))
         self.assertEqual(len(absolute_replays),len(cues))
         self.assertFalse(peer.playing)
+
+    def test_timed_fixed_grid_verifies_cues_with_fewer_native_seeks(self):
+        fast, ordinary = PausedGridPeer(), PausedGridPeer()
+        ordinary.fluid = True
+        result, baseline = self.measure(fast, timed=True), self.measure(ordinary, timed=True)
+        self.assertEqual([c['offsetBeats'] for c in result],[c['offsetBeats'] for c in baseline])
+        for actual, expected in zip(result, baseline):
+            self.assertAlmostEqual(actual['entrySeconds'], expected['entrySeconds'], places=5)
+            self.assertAlmostEqual(actual['exitBeat'], expected['exitBeat'], places=5)
+            self.assertTrue(actual['replayVerified'])
+        self.assertLess(len(fast.commands),len(ordinary.commands))
+        self.assertFalse(any(command.startswith('deck 3 goto +') for command in fast.commands))
+        self.assertFalse(fast.playing)
+
+    def test_timed_seek_mismatch_reverts_to_native_relative_seeks(self):
+        peer = PausedGridPeer()
+        peer.first_percent_offset = .15
+        result = self.measure(peer, timed=True)
+        self.assertTrue(result)
+        self.assertTrue(peer.commands[1].endswith('%'))
+        self.assertTrue(any(command.startswith('deck 3 goto +') for command in peer.commands))
+        self.assertTrue(all(cue['replayVerified'] for cue in result))
 
     def test_short_recording_uses_replay_verified_shorter_phrase(self):
         peer = PausedGridPeer(anchor=.25, duration=123)

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from afterhours import ai_mix, cue_planner, dj_agent, dj_discovery, queue_planning, tempo_planner
 from afterhours.agent_loop import Lookups
-from afterhours.rolling_queue import RollingQueue
+from afterhours.rolling_queue import RollingQueue, fits_style
 from afterhours.vdj_session import DJSession
 from test_cue_planner import fixture
 from test_dj_agent import decision, settled
@@ -105,6 +105,14 @@ class QueuePlanningTests(unittest.TestCase):
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
         RollingQueue().tick(self.session,25)
         self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
+
+    def test_house_refill_distinguishes_missing_genres_from_other_catalog_labels(self):
+        for genre in ('Dub', 'Easy Listening', 'Alternative', 'Spoken Word'):
+            with self.subTest(genre=genre):
+                self.assertFalse(fits_style({'genre': genre}, 'house'))
+        for genre in ('House', 'Dub Techno', 'Dance', 'Electronic', '', None, 'Unclassified'):
+            with self.subTest(genre=genre):
+                self.assertTrue(fits_style({'genre': genre}, 'house'))
 
     def test_rolling_genre_follows_the_requested_direction(self):
         rows = [

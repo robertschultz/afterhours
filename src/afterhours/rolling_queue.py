@@ -32,7 +32,12 @@ def rolling_style(state, order):
 def fits_style(track, style, opening=None):
     if style == 'gospel':
         return fits_faith_set(track, opening or {})
-    actual = style_for(track.get('genre'))
+    catalog_genre = normalized(track.get('genre'))
+    actual = style_for(catalog_genre)
+    if style in HOUSE_STYLES and not actual and catalog_genre not in ('', 'unknown', 'unclassified'):
+        # An unhandled provider label is still genre evidence. A compatible
+        # tempo alone cannot turn a Dub or Easy Listening record into house.
+        return False
     return (not style or not actual or actual == style
             or any(style in group and actual in group for group in STYLE_GROUPS))
 

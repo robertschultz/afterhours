@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from afterhours import ai_mix, cue_planner, dj_agent, dj_discovery, queue_planning, tempo_planner
 from afterhours.agent_loop import Lookups
-from afterhours.rolling_queue import RollingQueue, fits_style
+from afterhours.rolling_queue import RollingQueue, automatic_style_filter, fits_style
 from afterhours.vdj_session import DJSession
 from test_cue_planner import fixture
 from test_dj_agent import decision, settled
@@ -135,6 +135,23 @@ class QueuePlanningTests(unittest.TestCase):
         queued = self.session.snapshot()['queuedUpdate']
         self.assertEqual(queued['tracks'][-1]['id'], 'house')
 
+    def test_house_filter_uses_tagged_artists_exact_public_recordings_and_cached_neighbors(self):
+        discovery = dj_discovery.Discovery(clock=lambda:100)
+        discovery.feeds['deep house'] = {'observedAt':99, 'rows':[
+            {'title':'Exact cut', 'artist':'Catalog Guest'},
+        ]}
+        discovery.artist_cache['resident'] = (200, ('Related Artist',))
+        opening = {**track('a'), 'artist':'Resident', 'genre':'House'}
+        unrelated = {**track('b'), 'title':'One broad cut', 'artist':'Drift', 'genre':'Dance'}
+        tagged = {**track('c'), 'artist':'Other House Artist', 'genre':'Tech House'}
+        accepts = automatic_style_filter('house', [opening, unrelated], [tagged], discovery)
+        for row in (tagged, {**unrelated, 'artist':'Resident'}, {**unrelated, 'artist':'Other House Artist'},
+                    {**unrelated, 'artist':'Related Artist'},
+                    {**unrelated, 'artist':'Catalog Guest', 'title':'Exact cut'}):
+            self.assertTrue(accepts(row), row)
+        self.assertFalse(accepts(unrelated))
+        self.assertFalse(accepts({**unrelated, 'artist':'Catalog Guest', 'title':'Exact cut (Remix)'}))
+
     @patch('afterhours.rolling_queue.DISCOVERY.neighbors', return_value=())
     def test_named_artist_refill_rejects_electronic_cache_but_can_broaden_to_related_music(self, _):
         seeds = [
@@ -203,7 +220,7 @@ class QueuePlanningTests(unittest.TestCase):
         ]}
         order = [{**track('a'), 'artist': 'Opening Artist', 'genre': 'House'}]
         with patch('afterhours.rolling_queue.DISCOVERY', discovery):
-            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'House')):
+            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'house')):
                 with self.subTest(direction=direction):
                     roller = RollingQueue()
                     roller.searched.add('opening artist')
@@ -389,8 +406,9 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
 
     def test_timed_house_refill_prefers_house_evidence_while_one_successor_is_protected(self):
-        rows = [{**track('a'), 'genre':'House'}, {**track('b'), 'genre':'House'},
-                {**track('c'), 'genre':'Dance'}, {**track('d'), 'genre':'Deep House'}]
+        rows = [{**track('a'), 'genre':'House', 'artist':'House DJ'}, {**track('b'), 'genre':'House'},
+                {**track('c'), 'genre':'Dance', 'artist':'House DJ'}, {**track('d'), 'genre':'Deep House'},
+                {**track('x'), 'genre':'Dance', 'artist':'Uncorroborated Artist'}]
         self.session.update(candidates=rows)
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
@@ -398,6 +416,7 @@ class QueuePlanningTests(unittest.TestCase):
         roller = RollingQueue()
         roller.advisor.enabled = False
         roller.live_matches.add('c')
+        roller.live_matches.add('x')
         roller.tick(self.session, 25)
         self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['d','c'])
 

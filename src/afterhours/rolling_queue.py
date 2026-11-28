@@ -4,7 +4,7 @@ import time
 
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
-from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidates, set_slot, style_for
+from afterhours.dj_discovery import DISCOVERY, credit, identity, normalized, rank_candidates, set_slot, style_for
 from afterhours.dj_discovery import fits_faith_set
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
@@ -47,6 +47,34 @@ def house_style_priority(track, style):
         return 0
     actual = style_for(track.get('genre'))
     return 0 if actual == style else 1 if actual in HOUSE_STYLES else 2
+
+
+def automatic_style_filter(style, order, catalog, discovery=None):
+    """Use supporting evidence before treating a broad tag as house."""
+    opening = order[0] if order else None
+    if style not in HOUSE_STYLES:
+        return lambda track: fits_style(track, style, opening)
+
+    discovery = discovery or DISCOVERY
+    recordings = discovery.house_recordings()
+    tagged = [track for track in (*order, *catalog) if style_for(track.get('genre')) in HOUSE_STYLES]
+    established = {artist for track in tagged for artist in credit(track.get('artist'))}
+    # Neighbors are a lead backed only by trusted house anchors. A broad-tag
+    # recording added later must never make its own catalog an anchor.
+    anchors = [track for track in order if style_for(track.get('genre')) in HOUSE_STYLES][-3:]
+    for anchor in anchors:
+        for artist in credit(anchor.get('artist')):
+            for neighbor in discovery.cached_neighbors(artist):
+                established.update(credit(neighbor))
+
+    def compatible(track):
+        if not fits_style(track, style, opening):
+            return False
+        actual = style_for(track.get('genre'))
+        return (actual not in ('', 'dance', 'electronic')
+                or identity(track.get('title'), track.get('artist')) in recordings
+                or bool(credit(track.get('artist')) & established))
+    return compatible
 
 
 def base_song_title(track):
@@ -138,11 +166,12 @@ class RollingQueue:
                         and (not catalog or catalog.done)):
                     staged = pending['tracks']
                     style = rolling_style(state, staged)
+                    matches_style = automatic_style_filter(style, staged, state['candidates'])
                     used = {row['id'] for row in staged} | self.missed
                     used.update(row['trackId'] for row in state.get('recordingAvailability', []))
                     titles = {song_identity(row)[0] for row in staged} | self.missed_titles
                     supply = sum(row['id'] in self.live_matches and row['id'] not in used
-                                 and song_identity(row)[0] not in titles and fits_style(row, style, staged[0])
+                                 and song_identity(row)[0] not in titles and matches_style(row)
                                  for row in state['candidates'])
                     if supply < 2:
                         self.search(session, state, staged, style, timed_set, lookahead=True)
@@ -182,6 +211,7 @@ class RollingQueue:
 
             folder = (state.get('catalogFolder') or {}).get('id')
             style = rolling_style(state, order)
+            matches_style = automatic_style_filter(style, order, state['candidates'])
             candidates = [track for track in state['candidates']
                           if (not timed_set or not folder or not track.get('engine', {}).get('folder_id')
                               or track['engine']['folder_id'] == folder)
@@ -191,7 +221,7 @@ class RollingQueue:
                           and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
                           and not song_credit_keys(track).intersection(song_versions)
-                          and fits_style(track, style, order[0])
+                          and matches_style(track)
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             upcoming = len(order) - state['index'] - 1
             # With a short buffer, prepare an eligible previously searched
@@ -319,7 +349,9 @@ class RollingQueue:
                 for related in ('deep house', 'tech house'):
                     seeds += [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
                               for row in DISCOVERY.hints(related, order, searched=self.searched)]
-            seeds += [(str(tail.get('genre') or style).strip(), '', ''), (style, '', '')]
+            if style not in HOUSE_STYLES:
+                seeds.append((str(tail.get('genre') or style).strip(), '', ''))
+            seeds.append((style, '', ''))
             seeds += [(name, name, '') for track in recent for name in sorted(credit(track.get('artist')))]
             if style == 'gospel':
                 seeds += [(name, '', '') for name in ('Christian pop', 'Contemporary Christian', 'Christian hip hop')]

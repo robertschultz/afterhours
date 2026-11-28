@@ -286,6 +286,17 @@ class Discovery:
                                              'style': preferred, 'observedAt': feed['observedAt']}
         return result
 
+    def house_recordings(self):
+        """Exact recording and release-tag evidence already in the public feeds."""
+        return {identity(row['title'], row['artist']) for style in HOUSE_STYLES
+                if (feed := self.fresh(style)) for row in feed['rows']
+                if isinstance(row, dict) and isinstance(row.get('title'), str) and isinstance(row.get('artist'), str)}
+
+    def cached_neighbors(self, artist):
+        with self.artist_lock:
+            cached = self.artist_cache.get(normalized(artist))
+            return cached[1] if cached and self.clock() < cached[0] else ()
+
     def hints(self, style, planned, *, searched=()):
         feed = self.fresh(style)
         if not feed:

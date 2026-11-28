@@ -1,7 +1,7 @@
 """C/D isolation, queue priority and catalog ownership without live audio."""
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from afterhours.preparation_pool import PreparationPool
 from afterhours.background_analysis import BackgroundAnalysis,allowed
 from afterhours.vdj_session import DJSession
@@ -53,6 +53,31 @@ class PoolTests(unittest.TestCase):
             pool.jobs[0].done=True;pool.jobs[0].result=[tracks[0]];pool.step(peer,40)
             self.assertEqual(calls[-1],('2',3))
             pool.close(peer);self.assertTrue(all(j.cancelled.is_set() for j in pool.jobs))
+
+    def test_timed_catalog_yields_to_load_and_restarts_search_afterward(self):
+        session = DJSession(threading.Lock())
+        session.update(entryCadence=[60, 30])
+        pool = PreparationPool(session, 'revision', [{'id':'b', 'title':'B'}])
+        session.preparation_decks = Mock(return_value=(4,))
+        session.background_job = pool
+        job = Mock(done=False, rolling=True)
+        session.catalog_job = job
+        client = Mock()
+        pool.jobs = [Mock(loaded=None, done=False, deck=4)]
+        session.service_catalog(client, 35)
+        job.resume_search.assert_called_once()
+        job.step.assert_not_called()
+        pool.jobs[0].loaded = 'verified-exact-recording'
+        session.service_catalog(client, 17)
+        job.step.assert_not_called()
+        session.service_catalog(client, 20)
+        job.step.assert_called_once_with(client)
+        session.preparation_decks.return_value = (3,4)
+        session.service_catalog(client, 40)
+        self.assertEqual(job.resume_search.call_count, 2)
+        job.rolling = False
+        session.service_catalog(client, 40)
+        job.step.assert_called_once_with(client)
 
     def test_owned_or_loaded_spares_are_never_replaced(self):
         s=DJSession(threading.Lock());peer=PoolPeer()

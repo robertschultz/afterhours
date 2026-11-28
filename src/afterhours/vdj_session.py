@@ -1377,7 +1377,20 @@ class DJSession:
         job=self.catalog_job
         # Audio timing has priority. Metadata work never loads a deck and stops
         # well before the beat-critical handoff. It resumes after that handoff.
-        if not job or job.done or seconds_available<(9 if getattr(job,'rolling',False) else 16) or self.background_job:return
+        if not job or job.done:
+            return
+        rolling = getattr(job, 'rolling', False)
+        if self.background_job:
+            if not rolling or not self.state.get('entryCadence'):
+                return
+            if not self.background_job.navigation_idle():
+                # A spare load may have changed the shared browser selection.
+                job.resume_search()
+                return
+            if seconds_available < 18:
+                return
+        elif seconds_available < (9 if rolling else 16):
+            return
         try:job.step(client)
         except (BridgeError,ValueError,OSError) as exc:
             job.done=True;job.publish('error',str(exc));self.event(str(exc),'catalog')
@@ -2216,9 +2229,10 @@ class DJSession:
             # Overlapping cue windows share beats on this paused recording.
             # Replay verification of each candidate entry is still independent.
             key = (offset, grid_anchor)
-            guard()
+            self.check()
             if key in readbacks:
                 return readbacks[key]
+            guard()
             self.send(client,f'deck {deck} goto_first_beat')
             self.sleep(.12)
             if offset:

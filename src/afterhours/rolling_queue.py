@@ -85,7 +85,25 @@ class RollingQueue:
                 pending={}
             if pending.get('status') == 'blocked' and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
+            catalog = session.catalog_job
+            if timed_set and catalog and getattr(catalog, 'rolling', False):
+                self.live_matches.update(catalog.seen)
             if pending or session.background_job:
+                if (timed_set and pending.get('status') == 'analyzing' and pending.get('rollingTrackId')
+                        and slack >= 20 and session.background_job
+                        and session.background_job.revision == pending['id']
+                        and session.background_job.navigation_idle()
+                        and (not catalog or catalog.done)):
+                    staged = pending['tracks']
+                    style = rolling_style(state, staged)
+                    used = {row['id'] for row in staged} | self.missed
+                    used.update(row['trackId'] for row in state.get('recordingAvailability', []))
+                    titles = {song_identity(row)[0] for row in staged} | self.missed_titles
+                    supply = sum(row['id'] in self.live_matches and row['id'] not in used
+                                 and song_identity(row)[0] not in titles and fits_style(row, style)
+                                 for row in state['candidates'])
+                    if supply < 2:
+                        self.search(session, state, staged, style, timed_set, lookahead=True)
                 return
 
             order = state['order']
@@ -134,9 +152,6 @@ class RollingQueue:
                                       for artist in credit(track.get('artist')))
                           and fits_style(track, style)
                           and finite(track.get('bpm')) and track['bpm'] > 0]
-            catalog = session.catalog_job
-            if timed_set and catalog and getattr(catalog, 'rolling', False):
-                self.live_matches.update(catalog.seen)
             upcoming = len(order) - state['index'] - 1
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.
@@ -177,10 +192,10 @@ class RollingQueue:
                 receipt = self.advisor.receipt
                 self.advisor.receipt = None
             picked = []
-            # A second isolated deck can work ahead while the immediate
-            # incoming recording is being verified. With less runway, start
-            # just one transport preparation.
-            batch = 2 if timed_set and slack >= 23 and len(order) > state['index']+1 else 1
+            # A long final runway can start the next pair before the queue
+            # rebuilds. The first verified recording is published independently.
+            batch_slack = 16 if upcoming >= 2 else 23 if upcoming else 40
+            batch = 2 if timed_set and slack >= batch_slack else 1
             for track in candidates:
                 if session.cancel.is_set():
                     return
@@ -235,7 +250,7 @@ class RollingQueue:
             if not self.search(session, state, order, style, timed_set) and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
 
-    def search(self, session, state, order, style, timed_set):
+    def search(self, session, state, order, style, timed_set, *, lookahead=False):
         tail = order[-1]
         recent = list(reversed(order[-8:]))
         terms = [str(track.get('artist') or '').strip() for track in recent[:3]]
@@ -274,6 +289,7 @@ class RollingQueue:
                 job.target = job.quota = 4
                 job.max_rows = 12
                 job.seconds = 18
-            session.update(rollingQueue={'status': 'searching', 'term': term})
+            if not lookahead:
+                session.update(rollingQueue={'status': 'searching', 'term': term})
             return True
         return False

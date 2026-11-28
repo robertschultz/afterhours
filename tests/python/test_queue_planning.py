@@ -312,6 +312,38 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(update['rollingTrackIds'], ['l', 'm'])
         self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
 
+    def test_long_last_slot_can_stage_two_without_waiting_to_pick_again(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(len(queued['rollingTrackIds']), 2)
+        self.assertEqual(queued['protectedIds'], ['a', 'b'])
+
+    def test_timed_refill_discovers_successors_while_the_current_batch_is_measured(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        pending = self.session.state['queuedUpdate']
+        pending['status'] = 'analyzing'
+        self.session.background_job = Mock(revision=pending['id'])
+        self.session.background_job.navigation_idle.return_value = False
+        roller.search = Mock()
+        roller.tick(self.session, 32)
+        roller.search.assert_not_called()
+        self.session.background_job.navigation_idle.return_value = True
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], '', True,
+                                              lookahead=True)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], pending['id'])
+        self.assertEqual(self.session.state['rollingQueue']['status'], 'preparing')
+
     def test_timed_refill_skips_provider_continuous_mix_cuts(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

@@ -227,9 +227,13 @@ class RunArchive:
             identifier=hashlib.sha256(key.encode()).hexdigest()[:24]
             if any(row['id']==identifier for row in run['landed']):return
             at=run['durationSeconds']
+            outgoing=evidence.get('from')
+            pair=({'fromRecordingId':outgoing} if evidence.get('syncObserved') is True
+                  and outgoing != tid and any(row['id']==outgoing and row['end']>row['start'] for row in run['played'])
+                  else {})
             run['landed'].append({'id':identifier,'track':{k:track[k] for k in ('id','title','artist','artworkUrl') if k in track},
                 'start':track['start'],'end':max(track['start'],at),'why':'The incoming recording and crossfader endpoint were confirmed.',
-                'basis':'native handoff verification'})
+                'basis':'native handoff verification',**pair})
             self._moment(at,'Handoff confirmed · '+track['title']+'.','native handoff verification')
             self.pending=self._copy();self.condition.notify_all()
 

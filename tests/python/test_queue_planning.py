@@ -549,6 +549,22 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in state['queuedUpdate']['tracks']], ['a','b','x'])
         self.assertEqual([row['id'] for row in state['timedContinuation']], ['d'])
 
+    def test_timed_refill_uses_measured_tempo_when_the_committed_runway_is_short(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={
+                                'applied':True, 'targetBpm':125,
+                                'tempoSchedule':tempo_planner.estimate(self.tracks[:2])})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.cues.compatible_timed_bpm = Mock(
+            side_effect=lambda row, *_: 125 if row['id'] == 'x' else None)
+        roller.tick(self.session, 18)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['rollingTrackId'], 'x')
+        self.assertEqual(queued['protectedIds'], ['a','b'])
+        self.assertTrue(all(call.args[1:] == (30,125,8) for call in roller.cues.compatible_timed_bpm.call_args_list))
+
     def test_timed_queue_commits_the_measured_prefix_and_keeps_its_preparation_owner(self):
         self.session.plan(['a','b'])
         original = self.session.snapshot()['order']

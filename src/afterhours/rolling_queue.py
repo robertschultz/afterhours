@@ -11,6 +11,7 @@ from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
 from afterhours.set_research import hints as research_hints
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
+from afterhours.verified_cues import VerifiedCues
 
 
 # Adjacent styles give the DJ room to follow a compatible thread without
@@ -135,6 +136,7 @@ def failed_rolling_recording(pending, *, pinned=()):
 class RollingQueue:
     def __init__(self):
         self.advisor = RollingAdvisor()
+        self.cues = VerifiedCues()
         self.searched = set()
         self.missed = set()
         self.live_matches = set()
@@ -142,6 +144,21 @@ class RollingQueue:
         self.failed_scan_songs = set()
         self.scan_failure_index = None
         self.artist_expansion = None
+
+    def timed_ready_ids(self, state, candidates):
+        cadence, order = state.get('entryCadence'), state['order']
+        if not cadence or len(order) > state['index'] + 2 or not candidates:
+            return set()
+        route = (state.get('executionPlan') or {}).get('tempoSchedule') or []
+        last = route[-1] if route else {}
+        target, limit = last.get('toBpm'), state.get('maxTempoShift', 8)
+        if (last.get('trackId') != order[-1]['id'] or not finite(target) or not 40 <= target <= 300
+                or not finite(limit) or not 0 <= limit <= 8):
+            return set()
+        seconds = cadence[len(order) % len(cadence)]
+        # Keep verification work bounded on the native playback worker.
+        return {row['id'] for row in candidates[:8]
+                if self.cues.compatible_timed_bpm(row, seconds, target, limit) is not None}
 
     def tick(self, session, slack):
         with session.lock:
@@ -281,10 +298,13 @@ class RollingQueue:
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
             failed_songs = self.failed_scan_songs if not deferred else set()
+            timed_ready = self.timed_ready_ids(state, candidates) if not deferred else set()
             advised = receipt = None
             if not deferred and (timed_set or not quick):
                 repeat = repeated_artists(order)
                 fresh = [row for row in candidates if not song_credit_keys(row) & failed_songs] or candidates
+                ready = [row for row in fresh if row['id'] in timed_ready]
+                fresh = ready or fresh
                 diverse = [row for row in fresh if brings_new_artist(row, repeat)] if repeat else []
                 advised, waiting = self.advisor.advise(state,tail,diverse or fresh,facts,slack)
                 if waiting:
@@ -308,8 +328,9 @@ class RollingQueue:
                 # alternative fails the native queue and tempo checks.
                 slot = min(range(len(remaining)), key=lambda index: (
                     bool(failed_songs & song_credit_keys(remaining[index])),
+                    bool(timed_ready and not picked and remaining[index]['id'] not in timed_ready),
                     bool(repeat and not brings_new_artist(remaining[index], repeat)),
-                )) if failed_songs or repeat else 0
+                )) if failed_songs or timed_ready or repeat else 0
                 track = remaining.pop(slot)
                 keys = song_credit_keys(track)
                 if keys & song_versions:

@@ -5,9 +5,20 @@ its exact recording is confirmed; afterward C/D share slices, weighted toward
 the earliest queued recording. No audio output or model request is created.
 """
 import copy
+import time
 from afterhours.background_analysis import BackgroundAnalysis,guard_deck
 from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours import cue_planner
+
+
+def service_timed_analysis(job, client, seconds_available, wait, *, clock=time.monotonic):
+    """Use at most one short analysis window between transport reads."""
+    deadline = clock() + .12
+    while not job.done and clock() < deadline:
+        job.step(client, seconds_available)
+        remaining = deadline - clock()
+        if remaining > 0 and not job.done:
+            wait(min(.012, remaining))
 
 
 class PreparationPool:

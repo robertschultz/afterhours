@@ -45,6 +45,9 @@ class OpeningTests(unittest.TestCase):
     def test_rolling_opening_spends_the_first_preparation_slot_on_track_three(self):
         self.check_opening('leading',rolling=True)
 
+    def test_timed_start_services_the_spares_after_native_play_is_confirmed(self):
+        self.check_opening('leading', rolling=True, timed=True)
+
     def test_playing_opening_adopts_a_small_native_grid_refinement(self):
         self.check_opening('leading',refined=155.5)
 
@@ -92,8 +95,14 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual([call.args[1]['id'] for call in s.prepare_deck.call_args_list],['0','1'])
         self.assertNotIn('deck 1 play', trace)
 
-    def check_opening(self,mode,rolling=False,refined=None,manual_pitch=False,corroborated=False):
+    def check_opening(self,mode,rolling=False,refined=None,manual_pitch=False,corroborated=False,timed=False):
         s,report,trace,playing,beat=self.setup_session()
+        def recover_spare(*_):
+            self.assertTrue(playing[0])
+            trace.append('check-spare')
+        s.service_late_spare_load = Mock(side_effect=recover_spare)
+        if timed:
+            s.update(entryCadence=[60,30])
         if refined:
             if corroborated:report['tracks'][0]['bpm']=refined
             read_telemetry=s.telemetry
@@ -130,6 +139,11 @@ class OpeningTests(unittest.TestCase):
                 return
             order,plan,t,window=start_and_prepare(s,None,s.snapshot()['order'])
         self.assertLess(trace.index('deck 1 play'),trace.index('analyze'))
+        if timed:
+            self.assertLess(trace.index('analyze'),trace.index('check-spare'))
+            self.assertLess(trace.index('check-spare'),trace.index('prepare-next'))
+        else:
+            s.service_late_spare_load.assert_not_called()
         self.assertLess(trace.index('analyze'),trace.index('prepare-next'))
         self.assertEqual(trace.count('deck 1 play'),1)
         s.match_tempo.assert_not_called()

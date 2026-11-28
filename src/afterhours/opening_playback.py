@@ -11,6 +11,7 @@ from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_mixing import TransitionMixer
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
+from afterhours.preparation_pool import service_timed_analysis
 from afterhours import cue_planner
 from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, skipped_message
 from afterhours.recording_availability import PREVIEW_ONLY
@@ -174,11 +175,17 @@ def start_and_prepare(session,client,requested):
                     raise BridgeError('The opening decks changed. Background preparation yielded to manual control.')
                 remaining=duration-current['position']
                 if remaining<12:raise BridgeError('The opening recording is nearly finished; no unverified handoff was started.')
-                job.step(client,remaining)
+                timed_window = bool(snapshot.get('entryCadence')) and remaining >= 14
+                if timed_window:
+                    s.service_late_spare_load(client, remaining)
+                    service_timed_analysis(job, client, remaining, s.sleep)
+                else:
+                    job.step(client,remaining)
                 progress=job.snapshot();s.update(backgroundAnalysis=progress)
                 if progress['message']!=previous:
                     previous=progress['message'];s.event(previous,'analysis')
-                s.sleep(.04)
+                if not timed_window:
+                    s.sleep(.04)
             s.analysis_cache.update(job.cache);job.close(client);s.background_job=None
             if not job.error:break
             if job.analysis_timed_out:

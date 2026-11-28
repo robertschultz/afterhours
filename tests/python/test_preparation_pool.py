@@ -2,7 +2,7 @@
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from afterhours.preparation_pool import PreparationPool
+from afterhours.preparation_pool import PreparationPool, service_timed_analysis
 from afterhours.background_analysis import BackgroundAnalysis,allowed
 from afterhours.vdj_session import DJSession
 from test_background_analysis import Peer
@@ -22,6 +22,28 @@ class PoolPeer(Peer):
 
 
 class PoolTests(unittest.TestCase):
+    def test_timed_analysis_advances_several_mailbox_requests_between_transport_reads(self):
+        timestamp = 0.0
+        def wait(seconds):
+            nonlocal timestamp
+            timestamp += seconds
+        job = Mock(done=False)
+        client = Mock()
+        service_timed_analysis(job, client, 35, wait, clock=lambda: timestamp)
+        self.assertAlmostEqual(timestamp, .12)
+        self.assertGreater(job.step.call_count, 1)
+        self.assertLessEqual(job.step.call_count, 11)
+        job.step.assert_called_with(client, 35)
+
+        timestamp = 0.0
+        job.step.reset_mock()
+        def finished(*_):
+            job.done = True
+        job.step.side_effect = finished
+        service_timed_analysis(job, client, 35, wait, clock=lambda: timestamp)
+        self.assertEqual(timestamp, 0.0)
+        job.step.assert_called_once()
+
     def test_deck_d_has_the_same_isolation_guards_and_cannot_address_another_deck(self):
         peer=PoolPeer();s=DJSession(threading.Lock());job=BackgroundAnalysis(s,'rev',[],deck=4)
         job.acquire(peer);job.close(peer)

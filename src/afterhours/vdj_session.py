@@ -33,6 +33,7 @@ from afterhours import copilot_commands
 from afterhours import dj_settings
 from afterhours import deck_rotation
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
+from afterhours.preparation_pool import service_timed_analysis
 from afterhours.background_analysis import (cleanup_analysis_deck, guard_isolation, merge_cleanup_pending,
                                             recover_unloaded_spare)
 from afterhours.record_crate import RecordCrate, WORKING_LIMIT
@@ -3307,17 +3308,12 @@ class DJSession:
                         # samples for queued decoder/seek readbacks. Avoid
                         # making every isolated read wait for the next full
                         # transport sample.
-                        until = time.monotonic() + .12
-                        while not job.done and time.monotonic() < until:
-                            try:job.step(client, slack)
-                            except (BridgeError, ValueError, OSError) as exc:
-                                job.error = str(exc)
-                                job.done = True
-                                job.osc_reply_timeout = isinstance(exc, OSCReplyTimeout)
-                                break
-                            remaining = until-time.monotonic()
-                            if remaining > 0:
-                                self.sleep(min(.012, remaining))
+                        try:
+                            service_timed_analysis(job, client, slack, self.sleep)
+                        except (BridgeError, ValueError, OSError) as exc:
+                            job.error = str(exc)
+                            job.done = True
+                            job.osc_reply_timeout = isinstance(exc, OSCReplyTimeout)
                     else:
                         self.sleep(.12)
                 if revised_final:continue

@@ -33,7 +33,8 @@ from afterhours import copilot_commands
 from afterhours import dj_settings
 from afterhours import deck_rotation
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
-from afterhours.background_analysis import cleanup_analysis_deck, guard_isolation, merge_cleanup_pending
+from afterhours.background_analysis import (cleanup_analysis_deck, guard_isolation, merge_cleanup_pending,
+                                            recover_unloaded_spare)
 from afterhours.record_crate import RecordCrate, WORKING_LIMIT
 from afterhours.vdj_discovery import CatalogSearch
 from afterhours.recording_availability import RecordingAvailability, ProviderPreviewRestricted, PREVIEW_ONLY
@@ -221,6 +222,7 @@ class DJSession:
         self._dig_ended = None
         self.dig_clock = time.monotonic
         self.background_job = None
+        self.deferred_spare_cleanup = None
         self.analysis_cache = {}
         self.tempo_ramp = None
         self.copilot_requests = {}
@@ -965,6 +967,7 @@ class DJSession:
                             self.event('Analysis deck cleanup unconfirmed: '+str(exc),'analysis')
                         self.update(backgroundAnalysis={**self.background_job.snapshot(),'status':'paused'})
                         self.background_job=None
+                    self.deferred_spare_cleanup = None
         except Cancelled:
             self.update(phase='stopped' if self.stop_audio else 'takeover',
                         message='Stopping the set.' if self.stop_audio else
@@ -1475,9 +1478,87 @@ class DJSession:
             self.state['queuedUpdate'].update(status='ready', partialTracks=selected, partialPrepared=prepared)
             self.event('The immediate next track is verified. Preparing the rest of the queue continues.', 'queue-ready')
 
+    def schedule_deferred_spare_cleanup(self, job, queued, progress):
+        """Keep a short-lived token only for a typed timeout after D's unload."""
+        if (not isinstance(job, BackgroundAnalysis) or not self.state.get('rollingQueue')
+                or not self.state['active'] or self.state['phase'] != 'playing' or self.cancel.is_set()
+                or not queued.get('rollingTrackId') or queued.get('oscReadRetries', 0) >= 2
+                or getattr(job, 'analysis_miss', None) or getattr(job, 'catalog_miss', None)):
+            return
+        owner = job.deferred_cleanup_owner()
+        if owner is None or 4 not in self.quarantined_preparation_decks():
+            return
+        now = time.monotonic()
+        self.deferred_spare_cleanup = (self.state['id'], job.revision, owner, now + .5, now + 5)
+        self.update(backgroundAnalysis={**progress, 'status':'blocked',
+            'message':'Waiting to verify the isolated spare unload.',
+            'spareCleanup':{'deck':4, 'stage':'confirm-unload', 'status':'waiting'}})
+        self.event('An isolated spare is awaiting delayed unload confirmation.', 'analysis',
+                   deck=4, stage='confirm-unload')
+
+    def service_deferred_spare_cleanup(self, client, seconds_available):
+        with self.lock:
+            token = self.deferred_spare_cleanup
+            if token is None:
+                return
+            session_id, revision, owner, earliest, expires = token
+            queued = self.state.get('queuedUpdate') or {}
+            retained = self.state.get('cleanupPending') or {}
+            descriptors = retained.get('analysis', [])
+            control = self.state['copilot']
+            if (session_id != self.state['id'] or queued.get('id') != revision
+                    or queued.get('status') != 'blocked' or not self.state['active']
+                    or self.cancel.is_set() or dj_settings.lead(self.state) != 'all' or control.get('held')
+                    or not self.state.get('rollingQueue') or not queued.get('rollingTrackId')
+                    or 4 not in self.quarantined_preparation_decks()):
+                self.deferred_spare_cleanup = None
+                return
+            descriptor = next((row for row in descriptors if row['deck'] == 4 and row['ownerId'] == owner), None)
+            if descriptor is None:
+                self.deferred_spare_cleanup = None
+                return
+            now = time.monotonic()
+            if now < expires and (self.state['phase'] != 'playing' or seconds_available < 16 or now < earliest
+                    or (control.get('command') or {}).get('status') == 'pending'):
+                return  # Keep enough time for upcoming handoffs and operator commands.
+            self.deferred_spare_cleanup = None
+            deadline = min(expires, now + 1)
+            progress = self.state.get('backgroundAnalysis') or {}
+
+            def check():
+                if time.monotonic() >= deadline or self.cancel.is_set():
+                    raise BridgeError('Deferred spare confirmation ran out of time.')
+
+            try:
+                recover_unloaded_spare(client, descriptor, check,
+                                       verify_deck_c=3 in self.quarantined_preparation_decks())
+                check()
+            except (BridgeError, OSError, ValueError):
+                message = 'The isolated spare cleanup could not be verified. Inspect the spare deck.'
+                stage = 'confirm-controls' if descriptor.get('restoreRequested') else 'confirm-unload'
+                self.update(backgroundAnalysis={**progress, 'status':'blocked', 'message':message,
+                    'spareCleanup':{'deck':4, 'stage':stage, 'status':'unconfirmed'}})
+                self.event(message, 'analysis', deck=4, stage=stage)
+                return
+
+            remaining = [row for row in descriptors if row is not descriptor]
+            self.update(resumeBlocked=bool(remaining),
+                        cleanupPending={**retained, 'analysis':remaining} if remaining else None)
+            queued.update(status='needs-analysis', oscReadRetries=queued.get('oscReadRetries', 0)+1)
+            queued.pop('error', None)
+            self.update(rollingQueue={**self.state['rollingQueue'], 'status':'preparing'},
+                        backgroundAnalysis={**progress, 'status':'queued', 'deck':None, 'decks':[],
+                            'message':'Isolated spare verified. Resuming preparation of the same queue.',
+                            'spareCleanup':{'deck':4, 'stage':'baseline-confirmed', 'status':'verified'}})
+            self.event('Isolated spare verified. Resuming preparation of the same queue.', 'analysis',
+                       deck=4, stage='baseline-confirmed')
+
     def service_background(self,client,seconds_available):
         """One bounded analysis slice between clock reads, never during a mix."""
         q=self.snapshot().get('queuedUpdate');job=self.background_job
+        if self.deferred_spare_cleanup is not None:
+            self.service_deferred_spare_cleanup(client, seconds_available)
+            return  # Do not combine deferred readback and new preparation in one slice.
         if job and (not q or job.revision!=q['id']):
             if seconds_available<12:return
             self.analysis_cache.update(job.cache)
@@ -1645,6 +1726,10 @@ class DJSession:
             self.event('Background preparation held: '+str(exc),'analysis')
             if quarantined:
                 self.event('The muted preparation deck is isolated and reserved for inspection. Playback continues on the verified decks.', 'analysis')
+                with self.lock:
+                    pending = self.state.get('queuedUpdate') or {}
+                    if pending.get('id') == job.revision:
+                        self.schedule_deferred_spare_cleanup(job, pending, progress)
             elif cleanup_failed:
                 raise  # Unconfirmed isolation still stops scheduling.
         finally:self.background_job=None

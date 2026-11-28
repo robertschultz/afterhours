@@ -115,6 +115,16 @@ class PreparationPool:
     def cleanup_descriptors(self):
         return [row for job in self.jobs for row in job.cleanup_descriptors()]
 
+    def deferred_cleanup_owner(self):
+        """Retain typed local proof only for the failed spare owned by this run."""
+        for job in self.jobs:
+            if (job.deck == 4 and job.owned and getattr(job, 'cleanup_reply_timeout', False) is True
+                    and job.cleanup_state.get('unloadRequested')
+                    and not job.cleanup_state.get('restoreRequested')
+                    and not job.cleanup_state.get('loadPending')):
+                return job.owner_id
+        return None
+
     def snapshot(self):
         active=[j for j in self.jobs if not j.done or j.owned]
         status='blocked' if self.error else 'complete' if self.done else 'analyzing' if active else 'queued'

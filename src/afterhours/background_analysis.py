@@ -137,6 +137,66 @@ class CleanupReadbacks:
         return self.client.send(script)
 
 
+def restore_empty_spare_controls(client, descriptor):
+    deck = descriptor['deck']
+    baseline = descriptor['baseline']
+    descriptor['restoreRequested'] = True
+    cue = 'on' if baseline['pfl'] else 'off'
+    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
+
+
+def recover_unloaded_spare(client, descriptor, check, verify_deck_c=False):
+    """Confirm the dispatched unload, then restore controls once on empty Deck D."""
+    row = cleanup_descriptor(descriptor)
+    if (row['deck'] != 4 or row['loadPending'] or not row['selectionId']
+            or not row['unloadRequested'] or row['restoreRequested']):
+        raise BridgeError('The spare cleanup stage could not be verified.')
+
+    # Check the time and authority before every interaction. The owning OSC
+    # client also limits the duration of an individual query.
+    class Readback:
+        def query(self, script, kind=None):
+            check()
+            return client.query(script, kind)
+
+        def send(self, script):
+            check()
+            return client.send(script)
+
+    proof = Readback()
+    if verify_deck_c:
+        guard_isolation(proof, 3)  # C remains quarantined for its original owner.
+    deck = row['deck']
+    baseline = row['baseline']
+
+    def controls():
+        guard_deck(proof, deck)
+        if (as_bool(proof.query(f'deck {deck} play','bool'))
+                or as_bool(proof.query(f'deck {deck} loaded','bool'))
+                or as_bool(proof.query(f'deck {deck} deck_has_error','bool'))
+                or proof.query(f'deck {deck} get_effect_name 1','text') != (baseline['effect'] or PLUGIN)
+                or as_bool(proof.query(f'deck {deck} effect_active 1','bool'))):
+            raise BridgeError('The unloaded spare or effect state was not confirmed.')
+        return float(proof.query(f'deck {deck} volume')), as_bool(proof.query(f'deck {deck} pfl','bool'))
+
+    def matches_baseline(controls):
+        volume, pfl = controls
+        return abs(volume - baseline['volume']) < .00001 and pfl == baseline['pfl']
+
+    observed = controls()
+    if matches_baseline(observed):
+        return
+    if observed != (0.0, False):
+        raise BridgeError('The isolated spare controls changed.')
+    # The flag is set before dispatch. Any later uncertainty leaves the
+    # descriptor quarantined and this live path cannot send the write again.
+    check()
+    restore_empty_spare_controls(proof, descriptor)
+    if not matches_baseline(controls()):
+        raise BridgeError('The spare baseline could not be verified.')
+
+
 def cleanup_analysis_deck(client, descriptor):
     """Recover only the retained exact spare-deck ownership; never start audio."""
     client=CleanupReadbacks(client)
@@ -213,10 +273,7 @@ def cleanup_analysis_deck(client, descriptor):
         raise BridgeError(f'Analysis deck {deck} still reports a load error after unload; ownership was retained.')
     if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
         return
-    descriptor['restoreRequested']=True
-    cue = 'on' if baseline['pfl'] else 'off'
-    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
-                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
+    restore_empty_spare_controls(client, descriptor)
     guard_deck(client,deck)
     if (as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')) or
             not effect_is_restored() or abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])>=.00001 or
@@ -250,6 +307,7 @@ class BackgroundAnalysis:
         self.catalog_miss=None
         self.analysis_miss=None
         self.osc_reply_timeout=False
+        self.cleanup_reply_timeout=False
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -509,6 +567,10 @@ class BackgroundAnalysis:
         descriptor=self.cleanup_descriptors()[0]
         try:
             cleanup_analysis_deck(client,descriptor)
+        except OSCReplyTimeout:
+            self.cleanup_reply_timeout = True
+            descriptor['error'] = 'VirtualDJ did not confirm the spare cleanup.'
+            raise OSCReplyTimeout(descriptor['error']) from None
         except (BridgeError,OSError,ValueError) as exc:
             descriptor['error']=str(exc)[:300]
             raise

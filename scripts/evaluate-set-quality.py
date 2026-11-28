@@ -465,7 +465,9 @@ def read_observed_run(prefix):
                 measured_blend_quiet += overlap_end - overlap_start
                 covered_until = overlap_end
         quiet_during_blend += covered_until > start_of_window
-    last = browser[-1]
+    trial_end = next((idx for idx, row in enumerate(browser)
+                      if row.get('event') in ('Endurance reached', 'Interrupted')), len(browser)-1)
+    last = browser[trial_end]
     elapsed = number(datetime.fromisoformat(last['at']).timestamp() - start, 'observed seconds')
     terminal = phase.get('phase') in ('completed', 'stopped', 'error', 'takeover')
     if terminal and last['event'] != 'Endurance reached':
@@ -485,13 +487,14 @@ def read_observed_run(prefix):
         'observedSeconds':round(elapsed, 3),
         'completeHour':last['event'] == 'Endurance reached' and elapsed >= 3600
                        and verified == len(handoffs) == last['tracks']-1,
+        'stopVerified':any(row.get('event') == 'Stop verified' for row in browser),
         'verifiedHandoffs':verified,
         'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
         'lateEntriesOutside5Seconds':sorted(late_entries, key=lambda row: -row['secondsLate']),
         'openEntryInterval':waiting,
-        'upNextOverlay':observed_up_next(browser, start),
+        'upNextOverlay':observed_up_next(browser[:trial_end+1], start),
         'curatorialVariety':observed_curatorial_variety(handoffs),
         'genreTiming':observed_genre_timing(handoffs, intervals),
         'mixTechniques':observed_mix_techniques(handoffs),

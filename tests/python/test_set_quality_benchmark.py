@@ -118,6 +118,35 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 SCORER['read_observed_run'](prefix)
 
+    def test_endurance_observation_is_separate_from_verified_cleanup_stop(self):
+        with TemporaryDirectory() as folder:
+            prefix = Path(folder) / 'run'
+            Path(f'{prefix}-owner.json').write_text(json.dumps({'id':'run','at':1000}))
+            logs = {
+                'hour': [
+                    {'event':'Typed timed opening requested','entryCadence':[30,60]},
+                    {'event':'Endurance window','startedAt':1000},
+                    {'event':'Up Next overlay changed','at':'1970-01-01T00:16:41+00:00',
+                     'visible':True,'state':'committed','label':'Track B'},
+                    {'event':'Endurance reached','at':'1970-01-01T01:16:40+00:00',
+                     'tracks':2,'missingNextSamples':0},
+                    {'event':'Stop verified','at':'1970-01-01T01:16:48+00:00','nativePhase':'stopped'},
+                ],
+                'handoffs': [
+                    {'kind':'native-handoff','verified':True,'synced':True,'at':1035,'blendSeconds':4,
+                     'entryIntervalSeconds':30,'targetIntervalSeconds':30},
+                    {'kind':'queue','phase':'stopped','seconds':3608},
+                ],
+                'master': [{'event':'master-monitor-started','owner':'run'}],
+            }
+            for kind, rows in logs.items():
+                Path(f'{prefix}-{kind}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            score = SCORER['read_observed_run'](prefix)
+            self.assertTrue(score['completeHour'])
+            self.assertTrue(score['stopVerified'])
+            self.assertEqual(score['observedSeconds'], 3600)
+            self.assertEqual(score['upNextOverlay']['missingWhilePlayingSamples'], 0)
+
     def test_observed_overlay_distinguishes_staged_committed_and_legacy_track_names(self):
         def change(second, visible, label, state=None):
             return {'event':'Up Next overlay changed', 'at':f'1970-01-01T00:00:{second:02}+00:00',

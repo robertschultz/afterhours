@@ -229,8 +229,9 @@ def read_observed_run(prefix):
                     if row.get('entryCadence')), None)
     if not cadence:
         raise ValueError('The browser log has no requested cadence.')
-    handoffs = [row for row in json_lines(Path(f'{prefix}-handoffs.jsonl'))
-                if row.get('kind') == 'native-handoff']
+    native = list(json_lines(Path(f'{prefix}-handoffs.jsonl')))
+    handoffs = [row for row in native if row.get('kind') == 'native-handoff']
+    phase = next((row for row in reversed(native) if row.get('kind') == 'queue'), {})
     previous_observation = entry = start
     intervals = []
     blends = []
@@ -272,11 +273,15 @@ def read_observed_run(prefix):
     quiet_during_blend = sum(any(first <= row['at'] <= last for first, last in blends) for row in quiet)
     last = browser[-1]
     elapsed = number(datetime.fromisoformat(last['at']).timestamp() - start, 'observed seconds')
+    terminal = phase.get('phase') in ('completed', 'stopped', 'error', 'takeover')
+    if terminal and last['event'] != 'Endurance reached':
+        elapsed = max(elapsed, number(phase['seconds'], 'terminal native observation'))
     verified = sum(row.get('verified') is True for row in handoffs)
     return {
         'trialId':prefix.name,
         'scope':'observed-browser-native-and-master',
-        'outcome':last['event'],
+        'outcome':phase['phase'] if terminal and last['event'] != 'Endurance reached' else last['event'],
+        'nativePhase':phase.get('phase'),
         'observedSeconds':round(elapsed, 3),
         'completeHour':last['event'] == 'Endurance reached' and elapsed >= 3600
                        and verified == len(handoffs) == last['tracks']-1,

@@ -188,6 +188,25 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], miss)
         self.assertEqual(self.session.state['queuedUpdate']['protectedIds'], ['a','b'])
 
+    def test_timed_refill_prefetches_catalog_while_a_spare_decodes(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.tick(self.session,20)
+        queued = self.session.state['queuedUpdate']
+        queued['status'] = 'analyzing'
+        self.session.background_job = Mock(revision=queued['id'])
+        self.session.background_job.navigation_idle.return_value = False
+
+        roller.tick(self.session,30)
+        self.assertIsNone(self.session.catalog_job)
+        self.session.background_job.navigation_idle.return_value = True
+        roller.tick(self.session,30)
+        self.assertTrue(self.session.catalog_job.rolling)
+        self.assertIs(self.session.state['queuedUpdate'],queued)
+        self.assertEqual(self.session.snapshot()['rollingQueue']['status'],'preparing')
+
     def test_timed_queue_replaces_exact_failed_scan_in_parallel_batch(self):
         self.session.plan(['a','b'])
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},

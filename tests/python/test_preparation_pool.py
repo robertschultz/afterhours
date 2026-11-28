@@ -1,7 +1,7 @@
 """C/D isolation, queue priority and catalog ownership without live audio."""
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from afterhours.preparation_pool import PreparationPool
 from afterhours.background_analysis import BackgroundAnalysis,allowed
 from afterhours.vdj_session import DJSession
@@ -22,6 +22,21 @@ class PoolPeer(Peer):
 
 
 class PoolTests(unittest.TestCase):
+    def test_navigation_stays_owned_until_both_spare_loads_are_confirmed(self):
+        session = DJSession(threading.Lock())
+        pool = PreparationPool(session,'rev',[{'id':'first'},{'id':'second'}])
+        first = Mock(done=False,loaded='first')
+        second = Mock(done=False,loaded=None)
+
+        pool.pending.pop(0)
+        pool.jobs.append(first)
+        self.assertFalse(pool.navigation_idle())
+        pool.pending.pop(0)
+        pool.jobs.append(second)
+        self.assertFalse(pool.navigation_idle())
+        second.loaded = 'second'
+        self.assertTrue(pool.navigation_idle())
+
     def test_deck_d_has_the_same_isolation_guards_and_cannot_address_another_deck(self):
         peer=PoolPeer();s=DJSession(threading.Lock());job=BackgroundAnalysis(s,'rev',[],deck=4)
         job.acquire(peer);job.close(peer)

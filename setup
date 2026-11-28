@@ -7,5 +7,8 @@ if [ ! -x .venv/bin/python ]; then
   "$DJ_PYTHON" -m venv .venv
 fi
 .venv/bin/python -m pip install -e .
+if [ "${AFTERHOURS_ALGORHYTHM:-0}" = "1" ]; then
+  .venv/bin/python -m pip install -r requirements/requirements-algorhythm.txt
+fi
 .venv/bin/python -m afterhours.run_afterhours --check
 printf '%s\n' 'Afterhours setup complete. From the repository root, run ./start-afterhours.'

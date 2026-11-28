@@ -17,6 +17,29 @@ def tracks():
 
 
 class SessionTests(unittest.TestCase):
+    def test_key_change_keeps_exact_preparation_but_invalidates_partial_fit(self):
+        session = DJSession(threading.Lock())
+        current, cued, upcoming = tracks()
+        session.state['queuedUpdate'] = {
+            'id':'refill', 'status':'ready', 'tracks':[current,cued,upcoming],
+            'partialTracks':[current,cued], 'partialPrepared':{'oldKey':True},
+            'prepared':{'oldKey':True},
+        }
+        job = Mock(revision='refill')
+        session.background_job = job
+
+        session.refresh_preparing_queue([current, {**cued,'camelot':'2A'}])
+
+        queue = session.state['queuedUpdate']
+        self.assertIs(session.background_job, job)
+        self.assertEqual(queue['id'], 'refill')
+        self.assertEqual(queue['status'], 'analyzing')
+        self.assertEqual(queue['tracks'][1]['camelot'], '2A')
+        self.assertEqual(queue['tracks'][2], upcoming)
+        self.assertIsNone(queue['prepared'])
+        self.assertNotIn('partialTracks', queue)
+        self.assertNotIn('partialPrepared', queue)
+
     def test_control_state_is_a_small_isolated_cache_read(self):
         s=DJSession(threading.Lock())
         telemetry={'sampledAt':123,'crossfader':.25,'decks':[{'deck':1,'playing':False,'controls':{'volume':.8}}]}

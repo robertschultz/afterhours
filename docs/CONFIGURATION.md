@@ -9,6 +9,7 @@ See the [project README](../README.md) for setup. The music service owns the cat
 | `AFTERHOURS_DATA_ROOT` | Local data and runtime workspace. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/afterhours`. |
 | `AFTERHOURS_PYTHON` | Interpreter override for setup and the launchers. An override used to launch must have Afterhours installed. |
 | `AFTERHOURS_ANALYSIS_REPORTS_DIR` | Optional directory for native feature reports. Defaults to `.runtime/audio-analysis` under the data root. |
+| `AFTERHOURS_ALGORHYTHM` | Set to `1` to use Algorhythm for background catalog discovery. Run setup with the same flag to install the pinned revision. |
 | `AFTERHOURS_TRACK_SECONDS` | Default seconds between track entries for new queues. Accepts 15–300 and defaults to 30. |
 | `AFTERHOURS_CURATION_MINUTES` | Default ongoing curation allowance. Accepts 1–360 and defaults to 30. The decision and cost ceilings still apply. |
 | `AFTERHOURS_PLANNER_MODEL` | Optional OpenAI text planner model override. The model must support the existing structured output and tool contracts. |
@@ -34,6 +35,7 @@ Clones of the original Afterhours repository should use the [Afterhours Old repo
 
 - [VirtualDJ OSC](VDJ-BRIDGE.md) provides native playback and mixer controls.
 - [Native analysis](../native/analysis-bridge/README.md) measures decoded audio features on supported VirtualDJ hosts.
+- [Algorhythm](https://github.com/robertschultz/algorhythm) can propose related recordings when the rolling queue runs low. Run `AFTERHOURS_ALGORHYTHM=1 ./setup` once, then launch with `AFTERHOURS_ALGORHYTHM=1 ./start-afterhours`. Afterhours resolves and verifies the proposed recordings through the native catalog before adding them to the queue.
 - To build browser provider assets, run `pnpm install --frozen-lockfile && pnpm build` from the repository root. The default music and performance servers start without this optional bundle.
 - For video continuation, run `.venv/bin/python -m afterhours.performance_server` with a positive `--approved-h3-jobs` and a user-provided `--h3-seed-url`. The URL must refer to media on the configured provider that the operator is entitled to use. Live performer sessions require approved references supplied by the operator.
 

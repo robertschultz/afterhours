@@ -1,13 +1,26 @@
 """Append compatible recordings within the running set's native worker."""
 from afterhours import dj_settings
+from afterhours.algorhythm_refill import AlgorhythmRefill, linked_apple_recording
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.vdj_session import song_identity
 
 
+def discovery_style(state, order):
+    requested = style_for(state.get('agentDirection'))
+    opening = normalized(order[0].get('genre'))
+    latest = order[-1].get('genre')
+    if requested:
+        return requested
+    if opening and opening not in ('dance', 'electronic', 'music', 'unknown'):
+        return opening
+    return style_for(latest) or normalized(latest)
+
+
 class RollingQueue:
     def __init__(self):
+        self.algorhythm = AlgorhythmRefill()
         self.searched = set()
         self.missed = set()
         self.live_matches = set()
@@ -61,7 +74,10 @@ class RollingQueue:
                 return
 
             order = state['order']
-            if not order or len(order) - state['index'] > (5 if timed_set else 3):
+            # Two spare decks still prepare at most two recordings at once.
+            # Start replenishing timed sets earlier so a slow decode or search
+            # does not consume all of the upcoming 30-second slots.
+            if not order or len(order) - state['index'] > (8 if timed_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
@@ -88,7 +104,10 @@ class RollingQueue:
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           and song_identity(track)[0] not in titles
                           and finite(track.get('bpm')) and track['bpm'] > 0]
-            style = style_for(str(state.get('agentDirection') or '')) or style_for(tail.get('genre')) or 'house'
+            style = style_for(state.get('agentDirection')) or style_for(tail.get('genre')) or 'house'
+            if self.algorhythm.enabled and len(order) - state['index'] - 1 <= 2:
+                self.algorhythm.hints(state, order, discovery_style(state, order), (),
+                                     activity=session.event, searched=self.searched)
             if timed_set and not any(t['id'] in self.live_matches for t in candidates):
                 if (slack >= 26 and len(order)-state['index'] >= 2
                         and (not catalog or catalog.done) and self.search(session, state, order, style, timed_set)):
@@ -108,10 +127,12 @@ class RollingQueue:
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
             picked = []
-            # A second isolated deck can work ahead while the immediate
-            # incoming recording is being verified. With less runway, start
-            # just one transport preparation.
-            batch = 2 if timed_set and slack >= 23 and len(order) > state['index']+1 else 1
+            # A short gap after preloading is enough to start a batch when
+            # verified tracks cover the next two handoffs. The pool pauses
+            # native analysis before the mix and resumes it in the next gap.
+            upcoming = len(order) - state['index'] - 1
+            batch_slack = 16 if upcoming >= 2 else 23
+            batch = 2 if timed_set and upcoming > 0 and slack >= batch_slack else 1
             for track in candidates:
                 if session.cancel.is_set():
                     return
@@ -150,12 +171,15 @@ class RollingQueue:
     def search(self, session, state, order, style, timed_set, *, lookahead=False):
         tail = order[-1]
         terms = [str(track.get('artist') or '').strip() for track in reversed(order[-3:])]
+        leads = self.algorhythm.hints(state, order, discovery_style(state, order), (),
+                                     activity=session.event, searched=self.searched)
+        identified = {f"{lead['artist']} {lead['title']}": lead for lead in leads}
         if timed_set:
             suggestions = DISCOVERY.hints(style, order)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
             terms += [str(tail.get('genre') or style).strip(), style]
-        for term in terms:
+        for term in (*identified, *terms):
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:
                 continue
@@ -167,6 +191,10 @@ class RollingQueue:
                 continue
             job = session.catalog_job
             job.rolling = True
+            if lead := identified.get(term):
+                linked = linked_apple_recording(lead.get('public_reference'), lead.get('source_url'))
+                job.set_rolling_seed(lead['artist'], lead['title'], version=lead.get('version'),
+                                     exact_credits=True, linked_provider_reference=linked)
             if timed_set:
                 job.reuse_matches = True
                 job.target = job.quota = 4

@@ -28,6 +28,18 @@ class SpareDeckUnavailable(BridgeError):pass
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
 
 
+def preparation_seconds(state, revision, track_id):
+    cadence = state.get('entryCadence')
+    if cadence:
+        pending = state.get('queuedUpdate') or {}
+        staged = pending.get('tracks') if pending.get('id') == revision else None
+        order = staged or state.get('order', [])
+        for index, track in enumerate(order):
+            if track['id'] == track_id:
+                return cadence[index % len(cadence)]
+    return state['secondsPerTrack']
+
+
 def four_deck_tools(path=None):
     """Whether the installed analysis plugin can prepare on any isolated deck (0.3.0 or later)."""
     import plistlib
@@ -514,7 +526,8 @@ class BackgroundAnalysis:
                 cached=self.cache.get(track['id'])
                 timed = bool(s.get('entryCadence'))
                 display_waveform = not (timed or s.get('rollingQueue'))
-                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']
+                seconds = preparation_seconds(s, self.revision, track['id'])
+                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==seconds
                         and bool(cached.get('timedPreparation')) == timed):
                     try:
                         from afterhours import cue_planner
@@ -535,9 +548,9 @@ class BackgroundAnalysis:
                         scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
                 timed_option = {'timed': True} if timed else {}
-                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],
+                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
                                                               deck=self.deck,isolated=True,**timed_option)
-                evidence['preparationSeconds']=s['secondsPerTrack']
+                evidence['preparationSeconds']=seconds
                 if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
                 self.session.availability.verified(track['id'])

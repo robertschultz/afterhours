@@ -494,7 +494,9 @@ def execution_window(cue, current, fade_beats, final=False):
     if current > goal-4:
         raise ValueError('The analyzed transition window was missed. Take over; no substitute cue was used.')
     end=goal+(0 if final else fade_beats)
+    loop = cue.get('loopBridgeBeats') if cue.get('replayVerified') is True and not final else None
     return {'entryBeat':cue['entryBeat'],'mixAtBeat':goal,'endBeat':end,
             'segmentBeats':end-cue['entryBeat'],'phraseBeats':4,
             'fadeBeats':0 if final else fade_beats,'basis':'measured-audio-candidate',
-            'candidateId':cue['id'],'entrySeconds':cue['entrySeconds'],'exitSeconds':cue['exitSeconds']}
+            'candidateId':cue['id'],'entrySeconds':cue['entrySeconds'],'exitSeconds':cue['exitSeconds'],
+            **({'verifiedLoopBeats':loop,'verifiedLoopExitBeat':goal} if loop else {})}

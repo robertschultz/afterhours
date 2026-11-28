@@ -47,8 +47,9 @@ class PoolTests(unittest.TestCase):
 
     def test_rolling_pool_can_prepare_a_current_cached_cue_without_a_spare_load(self):
         session = DJSession(threading.Lock())
-        session.update(entryCadence=[60,30], secondsPerTrack=60)
         candidate = {'id':'virtualdj:'+'a'*64,'title':'Fixture'}
+        session.update(entryCadence=[30,60], secondsPerTrack=60, order=[{'id':'other'},candidate],
+                       queuedUpdate={'id':'revision','tracks':[candidate,{'id':'other'}]})
         measured = {**candidate, 'cueCandidates':[{'id':'cue'}]}
         with patch('afterhours.preparation_pool.VerifiedCues') as storage:
             storage.return_value.read.return_value = measured
@@ -57,7 +58,7 @@ class PoolTests(unittest.TestCase):
         pool.step(client, 35)
         self.assertTrue(pool.done)
         self.assertEqual(pool.result,[measured])
-        storage.return_value.read.assert_called_once_with(candidate,60,True)
+        storage.return_value.read.assert_called_once_with(candidate,30,True)
         self.assertEqual(client.mock_calls, [])
 
     def test_timed_analysis_advances_several_mailbox_requests_between_transport_reads(self):

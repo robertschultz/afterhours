@@ -231,7 +231,8 @@ class BackgroundTests(unittest.TestCase):
         cold = {'duration':10,'points':[{'label':'realEnd','seconds':9.8}]}
         verified = {**cold,'energyMap':{'reportDigest':'fresh'}}
         session = DJSession(threading.Lock())
-        session.update(**({'entryCadence':[60,30]} if timed else {'rollingQueue':{'status':'ready'}}))
+        session.update(secondsPerTrack=60, **({'entryCadence':[30,60],'order':[track]}
+                       if timed else {'rollingQueue':{'status':'ready'}}))
         job = BackgroundAnalysis(session,'revision',[track])
         with patch.object(DJSession,'analyze_deck',return_value=track), \
              patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
@@ -242,6 +243,8 @@ class BackgroundTests(unittest.TestCase):
         features.assert_called_once()
         waveform.assert_not_called()
         self.assertEqual(cues.call_args.args[2]['energyMap'],verified['energyMap'])
+        self.assertEqual(cues.call_args.args[4],30 if timed else 60)
+        self.assertEqual(job.result[0]['preparationSeconds'],30 if timed else 60)
         self.assertEqual(bool(cues.call_args.kwargs.get('timed')),timed)
         self.assertEqual(bool(job.result[0].get('timedPreparation')),timed)
 

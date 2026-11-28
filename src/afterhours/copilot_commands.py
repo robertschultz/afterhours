@@ -211,7 +211,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         exit_beat = candidate['exitBeat']
         if final or (entry_interval is None and not allow_outro_bars):
             if exit_beat >= earliest and (latest_beat is None or exit_beat <= latest_beat):
-                valid.append(candidate)
+                valid.append((candidate, False))
             continue
         # Both endpoints of this audible outro were read from the native
         # grid. Bound the bar adjustment to the measured audio span, leaving
@@ -226,13 +226,14 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         bars = min(last_bar, max(first_bar, round((target-exit_beat)/4)))
         if bars:
             seconds = (candidate['endSeconds']-candidate['exitSeconds']) * bars*4/span
-            valid.append({**candidate,'exitBeat':exit_beat+bars*4,'exitSeconds':candidate['exitSeconds']+seconds})
+            valid.append(({**candidate,'exitBeat':exit_beat+bars*4,
+                           'exitSeconds':candidate['exitSeconds']+seconds,'loopBridgeBeats':None}, True))
         else:
-            valid.append(candidate)
+            valid.append((candidate, False))
     if not valid:
         timing = ' within the requested cadence' if entry_interval is not None and not final else ' ahead'
         raise NoVerifiedHandoff(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
-    selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
+    selected, _ = min(valid, key=lambda row: (abs(row[0]['exitBeat']-target), row[0]['exitBeat'], row[1]))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
                   segmentBeats=window['endBeat']-entry['entryBeat'],

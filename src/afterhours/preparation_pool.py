@@ -6,7 +6,7 @@ the earliest queued recording. No audio output or model request is created.
 """
 import copy
 import time
-from afterhours.background_analysis import BackgroundAnalysis,guard_deck
+from afterhours.background_analysis import BackgroundAnalysis,guard_deck,preparation_seconds
 from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours import cue_planner
 from afterhours.verified_cues import VerifiedCues
@@ -39,11 +39,12 @@ class PreparationPool:
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
-            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
+            seconds = preparation_seconds(state, revision, track['id'])
+            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==seconds
                     and bool(cached.get('timedPreparation')) == self.timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
-            reused = verified.read(track, state['secondsPerTrack'], self.timed) if verified else None
+            reused = verified.read(track, seconds, self.timed) if verified else None
             if reused:
                 self.result.append(reused)
                 continue

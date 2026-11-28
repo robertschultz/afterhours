@@ -148,15 +148,17 @@ class MixerTests(unittest.TestCase):
         self.assertEqual(measured_recipe(plan, 0), pair)
 
     def test_measured_bridge_is_bound_to_the_verified_exit_and_room_for_a_wrap(self):
-        outgoing={'exitBeat':128,'loopBridgeBeats':8,'replayVerified':True}
-        plan={'selections':[outgoing]}
+        from afterhours.cue_planner import execution_window
+        outgoing={'id':'cue','entryBeat':64,'entrySeconds':32,'exitBeat':128,'exitSeconds':64,
+                  'loopBridgeBeats':8,'replayVerified':True}
+        window=execution_window(outgoing,120,16)
         recipe={'genreFamily':'house'}
-        self.assertEqual(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':16}),8)
-        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':132,'fadeBeats':16}))
-        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':8}))
-        self.assertIsNone(measured_bridge_loop(plan,0,{'genreFamily':'short'},{'mixAtBeat':128,'fadeBeats':16}))
+        self.assertEqual(measured_bridge_loop(recipe,window),8)
+        self.assertIsNone(measured_bridge_loop(recipe,{**window,'mixAtBeat':132}))
+        self.assertIsNone(measured_bridge_loop(recipe,{**window,'fadeBeats':8}))
+        self.assertIsNone(measured_bridge_loop({'genreFamily':'short'},window))
         outgoing['replayVerified']=False
-        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':16}))
+        self.assertIsNone(measured_bridge_loop(recipe,execution_window(outgoing,120,16)))
 
     def test_late_step_stops_without_bursting_missed_mutations(self):
         m,v,sent=self.mixer();m.arm(None,1,2,transition_recipe(track(),track()));m.begin(None)

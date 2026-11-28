@@ -2114,9 +2114,10 @@ class DJSession:
                     self.update(message=f'Preparing detailed waveform · {track["title"]}. Audio stays paused.')
                     scan_waveform(client,checked_track,evidence,check=self.check,wait=self.sleep)
                 self.update(message=f'Mapping musical entry and exit candidates · {track["title"]}. Audio stays paused.')
+                seconds = entry_cadence[len(checked) % len(entry_cadence)] if entry_cadence else snapshot['secondsPerTrack']
                 try:
                     candidates[track['id']]=self.measure_cues(client,checked_track,evidence,
-                        checked[0]['bpm'] if checked else checked_track['bpm'],snapshot['secondsPerTrack'],
+                        checked[0]['bpm'] if checked else checked_track['bpm'],seconds,
                         **({'timed': True} if entry_cadence else {}))
                 except cue_planner.LimitedAudio as exc:
                     omit(track,exc,'limited-decoded-audio');continue
@@ -3396,7 +3397,7 @@ class DJSession:
                     handoff_options['rhythm_intro'] = True
                 if loop_handoffs:
                     handoff_options['loop_recording'] = track['engine']['selection_id']
-                elif rolling and (loop_beats := measured_bridge_loop(planned,index,recipe,window)):
+                elif rolling and (loop_beats := measured_bridge_loop(recipe,window)):
                     handoff_options.update(loop_recording=track['engine']['selection_id'],loop_beats=loop_beats)
                     self.event(f'Using a verified {loop_beats}-beat rhythm window under the incoming track.', 'technique')
                 self.handoff.dispatch(client,active,incoming,fade_beats,**handoff_options)

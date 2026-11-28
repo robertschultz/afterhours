@@ -228,7 +228,10 @@ def start_and_prepare(session,client,requested):
                     'analysis', previousBpm=target, observedBpm=current['bpm'])
         targets=snapshot.get('tempoTargets')
         subset={**snapshot,'tempoTargets':[r for r in targets if r['trackId'] in {t['id'] for t in pair}] if targets else targets}
-        prepared=measured_plan({**subset,'startup':startup},pair,job.result,current)
+        # A timed opening can use a shorter preload buffer. Retiming still
+        # checks the fresh transport and two-bar margin after the load.
+        lead = 12 if snapshot.get('entryCadence') else 28
+        prepared=measured_plan({**subset,'startup':startup},pair,job.result,current,lead_seconds=lead)
         cue_planner.verify_receipts(prepared['analysis'])
         plan=prepared['executionPlan']
         try:s.prepare_deck(client,pair[1],2,plan['tempoSchedule'][1]['fromBpm'],cue=plan['selections'][1])

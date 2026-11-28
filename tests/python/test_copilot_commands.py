@@ -248,6 +248,22 @@ class CopilotControlTests(unittest.TestCase):
         self.assertNotIn('requestedEntryInterval',window)
         with self.assertRaisesRegex(ValueError, 'No verified handoff'):
             cc.retime(s.snapshot(),current,32,earliest_beat=132,latest_beat=136,allow_outro_bars=True)
+
+    def test_retime_keeps_loop_evidence_only_at_the_alternative_cues_exact_exit(self):
+        from afterhours.vdj_mixing import measured_bridge_loop
+        s = running()
+        candidates=s.state['analysis']['tracks'][0]['cueCandidates']
+        original=candidates[0]
+        candidates.append({**original,'id':'later','exitBeat':144,'endBeat':176,
+                           'exitSeconds':144*60/155,'endSeconds':176*60/155,'loopBridgeBeats':8})
+        current={**s.state['telemetry']['decks'][0],'beatPosition':136}
+        exact=cc.retime(s.snapshot(),current,16,allow_outro_bars=True)
+        self.assertEqual(exact['candidateId'],'later')
+        self.assertEqual(measured_bridge_loop({'genreFamily':'house'},exact),8)
+        shifted=cc.retime(s.snapshot(),{**current,'beatPosition':140},16,allow_outro_bars=True)
+        self.assertEqual(shifted['mixAtBeat'],148)
+        self.assertIsNone(measured_bridge_loop({'genreFamily':'house'},shifted))
+
     def test_go_failure_keeps_hold_and_does_not_seek_or_mix(self):
         s=running(); self.command(s,'hold')
         s.state['telemetry']['decks'][0]['beatPosition']=140

@@ -61,14 +61,13 @@ def measured_recipe(plan, index):
     return recipe
 
 
-def measured_bridge_loop(plan, index, recipe, window):
-    if not plan or recipe.get('genreFamily') not in ('house', 'techno', 'dnb'):
+def measured_bridge_loop(recipe, window):
+    if recipe.get('genreFamily') not in ('house', 'techno', 'dnb'):
         return None
-    cue = plan['selections'][index]
-    beats = cue.get('loopBridgeBeats')
-    if (cue.get('replayVerified') is True and beats in (4, 8)
+    beats = window.get('verifiedLoopBeats')
+    if (beats in (4, 8)
             and window['fadeBeats'] >= 2 * beats
-            and math.isclose(window['mixAtBeat'], cue['exitBeat'], abs_tol=.15)):
+            and math.isclose(window['mixAtBeat'], window['verifiedLoopExitBeat'], abs_tol=.15)):
         return beats
     return None
 

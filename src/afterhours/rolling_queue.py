@@ -1,5 +1,6 @@
 """Append compatible recordings within the running set's native worker."""
 import re
+import time
 
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
@@ -144,7 +145,8 @@ class RollingQueue:
                 candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
                     0 if not timed_set or track['id'] in self.live_matches else 1,
                     transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)),
-                    set_slot=set_slot(str(state.get('agentDirection') or '')))
+                    set_slot=set_slot(str(state.get('agentDirection') or ''),
+                                      plan=getattr(session,'standing_night_plan',None),at=time.time()))
             else:
                 candidates = sorted(candidates, key=score)
             deferred = state.get('timedContinuation') or []

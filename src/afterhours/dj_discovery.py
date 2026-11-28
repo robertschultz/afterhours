@@ -110,7 +110,7 @@ def style_for(request):
     return 'dance' if text == 'dance' else ''
 
 
-def set_slot(request):
+def set_slot(request, *, plan=None, at=None):
     text=normalized(request)
     for name, pattern, target in (
         ('closing',r'\b(closing set|last track|wind down|after hours|afterhours set)\b',.40),
@@ -120,6 +120,9 @@ def set_slot(request):
     ):
         if re.search(pattern,text):
             return {'name':name,'targetEnergy':target}
+    if plan and at is not None and plan['startAt'] <= at <= plan['endAt']:
+        from afterhours.set_plan import planned_energy
+        return {'name':'planned energy curve','targetEnergy':planned_energy(plan,at)/5}
     return None
 
 
@@ -328,7 +331,10 @@ def rank_candidates(tracks, requested_style, anchors, recent, preferred, discove
         score += .8 if related_credit else 0
         energy=track.get('energy')
         if set_slot and type(energy) in (int,float) and 0<=energy<=1:
-            score += 1.5*(1-abs(energy-set_slot['targetEnergy']))
+            distance=abs(energy-set_slot['targetEnergy'])
+            score += 1.5*(1-distance)
+            facts[track_id]['setEnergyFit']={'target':round(set_slot['targetEnergy'],2),
+                                             'catalogEnergy':round(energy,2),'gap':round(distance,2)}
         score -= 3.5 * edges.get('recentArtistAppearances', 0)
         chart = evidence.get('danceChart')
         if chart:

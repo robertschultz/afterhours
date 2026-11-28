@@ -117,3 +117,17 @@ class DiscoveryTests(unittest.TestCase):
                                                    lambda _: (0,0),set_slot=slot)
         self.assertEqual(ranked[0]['id'],'related')
         self.assertEqual(facts['related']['collaborationLinks'],['jules'])
+
+    def test_saved_night_plan_changes_the_target_without_inventing_missing_energy(self):
+        plan={'startAt':0,'peakAt':3600,'endAt':7200,'warm':True,'onePeak':True,'darkLate':False}
+        rows=[{'id':'warm','artist':'Act A','genre':'House','energy':.35},
+              {'id':'peak','artist':'Act B','genre':'House','energy':.9},
+              {'id':'unknown','artist':'Act C','genre':'House'}]
+        for at, expected in ((120,'warm'),(3600,'peak')):
+            slot=dj_discovery.set_slot('house',plan=plan,at=at)
+            ranked,facts=dj_discovery.rank_candidates(rows,'house',[],[],lambda _:(0,0),set_slot=slot)
+            self.assertEqual(ranked[0]['id'],expected)
+            self.assertIn('setEnergyFit',facts[expected])
+            self.assertNotIn('setEnergyFit',facts['unknown'])
+        self.assertIsNone(dj_discovery.set_slot('house',plan=plan,at=7201))
+        self.assertEqual(dj_discovery.set_slot('warm up',plan=plan,at=3600)['name'],'warm-up')

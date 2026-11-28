@@ -183,7 +183,7 @@ def context_key(s):
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 
-def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tracks=(), full=False):
+def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tracks=(), full=False, *, night_plan=None):
     queued=(s.get('queuedUpdate') or {}).get('tracks') or s.get('order',[])
     ordered={t['id']:t for t in queued}
     candidates={t['id']:t for t in s.get('candidates',[])}
@@ -208,7 +208,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         return (-score,distance)
     identity_order=sorted(candidates.values(),key=relevance) if terms else list(candidates.values())
     style=dj_discovery.style_for(request)
-    set_slot=dj_discovery.set_slot(request)
+    set_slot=dj_discovery.set_slot(request,plan=night_plan,at=now)
     order=s.get('order') or []
     cursor=max(0,s.get('index',0))
     anchors=order[max(0,cursor-1):cursor+2]
@@ -985,6 +985,7 @@ class DJAgent:
             if hasattr(self.session,'set_reorder_preference'):
                 self.session.set_reorder_preference(self.settings.state['allowReorder'])
             self.session.standing_style=copy.deepcopy(self.settings.state['style'])
+            self.session.standing_night_plan=copy.deepcopy(self.settings.state['plan'])
             if hasattr(self.session,'set_pins'):
                 known=[tid for tid in self.settings.state['pins'] if self.session.crate.get(tid)]
                 self.session.set_pins(known,restoring=True)
@@ -1184,6 +1185,7 @@ class DJAgent:
             self.settings.state['revision']+=1
         self.settings.state['allowReorder']=reorder
         self.state['settings']=copy.deepcopy(self.settings.state)
+        self.session.standing_night_plan=copy.deepcopy(self.settings.state['plan'])
         if not self.path:return
         self.path.parent.mkdir(parents=True,exist_ok=True)
         tmp=self.path.with_suffix('.tmp')
@@ -1924,7 +1926,8 @@ class DJAgent:
                     'reason':'operator message' if pending else 'choose from catalog results' if catalog_ready else 'replace unavailable upcoming recordings' if repair else 'consider exact audience requests' if guest_work else 'recheck upcoming queue after music changed' if recheck else 'refill upcoming queue',
                     'searchPolicy':{'canSearch':can_search,'roundsRemaining':max(0,2-self.search_rounds) if self.settings.state['discover'] else 0,
                                     'previousQueries':sorted(self.searches),'openingTarget':6},'music':music_context(planning,[r for r in self.state['deferredTracks'] if r['trackId'] not in history],self.clock(),ranking_text,
-                                        guest_ids=[r['trackId'] for r in guest_rows],heard_tracks=s.get('order',[])[:len(history)],full=True)}
+                                        guest_ids=[r['trackId'] for r in guest_rows],heard_tracks=s.get('order',[])[:len(history)],
+                                        full=True,night_plan=self.settings.state['plan'])}
             # The planner is sent a bounded view; the whole eligible crate stays
             # here as the book its lookups read.
             working_rows=packet['music']['catalog']

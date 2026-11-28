@@ -2831,10 +2831,14 @@ class DJSession:
             failure = metadata_changed or cue_mismatch or NativeStreamRejected('VirtualDJ reports a streamed-track error.')
             if (metadata_changed or cue_mismatch) and failure.track['id'] != rejected['id']:
                 raise failure
-            if cue_mismatch and (policy.get('sourceById', {}).get(rejected['id']) != 'planner'
-                                 or rejected['id'] in state.get('setPins', [])):
+            source = policy.get('sourceById', {}).get(rejected['id'])
+            verified_change = metadata_changed or cue_mismatch
+            if (rejected['id'] in state.get('setPins', [])
+                    or (cue_mismatch and source != 'planner')):
                 raise failure
-            if (state['phase'] != 'playing' or index != state['index']+1 or not state.get('entryCadence')
+            if not state.get('entryCadence') and (not verified_change or source != 'planner'):
+                raise failure
+            if (state['phase'] != 'playing' or index != state['index']+1
                     or not state.get('rollingQueue') or not policy['allowReorder'] or dj_settings.lead(state) != 'all'
                     or policy.get('sourceById', {}).get(rejected['id']) == 'operator'
                     or any(track['id'] in policy['lockedIds'] for track in order[index:])
@@ -2854,7 +2858,7 @@ class DJSession:
             try:
                 prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
             except ValueError:
-                if not cue_mismatch or any(
+                if not verified_change or any(
                         policy.get('sourceById', {}).get(row['id']) != 'planner' or row['id'] in state.get('setPins', [])
                         for row in retained[index:]):
                     raise

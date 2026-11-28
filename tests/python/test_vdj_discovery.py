@@ -182,6 +182,20 @@ class QueueRevisionTests(unittest.TestCase):
         self.assertIn('tempo or key', s.state['events'][-1]['text'])
         send.assert_not_called()
 
+    def test_untimed_rolling_set_recovers_after_the_paused_recording_is_reanalyzed(self):
+        from afterhours.vdj_session import TrackMetadataChanged
+
+        s, original = self.prepared()
+        s.update(index=1, rollingQueue={'status':'preparing'})
+        s.state['setlist']['sourceById']['2'] = 'planner'
+        change = TrackMetadataChanged({**s.state['order'][2], 'bpm':131})
+        with patch('afterhours.cue_planner.verify_receipts'), patch.object(s, 'send') as send:
+            order, plan = s.substitute_rejected_preload(2, metadata_changed=change)
+        self.assertEqual([track['id'] for track in order], ['0','1','3'])
+        self.assertEqual(plan['selections'][:2], original['selections'][:2])
+        self.assertIsNone(s.availability.blocked('2'))
+        send.assert_not_called()
+
     def test_rejected_preload_keeps_operator_queue_intact(self):
         s,_ = self.prepared()
         pending = {'tracks':s.state['order']}

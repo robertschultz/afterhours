@@ -3172,8 +3172,11 @@ class DJSession:
                     resume_window=copilot_commands.retime({**self.snapshot(),'order':order,'executionPlan':planned,'index':index},current,
                                                          0 if final else recipe['fadeBeats'],final)
                 current=t['decks'][active-1]
-                if return_to_verified_exit and not entry_cadence and current['beatPosition']>planned['selections'][index]['exitBeat']-8:
-                    resume_window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'])
+                if return_to_verified_exit and not entry_cadence:
+                    t=self.read_playing_transport(client, active, track['id'], clock_only=True)
+                    current=t['decks'][active-1]
+                    resume_window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'],
+                                                          allow_outro_bars=True)
                     resume_window['basis']='measured-continuation-exit'
                     self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
                 if entry_cadence and planned and not final and not resume:

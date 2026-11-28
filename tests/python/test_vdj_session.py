@@ -487,6 +487,9 @@ class SessionTests(unittest.TestCase):
     def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
         self.simulate_run(30,8,128,background=True,late_background=True)
 
+    def test_late_staged_handoff_can_start_inside_the_verified_outro(self):
+        self.simulate_run(30,8,128,background=True,late_background='outro-bar')
+
     def test_measured_set_crossfades_on_time_when_stems_drop_before_play(self):
         self.simulate_run(30,8,128,control='stems-drop')
 
@@ -674,8 +677,9 @@ class SessionTests(unittest.TestCase):
             def __init__(self,session,revision,tracks,cache):
                 self.revision=revision;self.cache={};self.done=False;self.error=None;self.result=copy.deepcopy(full_report['tracks'][2:])
             def step(self,c,slack):
+                threshold=193 if late_background=='outro-bar' else mix_at+4
                 self.done=(s.state['index']==1 and slack>=16
-                           and (not late_background or decks[1]['beatPosition']>mix_at+4))
+                           and (not late_background or decks[1]['beatPosition']>threshold))
             def close(self,c):pass
             def snapshot(self):return {'status':'analyzing','message':'Synthetic preparation','completed':0,'total':2}
         from afterhours.background_analysis import BackgroundAnalysis
@@ -733,6 +737,10 @@ class SessionTests(unittest.TestCase):
             self.assertGreater(actual[0],mix_at)
             self.assertLessEqual(actual[0],mix_at+32)
             self.assertEqual(actual[1:],windows[1:])
+        elif late_background=='outro-bar':
+            self.assertEqual([actual[0],actual[2]], [128,128])
+            self.assertGreater(actual[1],192)
+            self.assertLessEqual(result['transitions'][1]['timing']['endBeat'],224)
         else:
             self.assertEqual(actual,windows)
         if late_background:

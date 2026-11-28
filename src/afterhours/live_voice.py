@@ -225,11 +225,16 @@ No camera or direct music audio is supplied.'''
             if sid and sid!=self.state['sessionId']:raise ValueError('Unknown voice session.')
             if transport_closed and sid:
                 self.state['transportClosed']=True
+                if self.state['status']=='closing':
+                    self.state['status']='closed'
             if self.state['status'] in ('idle','closing','closed'):return self.status()
             if self.state['status']=='connecting':
                 self.cancel_connect=True
                 return self.status()
-            sid=self.state['sessionId'];self.state['status']='closing'
+            sid=self.state['sessionId']
+            # A confirmed browser disconnect vacates the local Talk slot.
+            # Provider hangup is still attempted and usage remains unfinalized.
+            self.state['status']='closed' if self.state.get('transportClosed') else 'closing'
             if self.timer:self.timer.cancel()
             self.stop_lease()
             self.agent.disable(preserve_playback=True)

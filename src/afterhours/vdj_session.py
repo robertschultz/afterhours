@@ -3424,9 +3424,13 @@ class DJSession:
                             order,planned=revised
                             if final and index+1<len(order):
                                 preload_following(client,incoming,target,index+1)
+                                if index+1 == len(order):
+                                    # Preload discarded the sole successor. Keep
+                                    # the closing window already in use; its
+                                    # cue may have passed while preparing.
+                                    continue
                                 t=self.telemetry(client)
-                                if index+1<len(order):
-                                    entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
+                                entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
                                 return_to_verified_exit=bool(planned)
                                 revised_final=True;break
                     if rolling:rolling.tick(self,slack)

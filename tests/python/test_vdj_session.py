@@ -498,6 +498,9 @@ class SessionTests(unittest.TestCase):
     def test_measured_set_crossfades_on_time_when_stems_drop_before_play(self):
         self.simulate_run(30,8,128,control='stems-drop')
 
+    def test_late_preload_rejection_keeps_playing_until_a_new_successor_is_ready(self):
+        self.simulate_run(30, 8, 128, background=True, late_background='rejected-only')
+
     def test_delayed_mixer_read_retimes_without_starting_the_incoming_deck_twice(self):
         self.simulate_run(30,8,128,late_mixer=True)
 
@@ -536,6 +539,8 @@ class SessionTests(unittest.TestCase):
             review=ai_mix.validate_plan(response,report,seconds);plan=cue_planner.compile_plan(review,report,pool[:2],seconds);plan['applied']=True
             s.update(order=pool[:2],analysis=report,aiReview=review,executionPlan=plan)
         if quick_insert:s.plan(['0','1'],seconds=seconds,excerpt_bars=0,mix_style='quick')
+        reject_late_preload = late_background == 'rejected-only'
+        refilled_after_rejection = []
         now=[0.0];cross=[0.0];fade=[None];sent=[];reads=[];ramps={};revised=[False];steered=[];loads=[]
         insertions=[]; delayed_readbacks=[]
         master=[selected_spare or 1];sync_sources=[]
@@ -607,12 +612,24 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(staged['queuedUpdate']['protectedIds'],['0','1','2'])
                 insertions.append('3')
             if background and not revised[0] and s.state['phase']=='playing':
-                revised[0]=True;ids=['0','1','2','3']
+                revised[0]=True;ids=['0','1','2'] if reject_late_preload else ['0','1','2','3']
                 s.revise_queue(ids,mix_transitions=[{'fromId':a,'toId':b,'technique':'short-handoff',
                     'blendBeats':blend,'reason':'Synthetic new selections.'} for a,b in zip(ids,ids[1:])])
                 self.assertEqual(s.state['queuedUpdate']['status'],'needs-analysis')
+            if (reject_late_preload and not refilled_after_rejection
+                    and s.state['phase'] == 'playing' and s.state['index'] == 1
+                    and [row['id'] for row in s.state['order']] == ['0', '1']
+                    and any(event['kind'] == 'queue-skipped' for event in s.state['events'])):
+                self.assertTrue(decks[1]['playing'])
+                self.assertGreater(decks[1]['beatPosition'], mix_at)
+                s.revise_queue(['0','1','3'], source='planner')
+                refilled_after_rejection.append(True)
             return t
         def prepare(c,track,deck,target,cue=None,checked=None):
+            if reject_late_preload and track['id'] == '2':
+                from afterhours.vdj_session import TrackMetadataChanged
+                decks[deck-1].update(id='2', playing=False)
+                raise TrackMetadataChanged({**track, 'bpm':track['bpm']+1})
             if quick_insert and track['id']=='3' and checked is None:
                 from afterhours.vdj_session import TrackMetadataChanged
                 raise TrackMetadataChanged({**track,'camelot':'1A'})
@@ -683,7 +700,10 @@ class SessionTests(unittest.TestCase):
         preparation_suspensions = []
         class MeasuredJob:
             def __init__(self,session,revision,tracks,cache):
-                self.revision=revision;self.cache={};self.done=False;self.error=None;self.result=copy.deepcopy(full_report['tracks'][2:])
+                self.revision=revision;self.cache={};self.done=False;self.error=None
+                self.result=copy.deepcopy(full_report['tracks'][2:])
+                if reject_late_preload:
+                    self.result = [row for row in self.result if row['id'] in {track['id'] for track in tracks}]
             def step(self,c,slack):
                 threshold=193 if late_background=='outro-bar' else mix_at+4
                 self.done=(s.state['index']==1 and slack>=16
@@ -703,8 +723,18 @@ class SessionTests(unittest.TestCase):
                 agent.message('take back over' if control=='paused-handback' else 'go ahead and beat match into the next track',message_id='handback')
                 self.assertEqual(s.state['copilot']['command']['status'],'confirmed')
                 provider.assert_not_called()
+            elif reject_late_preload:
+                with patch('afterhours.rolling_queue.RollingQueue.tick'), \
+                        patch('afterhours.vdj_session.measured_bridge_loop', return_value=None):
+                    s.start(rolling_queue=True)
             else:s.start(resume=control=='resume')
         result=s.snapshot();self.assertEqual(result['phase'],'completed')
+        if reject_late_preload:
+            self.assertEqual(refilled_after_rejection, [True])
+            self.assertEqual([(row['from'], row['to']) for row in result['transitions']], [('0','1'), ('1','3')])
+            self.assertEqual(result['transitions'][1]['timing']['basis'], 'measured-continuation-exit')
+            self.assertFalse(any(deck['playing'] for deck in decks))
+            return result
         outro = next(i for i,(command,_,_) in enumerate(sent) if "'afterhours_outro'" in command and 'repeat_start' in command)
         self.assertTrue(any(command.endswith(' pause') for command,_,_ in sent[outro+1:]))
         if quick_insert:

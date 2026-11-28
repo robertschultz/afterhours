@@ -41,6 +41,10 @@ For an opt-in comparison, start the engine with
 rank a short list of eligible records when preparation has time to spare. If a
 result misses the deadline, local ranking continues. This setting leaves the
 voice model and the wider set-planning model on their configured routes.
+Set `AFTERHOURS_ROLLING_ADVISOR_LOG_RECEIPTS=1` for a benchmark run to log
+up to 16 shortlist receipts in the local engine diagnostic log. The receipts
+distinguish a ranking from queue acceptance. Compare them with native handoff
+receipts to identify what actually played.
 
 While a measured set is paused, the protected `prepare-stem-windows` set
 action can profile up to four exact track IDs on an isolated spare deck.

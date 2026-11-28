@@ -200,9 +200,16 @@ class RollingQueue:
                     'stale': 'The shortlisted recording changed. Using the current local track ranking.',
                 }[receipt['outcome']]
                 accepted = advised is not None and any(track['id'] == advised for track in picked)
-                session.event(description, 'queue', trackId=advised, model=MODEL, **receipt,
-                              acceptedForPreparation=accepted,
-                              queueRevisionId=session.state['queuedUpdate']['id'] if accepted else None)
+                session.event(description, 'queue', trackId=advised, model=MODEL, outcome=receipt['outcome'])
+                self.advisor.log_benchmark_receipt({
+                    **receipt,
+                    'at': time.time(),
+                    'sessionId': state['id'],
+                    'model': MODEL,
+                    'rankedTrackId': advised,
+                    'acceptedForPreparation': accepted,
+                    'queueRevisionId': session.state['queuedUpdate']['id'] if accepted else None,
+                })
             if picked:
                 selected = [t['id'] for t in picked]
                 queued = session.state['queuedUpdate']

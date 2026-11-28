@@ -1,4 +1,5 @@
 """Exercise live shortlist advice without submitting provider requests."""
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -56,6 +57,7 @@ class RollingAdvisorTests(unittest.TestCase):
         self.assertFalse(self.advisor.pending.is_set())
         self.assertEqual(self.advisor.advise(self.state, self.tail, self.candidates, {}, 22), (None, False))
 
+    @patch.dict(os.environ, {'AFTERHOURS_ROLLING_ADVISOR_LOG_RECEIPTS': '1'})
     @patch('afterhours.rolling_advisor.request_pick', return_value='2')
     def test_ranked_track_and_queue_acceptance_are_distinct(self, _):
         for bpm, accepted in ((125, True), (200, False)):
@@ -72,11 +74,17 @@ class RollingAdvisorTests(unittest.TestCase):
                 roller.advisor.enabled = True
                 roller.tick(session, 40)
                 self.assertIsNone(session.snapshot()['queuedUpdate'])
-                roller.tick(session, 40)
+                with self.assertLogs(rolling_advisor.RECEIPT_LOG, level='WARNING') as logs:
+                    roller.tick(session, 40)
                 snapshot = session.snapshot()
                 event = next(event for event in snapshot['events'] if event.get('model') == rolling_advisor.MODEL)
                 self.assertEqual(event['trackId'], 'advised')
-                self.assertEqual(event['localFirstTrackId'], 'local')
-                self.assertEqual(event['acceptedForPreparation'], accepted)
-                self.assertEqual(event['queueRevisionId'], snapshot['queuedUpdate']['id'] if accepted else None)
+                self.assertEqual(set(event), {'at', 'kind', 'text', 'model', 'outcome', 'trackId'})
+                self.assertEqual(len(logs.records), 1)
+                telemetry = json.loads(logs.records[0].args[0])
+                self.assertEqual(telemetry['shortlistTrackIds'], ['local', 'advised'])
+                self.assertEqual(telemetry['localFirstTrackId'], 'local')
+                self.assertEqual(telemetry['rankedTrackId'], 'advised')
+                self.assertEqual(telemetry['acceptedForPreparation'], accepted)
+                self.assertEqual(telemetry['queueRevisionId'], snapshot['queuedUpdate']['id'] if accepted else None)
                 self.assertEqual(snapshot['index'], 0)

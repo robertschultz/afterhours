@@ -1,6 +1,7 @@
 """Optional GPT-6.2 Sol advice for already eligible live refill candidates."""
 
 import json
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ MODEL = 'gpt-6.2-sol'
 MAX_CALLS = 16
 MIN_INTERVAL = 225
 WAIT_SECONDS = 2.5
+RECEIPT_LOG = logging.getLogger(__name__ + '.benchmark')
 # 16 calls at $2.50/M input (cache write), $10/M output, up to 3 KB
 # plus 2,048 framing tokens and 300 output tokens each: under $0.26.
 
@@ -53,6 +55,7 @@ def request_pick(payload, choices):
 class RollingAdvisor:
     def __init__(self):
         self.enabled = os.getenv('AFTERHOURS_ROLLING_ADVISOR') == MODEL
+        self.log_receipts = os.getenv('AFTERHOURS_ROLLING_ADVISOR_LOG_RECEIPTS') == '1'
         self.calls = 0
         self.sent_at = -float('inf')
         self.context = None
@@ -70,6 +73,12 @@ class RollingAdvisor:
             'stemCoveredTrackIds': list(self.stem_covered_ids),
             'localFirstTrackId': eligible_ids[0],
         }
+
+    def log_benchmark_receipt(self, receipt):
+        # At most one record per capped model request. Keep the complete
+        # comparison in the engine's private process logs, off the session API.
+        if self.log_receipts:
+            RECEIPT_LOG.warning('Rolling advisor benchmark %s', json.dumps(receipt, ensure_ascii=True))
 
     def advise(self, state, tail, candidates, facts, slack):
         """Return an exact eligible ID, or briefly defer while sufficient runway remains."""

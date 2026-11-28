@@ -1131,6 +1131,46 @@ class SessionTests(unittest.TestCase):
                 self.assertIs(type(result.exception),expected)
                 load.assert_called_once()
 
+    def test_late_program_load_uses_only_readbacks_if_a_verified_exit_remains(self):
+        for outgoing_beat, recovers in ((95, True), (140, False)):
+            with self.subTest(outgoing_beat=outgoing_beat):
+                session = DJSession(threading.Lock())
+                outgoing = {'id':'a', 'engine':{'selection_id':identity('outgoing')}}
+                incoming = {'id':'b', 'engine':{'selection_id':identity('incoming')}}
+                cue = {'id':'source-cue', 'trackId':'a', 'entryBeat':64, 'entrySeconds':32,
+                       'exitBeat':150, 'exitSeconds':75, 'endBeat':182, 'endSeconds':91,
+                       'maxBlendBeats':32, 'replayVerified':True}
+                session.folder = {'id':'catalog'}
+                session.active_deck = 1
+                session.update(active=True, phase='playing', index=0, order=[outgoing, incoming],
+                               entryCadence=[30,60], analysis={'tracks':[{'id':'a', 'cueCandidates':[cue]}]},
+                               executionPlan={'applied':True, 'selections':[cue], 'transitions':[{'fadeBeats':8}]})
+                clock = [0.0]
+
+                def observe(client, seconds):
+                    clock[0] += seconds
+
+                def reading(script, kind=None):
+                    return {'deck 1 play':True, 'deck 1 get_filepath':'outgoing',
+                            'deck 1 get_beatpos':outgoing_beat, 'deck 1 get_bpm':120,
+                            'deck 2 deck_has_error':False, 'deck 2 loaded':clock[0]>=14,
+                            'deck 2 get_filepath':'incoming', 'deck 2 play':False}[script]
+
+                client = Mock()
+                client.query.side_effect = reading
+                with patch.object(session, 'locate_for_load', return_value=None), \
+                        patch.object(session, 'wait_observed', side_effect=observe), \
+                        patch('afterhours.vdj_session.time.monotonic', side_effect=lambda:clock[0]), \
+                        patch('afterhours.vdj_session.load_selected', return_value={'sent':True}) as load:
+                    if recovers:
+                        session.load(client, incoming, 2)
+                    else:
+                        with self.assertRaisesRegex(BridgeError, 'load remains unconfirmed'):
+                            session.load(client, incoming, 2)
+                self.assertEqual(clock[0], 14 if recovers else 12)
+                load.assert_called_once()
+                client.send.assert_not_called()
+
     def test_nonfinite_engine_measurements_are_not_live_values(self):
         for value in (float('nan'),float('inf'),True,'',-1):
             with self.assertRaises(BridgeError):number(value,0,1)

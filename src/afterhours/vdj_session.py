@@ -2514,6 +2514,35 @@ class DJSession:
             raise
         return None
 
+    def can_wait_for_program_load(self, client, track, deck):
+        """Confirm that a longer read-only wait still leaves a measured handoff."""
+        state = self.snapshot()
+        index, outgoing = state['index'], self.active_deck
+        order = state['order']
+        plan = state.get('executionPlan') or {}
+        if (state['phase'] != 'playing' or not state['active'] or not state.get('entryCadence')
+                or not plan.get('applied') or not 0 <= index < len(order)-1
+                or order[index+1]['id'] != track['id'] or outgoing is None
+                or deck != deck_rotation.following(outgoing, self.decks)):
+            return False
+        current = order[index]
+        try:
+            if (as_bool(self.q(client, f'deck {deck} play', 'bool'))
+                    or not as_bool(self.q(client, f'deck {outgoing} play', 'bool'))
+                    or identity(str(self.q(client, f'deck {outgoing} get_filepath', 'text')))
+                       != current['engine']['selection_id']):
+                return False
+            beat = number(self.q(client, f'deck {outgoing} get_beatpos'), -10000, 100000)
+            bpm = number(self.q(client, f'deck {outgoing} get_bpm'), 40, 300)
+            fade = plan['transitions'][index]['fadeBeats']
+            # Leave eight seconds after the twelve-second extension to
+            # replay the cue and confirm the incoming controls.
+            copilot_commands.retime(state, {'id':current['id'], 'beatPosition':beat, 'bpm':bpm},
+                                    fade, earliest_beat=beat+20*bpm/60, allow_outro_bars=True)
+        except (BridgeError, OSError, ValueError):
+            return False
+        return True
+
     def load(self, client, track, deck):
         self.availability.require_track(track)
         restored = self.locate_for_load(client, track, deck)
@@ -2530,10 +2559,19 @@ class DJSession:
                                    wait=lambda seconds: self.wait_observed(client, seconds))
         if result.get('verified'):
             return
-        # Downloads may outlast the immediate command budget. Read the same
-        # deck for up to 12 additional seconds; never re-send Load.
+        # Downloads may outlast the immediate command budget. Usually allow
+        # twelve more seconds of readbacks; never re-send Load.
         until = time.monotonic() + 12
-        while time.monotonic() < until:
+        extended = False
+        while True:
+            if time.monotonic() >= until:
+                if (extended or result.get('sent') is not True
+                        or not self.can_wait_for_program_load(client, track, deck)):
+                    break
+                extended = True
+                until = time.monotonic() + 12
+                self.event('Waiting for the paused incoming deck to confirm its load.', 'loading',
+                           deck=deck, trackId=track['id'])
             self.wait_observed(client, .25)
             try:
                 failed = as_bool(self.q(client, f'deck {deck} deck_has_error', 'bool'))
@@ -2548,6 +2586,8 @@ class DJSession:
                     raise NativeStreamRejected(message)
                 raise BridgeError(message)
             if exact:
+                if as_bool(self.q(client, f'deck {deck} play', 'bool')):
+                    raise BridgeError('The incoming deck started manually while its load was being confirmed.')
                 return
         raise BridgeError('Track load remains unconfirmed. No repeat load or Play was sent.')
 

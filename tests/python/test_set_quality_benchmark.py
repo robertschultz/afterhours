@@ -129,6 +129,20 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertIsNone(SCORER['observed_curatorial_variety'](rows))
         self.assertIsNone(SCORER['observed_curatorial_variety']([{'verified': True}]))
 
+    def test_observed_genre_timing_totals_verified_intervals_and_keeps_unknowns(self):
+        rows = [
+            {'verified':True, 'outgoingGenre':'House', 'incomingGenre':'Tech House'},
+            {'verified':True, 'outgoingGenre':' Tech House ', 'incomingGenre':None},
+            {'verified':True, 'outgoingGenre':None, 'incomingGenre':'House'},
+            {'verified':False, 'outgoingGenre':'House', 'incomingGenre':'Dance'},
+        ]
+        score = SCORER['observed_genre_timing'](rows, [29.5, 61, 30, 70])
+        self.assertEqual(score['verifiedIntervals'], 3)
+        self.assertEqual(score['entryIntervalSecondsByOutgoingGenre'], {'house':29.5, 'tech house':61})
+        self.assertEqual(score['unclassifiedEntryIntervalSeconds'], 30)
+        self.assertEqual(score['handoffsWithBothGenres'], 1)
+        self.assertEqual(score['genreHandoffs'], [{'fromGenre':'house', 'toGenre':'tech house', 'count':1}])
+
     def test_observed_mix_techniques_use_verified_deck_and_mixer_readbacks(self):
         out, incoming = 'Clearing outgoing bass and lead', 'Bringing in incoming bass'
         rows = [

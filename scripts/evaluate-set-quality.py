@@ -308,6 +308,34 @@ def observed_mix_techniques(handoffs):
     }
 
 
+def observed_genre_timing(handoffs, intervals):
+    seconds = defaultdict(float)
+    transitions = Counter()
+    classified_pairs = 0
+    total = 0
+    for row, interval in zip(handoffs, intervals):
+        if row.get('verified') is not True:
+            continue
+        total += 1
+        outgoing, incoming = (value.strip().casefold() if isinstance(value, str) else ''
+                              for value in (row.get('outgoingGenre'), row.get('incomingGenre')))
+        seconds[outgoing] += interval
+        if outgoing and incoming:
+            transitions[outgoing, incoming] += 1
+            classified_pairs += 1
+    if not total:
+        return None
+    unclassified = seconds.pop('', 0)
+    return {
+        'verifiedIntervals':total,
+        'entryIntervalSecondsByOutgoingGenre':{genre:round(value, 3) for genre, value in sorted(seconds.items())},
+        'unclassifiedEntryIntervalSeconds':round(unclassified, 3),
+        'handoffsWithBothGenres':classified_pairs,
+        'genreHandoffs':[{'fromGenre':outgoing, 'toGenre':incoming, 'count':count}
+                         for (outgoing, incoming), count in sorted(transitions.items())],
+    }
+
+
 def read_observed_run(prefix):
     """Compare native handoff timing with independent master capture logs."""
     owner = json.loads(Path(f'{prefix}-owner.json').read_text())
@@ -382,6 +410,7 @@ def read_observed_run(prefix):
         'timingByTarget':timing,
         'upNextOverlay':observed_up_next(browser, start),
         'curatorialVariety':observed_curatorial_variety(handoffs),
+        'genreTiming':observed_genre_timing(handoffs, intervals),
         'mixTechniques':observed_mix_techniques(handoffs),
         'masterCapturedSeconds':meter.get('capturedAudioSeconds'),
         'masterStartedAfterPlaybackSeconds':starts[0].get('afterStartSeconds'),

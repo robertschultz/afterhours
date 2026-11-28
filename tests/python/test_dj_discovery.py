@@ -4,6 +4,23 @@ from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_christian_set_rejects_tempo_only_and_partial_name_matches(self):
+        opening = {'id': 'opening', 'artist': 'Forrest Frank & The Figs', 'genre': 'Christian'}
+        alternatives = (
+            {'id': 'am', 'artist': 'Flowers and Sea Creatures', 'genre': 'Alternative'},
+            {'id': 'memories', 'artist': 'Frank Sinatra', 'genre': 'Easy Listening'},
+            {'id': 'house', 'artist': 'Forrest Frank', 'genre': 'Deep House'},
+        )
+        for candidate in alternatives:
+            with self.subTest(artist=candidate['artist']):
+                with self.assertRaises(dj_discovery.SetStyleMismatch):
+                    dj_discovery.require_faith_set([opening, candidate])
+        for candidate in (
+            {'id': 'same-artist', 'artist': 'Forrest Frank', 'genre': ''},
+            {'id': 'adjacent', 'artist': 'Another artist', 'genre': 'Christian Hip Hop'},
+        ):
+            dj_discovery.require_faith_set([opening, candidate])
+
     def test_public_artist_relationships_require_an_unambiguous_seed(self):
         seed = '11111111-1111-1111-1111-111111111111'
         artists = {'artists': [{'id':seed, 'name':'Fleetwood Mac'}]}

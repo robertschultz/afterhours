@@ -57,6 +57,28 @@ class Peer:
 
 
 class NativeHandoffTests(unittest.TestCase):
+    def test_measured_rhythm_entry_precedes_main_fade_in_both_directions(self):
+        for outgoing, introduced in ((1, .17), (2, .83)):
+            peer = Peer(outgoing)
+            handoff = peer.handoff()
+            handoff.dispatch(peer, outgoing, 3-outgoing, 16, rhythm_intro=True)
+            self.assertTrue(peer.sent[-1].endswith(f'{introduced:.6f} 3bt & crossfader'))
+            count = len(peer.sent)
+            handoff.finish_intro(peer, 3.8, introduced, pair_playing=True)
+            self.assertEqual(len(peer.sent), count)
+            handoff.finish_intro(peer, 4.1, introduced, pair_playing=True)
+            self.assertTrue(peer.sent[-1].endswith(f'{introduced:.6f} {float(2-outgoing):.6f} 12bt & crossfader'))
+            self.assertEqual(sum(script.endswith('play_sync') for script in peer.sent), 1)
+
+    def test_manual_fader_move_prevents_main_fade(self):
+        peer = Peer()
+        handoff = peer.handoff()
+        handoff.dispatch(peer, 1, 2, 16, rhythm_intro=True)
+        count = len(peer.sent)
+        with self.assertRaisesRegex(BridgeError, 'No further fade'):
+            handoff.finish_intro(peer, 4, .4, pair_playing=True)
+        self.assertEqual(len(peer.sent), count)
+
     def test_owned_loop_precedes_incoming_play_and_fade_uses_incoming_clock(self):
         peer = Peer()
         locator = '/fixture/record.wav'

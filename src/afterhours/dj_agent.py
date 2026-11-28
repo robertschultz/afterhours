@@ -846,6 +846,13 @@ def validate_decision(result, session):
     targets=result['tempoTargets']
     if targets is not None and not ids:raise ValueError('Tempo targets need a selected track order.')
     if ids:
+        by_id = {track['id']: track for track in session.get('candidates', [])}
+        if all(tid in by_id for tid in ids):
+            live_order = session.get('order', []) if session.get('active') else []
+            dj_discovery.require_faith_set([by_id[tid] for tid in ids],
+                                          direction=result.get('direction'),
+                                          existing={track['id'] for track in live_order},
+                                          opening=live_order[0] if live_order else None)
         plan=session.get('executionPlan') or {};protected=len(protected_ids(session))
         validate_order(ids,session.get('candidates',[]),session.get('maxTempoShift',8),
             session.get('secondsPerTrack',30),targets,(plan.get('tempoSchedule') or [])[:protected],

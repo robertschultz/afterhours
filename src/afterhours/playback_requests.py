@@ -59,8 +59,9 @@ def queue_intent(value):
 def normalized_intent(text):
     if not isinstance(text, str):return None
     value=' '.join(text.casefold().replace('’',"'").split()).strip(' .!?')
+    value=re.sub(r'^(?:(?:ok(?:ay)?|yes|um+|uh+)[ ,.!?]+)+', '', value)
     value=re.sub(r'^(?:hey )?dot[, ]+', '', value)
-    value=re.sub(r'^(?:ok(?:ay)?[, ]+|yes[, ]+)', '', value)
+    value=re.sub(r'^(?:hey[, ]+)?(?:(?:ok(?:ay)?|yes|um+|uh+)[ ,.!?]+)*', '', value)
     value=re.sub(r'^(?:can|could|would|will) (?:you|we) (?:please )?', '', value)
     value=re.sub(r'^please |[, ]+please$', '', value).strip()
     value=re.sub(r"^let'?s (?:go ahead and )?", '', value)

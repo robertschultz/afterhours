@@ -97,10 +97,12 @@ def similar_artists(artist, fetch):
 
 def style_for(request):
     text = normalized(request)
+    if re.search(r'\b(?:gospel|christian|ccm|worship)\b', text):
+        return 'gospel'
     for style, aliases in (
         ('tech house', 'tech house'), ('deep house', 'deep house'), ('house', 'house'),
         ('hip hop', 'hip hop|hiphop|rap'), ('r&b', 'r b|rhythm and blues|rnb'),
-        ('rock', 'rock'), ('gospel', 'gospel|christian'), ('jazz', 'jazz'),
+        ('rock', 'rock'), ('jazz', 'jazz'),
         ('disco', 'disco'), ('funk', 'funk'), ('soul', 'soul'), ('reggae', 'reggae|dancehall'),
         ('country', 'country'), ('latin', 'latin|reggaeton|salsa|bachata'), ('pop', 'pop'),
         ('techno', 'techno'), ('drum and bass', 'drum and bass|drum bass|dnb'),
@@ -109,6 +111,33 @@ def style_for(request):
         if re.search(r'\b(?:'+aliases+r')\b', text):
             return style
     return 'dance' if text == 'dance' else ''
+
+
+def faith_set_style(order, direction=''):
+    if not order:
+        return False
+    return (style_for(direction) or style_for(order[0].get('genre'))) == 'gospel'
+
+
+def fits_faith_set(track, opening):
+    genre = normalized(track.get('genre'))
+    return (style_for(genre) == 'gospel'
+            or (genre in ('', 'unknown', 'unclassified')
+                and bool(credit(track.get('artist')) & credit(opening.get('artist')))))
+
+
+class SetStyleMismatch(ValueError):
+    """The proposed tail would leave the active musical direction."""
+
+
+def require_faith_set(order, *, direction='', existing=(), opening=None):
+    if not order or not faith_set_style([opening] if opening else order, direction):
+        return
+    anchor = opening or order[0]
+    if any(track['id'] != anchor['id'] and track['id'] not in existing
+           and not fits_faith_set(track, anchor) for track in order):
+        raise SetStyleMismatch('Choose a Christian contemporary or gospel successor for this set. '
+                               'An unrelated genre needs a new musical direction.')
 
 
 def set_slot(request, *, plan=None, at=None):

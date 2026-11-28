@@ -560,8 +560,9 @@ class SessionTests(unittest.TestCase):
             for d in decks:
                 if d['playing']:d['beatPosition']+=seconds*d['bpm']/60
             if fade[0]:
-                start,incoming,tempo,actual_blend=fade[0];fraction=min(1,(now[0]-start)/(actual_blend*60/tempo))
-                cross[0]=fraction if incoming==2 else 1-fraction
+                start,a,b,tempo,actual_blend=fade[0]
+                fraction=min(1,(now[0]-start)/(actual_blend*60/tempo))
+                cross[0]=a+(b-a)*fraction
             for start,deck,key,a,b,duration in ramps.values():
                 fraction=min(1,(now[0]-start)/duration)
                 controls[deck][key]=a+(b-a)*fraction
@@ -619,7 +620,9 @@ class SessionTests(unittest.TestCase):
             elif script.startswith('mix_now'):
                 # Reproduce the native failure: a global mix selected C/D.
                 incoming=selected_spare or (2 if cross[0]<.5 else 1)
-                decks[incoming-1]['playing']=True;fade[0]=(now[0],incoming,decks[incoming-1]['bpm'],int(script.split()[1][:-2]))
+                decks[incoming-1]['playing']=True
+                end=float(incoming==2)
+                fade[0]=(now[0],1-end,end,decks[incoming-1]['bpm'],int(script.split()[1][:-2]))
             elif script.endswith(' masterdeck on'):
                 master[0]=int(script.split()[1])
             elif script.endswith(' play_sync'):
@@ -630,7 +633,7 @@ class SessionTests(unittest.TestCase):
                 n=int(script.split()[1]);self.assertFalse(decks[n-1]['playing']);decks[n-1].update(id='')
             elif "repeat_start_fade 'afterhours_crossfade'" in script:
                 clock_deck,a,b,beats=re.fullmatch(r"deck (\d) repeat_start_fade 'afterhours_crossfade' ([\d.]+) ([\d.]+) (\d+)bt & crossfader",script).groups()
-                fade[0]=(now[0],2 if float(b)==1 else 1,decks[int(clock_deck)-1]['bpm'],int(beats))
+                fade[0]=(now[0],float(a),float(b),decks[int(clock_deck)-1]['bpm'],int(beats))
             elif 'repeat_start_fade' in script:
                 clock_deck,name,a,b,beats,deck,key=re.fullmatch(r"(?:deck (\d) )?repeat_start_fade '([^']+)' ([\d.]+) ([\d.]+) (\d+)bt & deck (\d) ([\w ]+)",script).groups()
                 self.assertEqual(clock_deck,deck)
@@ -706,8 +709,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(result['transitions']),3)
         blends=[16]*3 if control=='skip' else [blend]*3
         fades=[command for command,_,_ in sent if "repeat_start_fade 'afterhours_crossfade'" in command]
-        self.assertEqual(len(fades),3)
-        self.assertEqual([int(command.split('bt')[0].rsplit(' ',1)[1]) for command in fades],blends)
+        fade_commands=iter(fades)
+        for beats in blends:
+            if beats>=16:
+                intro=next(fade_commands).split()
+                self.assertEqual(intro[6], f'{beats//4-1}bt')
+                self.assertAlmostEqual(abs(float(intro[5])-float(intro[4])), .17)
+                main=next(fade_commands).split()
+                self.assertEqual(main[1],intro[1])
+                self.assertEqual(main[6], f'{beats-beats//4}bt')
+            else:
+                self.assertEqual(next(fade_commands).split()[6], f'{beats}bt')
+        self.assertIsNone(next(fade_commands,None))
         self.assertEqual(sync_sources,[(2,1),(3,2),(4,3)] if four else [(2,1),(1,2),(2,1)])
         self.assertFalse(any(command.startswith('mix_now') for command,_,_ in sent))
         if selected_spare:
@@ -751,12 +764,13 @@ class SessionTests(unittest.TestCase):
             # Each record is loaded once, on the next deck round; each blend
             # fades to the incoming deck's side and stays inside its pair.
             self.assertEqual(loads,[('0',1),('1',2),('2',3),('3',4)])
-            self.assertEqual([command.split()[-4] for command in fades],['1.000000','0.000000','1.000000'])
-            self.assertEqual([command.split()[1] for command in fades],['1','2','3'])
+            main_fades=[command.split() for command in fades if command.split()[-4] in ('0.000000','1.000000')]
+            self.assertEqual([command[-4] for command in main_fades],['1.000000','0.000000','1.000000'])
+            self.assertEqual([command[1] for command in main_fades],['1','2','3'])
             pauses=[command for command,_,_ in sent if command.endswith(' pause')]
             self.assertEqual(pauses,['deck 1 pause','deck 2 pause','deck 3 pause','deck 4 pause'])
-            for (a,b),first,last in zip(((1,2),(2,3),(3,4)),fades,fades[1:]+[None]):
-                begin=next(i for i,(command,_,_) in enumerate(sent) if command==first)
+            for a,b in ((1,2),(2,3),(3,4)):
+                begin=next(i for i,(command,_,_) in enumerate(sent) if command==f'deck {b} play_sync')
                 end=next((i for i,(command,_,_) in enumerate(sent) if command==f'deck {a} pause'),len(sent))
                 inside=[command for command,_,_ in sent[begin:end]]
                 outside=[n for n in (1,2,3,4) if n not in (a,b)]

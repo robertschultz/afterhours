@@ -31,6 +31,7 @@ from afterhours import ai_mix
 from afterhours import tempo_planner
 from afterhours import copilot_commands
 from afterhours import dj_settings
+from afterhours.dj_discovery import require_faith_set
 from afterhours import deck_rotation
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
 from afterhours.preparation_pool import service_timed_analysis
@@ -1429,6 +1430,10 @@ class DJSession:
                                  frozen or None,opening if audible else None,fixed=quick,
                                  history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [],
                                  window_limit=s.get('queueWindow',DEFAULT_QUEUE_WINDOW))
+            if source == 'planner':
+                require_faith_set(order, direction=s.get('agentDirection') if audible else '',
+                                  existing={track['id'] for track in s['order']} if audible else (),
+                                  opening=s['order'][0] if audible and s['order'] else None)
             keep_prepared=preserve_prefix>0 and old_plan.get('applied')
             if not audible and not keep_prepared:
                 return self.plan(ids,s['secondsPerTrack'],s['excerptBars'],s.get('maxTempoShift',8),s['mixStyle'],source=source or 'planner',tempo_targets=tempo_targets,quick_blend_seconds=s.get('quickBlendSeconds'),
@@ -3384,6 +3389,8 @@ class DJSession:
                 dispatch_at = time.time()
                 self.handoff=NativeHandoff(self.q,self.send,self.sleep)
                 handoff_options = {'decks': self.decks} if len(self.decks)>2 else {}
+                if self.mixer and fade_beats >= 16:
+                    handoff_options['rhythm_intro'] = True
                 if loop_handoffs:
                     handoff_options['loop_recording'] = track['engine']['selection_id']
                 elif rolling and (loop_beats := measured_bridge_loop(planned,index,recipe,window)):
@@ -3405,8 +3412,11 @@ class DJSession:
                 while time.monotonic() < deadline:
                     self.sleep(.16)
                     t = self.telemetry(client)
+                    incoming_progress = max(0, t['decks'][incoming-1]['beatPosition']-entries[incoming])
+                    self.handoff.finish_intro(client, incoming_progress, t['crossfader'],
+                        pair_playing=all(t['decks'][deck-1]['playing'] for deck in (active,incoming)))
                     if self.mixer:
-                        controls = self.mixer.tick(client,t['decks'][incoming-1]['beatPosition']-entries[incoming])
+                        controls = self.mixer.tick(client,incoming_progress)
                         self.update(transitionControl=controls)
                         evidence['mixerSamples'].append(controls)
                     # The pair in deck order, so A/B samples read as before.
@@ -3424,7 +3434,6 @@ class DJSession:
                         if last_outgoing_beat is not None and outgoing_beat < last_outgoing_beat - 1:
                             evidence['loop']['wraps'] += 1
                         last_outgoing_beat = outgoing_beat
-                    incoming_progress = max(0, t['decks'][incoming-1]['beatPosition']-entries[incoming])
                     self.update(segmentProgress=max(0, min(1, (goal-start_beat+incoming_progress)/(window['endBeat']-start_beat))))
                     endpoint = abs(t['crossfader']-deck_rotation.crossfader_end(incoming)) <= .001
                     if endpoint and t['decks'][incoming-1]['playing']:

@@ -147,7 +147,7 @@ def loop_cleanup_descriptor(value):
 
 
 class NativeHandoff:
-    """One explicitly addressed start and one owned native crossfade.
+    """One explicitly addressed start and an owned native crossfade.
 
     The pair is one step of the set's deck rotation: A/B alternating, or
     A, B, C, D in order on a four-deck layout. Odd decks sit on the left of
@@ -164,8 +164,10 @@ class NativeHandoff:
         self.ramps = {}
         self.dispatched = False
         self.loop = None
+        self.blend_intro = None
 
-    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *, loop_recording=None, loop_beats=None):
+    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *,
+                 loop_recording=None, loop_beats=None, rhythm_intro=False):
         if self.dispatched:
             raise BridgeError('This transition was already dispatched. No repeat was sent.')
         if (decks not in (deck_rotation.TWO,deck_rotation.FOUR) or not deck_rotation.pair(outgoing,incoming,decks)
@@ -207,7 +209,27 @@ class NativeHandoff:
             raise MixerControlChanged('The playing pair changed after start. No crossfade was sent.')
         clock = incoming if self.loop else outgoing
         self.ramps['crossfade']=clock
+        if rhythm_intro and beats >= 16:
+            intro_beats = beats // 4
+            blend = start + (end-start)*.17
+            self.blend_intro = (intro_beats, blend, end, beats)
+            self.crossfade(client, clock, start, blend, intro_beats-1)
+        else:
+            self.crossfade(client, clock, start, end, beats)
+
+    def crossfade(self, client, clock, start, end, beats):
         self.send(client,f"deck {clock} repeat_start_fade 'afterhours_crossfade' {start:.6f} {end:.6f} {beats}bt & crossfader")
+
+    def finish_intro(self, client, progress, crossfader, *, pair_playing):
+        if self.blend_intro is None:
+            return
+        intro_beats, blend, end, total = self.blend_intro
+        if progress < intro_beats:
+            return
+        if not pair_playing or abs(crossfader-blend) > .035 or progress > intro_beats+2:
+            raise MixerControlChanged('The rhythm introduction was not confirmed. No further fade was sent.')
+        self.blend_intro = None
+        self.crossfade(client, self.ramps['crossfade'], crossfader, end, max(1, round(total-progress)))
 
     def engage_loop(self, client, deck, recording, beats):
         prefix = f'deck {deck} '
@@ -284,6 +306,7 @@ class NativeHandoff:
             # Bypass a cancelled worker's send guard, exactly as owned EQ ramps.
             client.send(' & '.join(f"deck {deck} repeat_stop 'afterhours_{name}'" for name,deck in sorted(self.ramps.items())))
             self.ramps.clear()
+        self.blend_intro = None
 
 
 class TransitionMixer:

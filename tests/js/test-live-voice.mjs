@@ -17,6 +17,16 @@ function fixture(override={}){
   return {client,calls,captions,delegations,states,track,mic};
 }
 const flush=()=>new Promise(r=>setImmediate(r));
+test('a settled direct Stop bypasses sustained microphone activity and needs no model delegation',async()=>{
+  const {client,delegations}=fixture({operatorSpeaking:()=>true});
+  await client.start('dot');client.event({type:'session.started'});
+  client.event({type:'session.input_transcript.delta',delta:'. Okay. Um Hey, can you stop the music?',start_ms:0,end_ms:700});
+  client.flushDelegation();assert.equal(delegations.length,0);
+  client.lastInputAt=performance.now()-1000;
+  client.flushDelegation();
+  assert.deepEqual(delegations.map(({text})=>text),['stop the music']);
+  client.event({type:'session.closed',usage:{seconds:1}});
+});
 test('WebRTC waits for session.started; no API key reaches browser, mute is local and provider controlled',async()=>{
   const {client,calls,track}=fixture();await client.start('nova');const channel=client.channel;
   assert.equal(client.ready,false);assert.equal(channel.sent.length,0);assert.equal(calls[0].body.approveRequest,true);assert.equal(calls[0].body.maxSeconds,1800);

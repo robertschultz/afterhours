@@ -133,8 +133,9 @@ class QueuePlanningTests(unittest.TestCase):
             {**track('current', '6B', 120), 'artist': 'Avery Stone', 'genre': 'Christian'},
         ]
         other = {**track('other', '6B', 120), 'artist': 'Unrelated Producer', 'genre': 'Electronic'}
-        related = {**track('related', '6B', 120), 'artist': 'Another Singer', 'genre': 'R&B/Soul'}
-        self.session.update(candidates=seeds + [other])
+        unrelated_soul = {**track('soul', '6B', 120), 'artist': 'Unrelated Singer', 'genre': 'R&B/Soul'}
+        related = {**track('related', '6B', 120), 'artist': 'Another Singer', 'genre': 'Christian R&B/Soul'}
+        self.session.update(candidates=seeds + [other, unrelated_soul])
         self.session.plan([row['id'] for row in seeds])
         self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
                             agentDirection='Play Avery Stone',
@@ -146,7 +147,7 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertIsNone(self.session.snapshot()['queuedUpdate'])
         self.assertEqual(roller.search.call_args.args[3], 'gospel')
 
-        self.session.update(candidates=seeds + [other, related])
+        self.session.update(candidates=seeds + [other, unrelated_soul, related])
         roller.tick(self.session, 25)
         staged = self.session.snapshot()['queuedUpdate']
         self.assertEqual([row['id'] for row in staged['tracks']], ['opener', 'current', 'related'])

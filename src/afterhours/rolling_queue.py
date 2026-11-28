@@ -5,6 +5,7 @@ import time
 from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidates, set_slot, style_for
+from afterhours.dj_discovery import fits_faith_set
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
@@ -26,7 +27,9 @@ def rolling_style(state, order):
             next((style for track in order if (style := style_for(track.get('genre')))), ''))
 
 
-def fits_style(track, style):
+def fits_style(track, style, opening=None):
+    if style == 'gospel':
+        return fits_faith_set(track, opening or {})
     actual = style_for(track.get('genre'))
     return (not style or not actual or actual == style
             or any(style in group and actual in group for group in STYLE_GROUPS))
@@ -117,7 +120,7 @@ class RollingQueue:
                     used.update(row['trackId'] for row in state.get('recordingAvailability', []))
                     titles = {song_identity(row)[0] for row in staged} | self.missed_titles
                     supply = sum(row['id'] in self.live_matches and row['id'] not in used
-                                 and song_identity(row)[0] not in titles and fits_style(row, style)
+                                 and song_identity(row)[0] not in titles and fits_style(row, style, staged[0])
                                  for row in state['candidates'])
                     if supply < 2:
                         self.search(session, state, staged, style, timed_set, lookahead=True)
@@ -167,7 +170,7 @@ class RollingQueue:
                           and song_identity(track)[0] not in titles
                           and not any((base_song_title(track), artist) in song_versions
                                       for artist in credit(track.get('artist')))
-                          and fits_style(track, style)
+                          and fits_style(track, style, order[0])
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             upcoming = len(order) - state['index'] - 1
             # With a short buffer, prepare an eligible previously searched
@@ -292,7 +295,9 @@ class RollingQueue:
                               for row in DISCOVERY.hints(related, order, searched=self.searched)]
             seeds += [(str(tail.get('genre') or style).strip(), '', ''), (style, '', '')]
             seeds += [(name, name, '') for track in recent for name in sorted(credit(track.get('artist')))]
-            if not style_for(state.get('agentDirection')):
+            if style == 'gospel':
+                seeds += [(name, '', '') for name in ('Christian pop', 'Contemporary Christian', 'Christian hip hop')]
+            elif not style_for(state.get('agentDirection')):
                 neighbors = {name for group in STYLE_GROUPS if style in group for name in group if name!=style}
                 seeds += [(name, '', '') for name in sorted(neighbors)]
         direction = state.get('agentDirection')

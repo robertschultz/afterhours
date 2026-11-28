@@ -353,6 +353,25 @@ class BackgroundTests(unittest.TestCase):
         self.assertTrue(measured['engineChecked'])
         self.assertEqual(state['order'], [planned, cued])
 
+    def test_unstable_timed_grid_identifies_the_owned_automatic_pick_for_replacement(self):
+        from afterhours.cue_planner import UnstableTimedGrid
+        track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
+        session = DJSession(threading.Lock())
+        self.addCleanup(session.crate.close)
+        session.update(entryCadence=[30,60], rollingQueue={'status':'ready'})
+        job = BackgroundAnalysis(session,'revision',[track])
+        evidence = {'duration':180,'energyMap':{'reportDigest':'verified'}}
+        job.owned = True
+        job.loaded = track['engine']['selection_id']
+        with patch.object(DJSession,'analyze_deck',return_value=track), \
+             patch.object(DJSession,'automatic_refill_tempo_miss',return_value=None), \
+             patch.object(job,'read_evidence',return_value=evidence), \
+             patch.object(DJSession,'measure_cues',side_effect=UnstableTimedGrid('Native grid could not hold tempo.')):
+            job.run()
+        self.assertEqual(job.analysis_miss, track['id'])
+        self.assertEqual(job.status,'blocked')
+        self.assertEqual(job.error,'Native grid could not hold tempo.')
+
     def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
         self.verify_refill_audio_without_display_waveform(timed=False)
 

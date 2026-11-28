@@ -47,6 +47,22 @@ class PoolTests(unittest.TestCase):
             reader.clock = lambda: path.stat().st_mtime + MAX_AGE + 1
             self.assertIsNone(reader.read(track,60,True))
 
+    def test_timed_cache_excludes_a_measured_grid_without_a_common_pitch_range(self):
+        track = {'id':'virtualdj:'+'a'*64, 'bpm':134.33, 'camelot':'8A', 'engineChecked':True}
+        # Native seek times from the recording whose solo tempo fell out
+        # of the executable set route after a successful handoff.
+        drifting = dict(id='drifting', entryBeat=0, exitBeat=64, endBeat=96, maxBlendBeats=32,
+                        entrySeconds=.483, introEndSeconds=15.005, exitSeconds=30.923, endSeconds=51.2)
+        stable = {**drifting, 'id':'stable', 'exitSeconds':29.53, 'endSeconds':44.23}
+        measured = {**track,'preparationSeconds':60,'timedPreparation':True,'cueCandidates':[drifting,stable]}
+        with TemporaryDirectory() as temporary:
+            cache = VerifiedCues(Path(temporary))
+            cache.evidence.valid = Mock(return_value=True)
+            cache.write(measured)
+            self.assertEqual(cache.read(track,60,True)['cueCandidates'],[stable])
+            cache.write({**measured,'cueCandidates':[drifting]})
+            self.assertIsNone(cache.read(track,60,True))
+
     def test_exact_cues_keep_both_timed_intervals_and_the_ordinary_variant(self):
         track = {'id':'virtualdj:'+'b'*64, 'bpm':122, 'camelot':'8A', 'engineChecked':True}
         with TemporaryDirectory() as temporary:

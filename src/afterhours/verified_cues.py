@@ -62,6 +62,11 @@ class VerifiedCues:
                     or bool(item.get('timedPreparation')) != timed
                     or not self.evidence.valid(item)):
                 return None
+            if timed:
+                stable = [cue for cue in item['cueCandidates'] if not cue_planner.incompatible_timed_grid(cue)]
+                if not stable:
+                    return None
+                item['cueCandidates'] = stable
             return item
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None

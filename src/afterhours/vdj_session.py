@@ -2418,6 +2418,8 @@ class DJSession:
         if unavailable:raise cue_planner.LimitedAudio(unavailable)
         readbacks = {}
         fast_offsets = False
+        unstable_grid = False
+        max_pitch = self.snapshot().get('maxTempoShift', 8) if timed else 8
         duration = evidence['duration']
 
         def read_position(grid_anchor=False):
@@ -2493,6 +2495,9 @@ class DJSession:
                         'endBeat':end,'endSeconds':end_time}
                 try:cue=cue_planner.candidate(evidence,rows,native,policy)
                 except ValueError:continue  # Fluid-grid readback may invalidate an estimated window.
+                if timed and cue_planner.incompatible_timed_grid(cue, max_pitch):
+                    unstable_grid = True
+                    continue
                 # Prove that execution can reproduce the absolute cue before the
                 # candidate is offered to the planner. Both decks remain paused.
                 seek(f"goto {cue['entrySeconds']/cue['recordingDuration']*100:.9f}%")
@@ -2522,6 +2527,9 @@ class DJSession:
                                'analysis',trackId=track['id'])
                 return result
             span//=2
+        if unstable_grid:
+            raise cue_planner.UnstableTimedGrid(
+                f'{track["title"]} crosses a native tempo change outside the timed pitch range. Try another recording.')
         raise BridgeError(f'No usable measured excerpt was found for {track["title"]}. Try another recording.')
 
     def apply_plan(self):

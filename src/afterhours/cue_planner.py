@@ -11,6 +11,7 @@ import statistics
 from afterhours import tempo_planner
 
 from afterhours.audio_analysis import read_scan
+from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import style_for
 from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
 from afterhours.stem_profiles import cue_pair
@@ -22,6 +23,25 @@ RHYTHM_STYLES = {'dance', 'electronic', 'disco', 'house', 'deep house', 'tech ho
 
 class LimitedAudio(ValueError):
     """Verified decoded sound is only a short part of the advertised recording."""
+
+class UnstableTimedGrid(BridgeError):
+    """The measured cue spans tempo sections without a common pitch range."""
+
+
+def incompatible_timed_grid(cue, max_pitch=8):
+    """Use only measured beat spans with enough evidence to rule out a fit."""
+    points = ('entryBeat','exitBeat','endBeat','maxBlendBeats',
+              'entrySeconds','introEndSeconds','exitSeconds','endSeconds')
+    values = [cue.get(key) for key in points]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        return False
+    entry, exit_beat, end, intro_beats, start_time, intro_time, exit_time, end_time = values
+    sections = ((intro_beats, intro_time-start_time),
+                (exit_beat-entry-intro_beats, exit_time-intro_time),
+                (end-exit_beat, end_time-exit_time))
+    bpms = [beats*60/seconds for beats, seconds in sections if beats>=4 and seconds>0]
+    allowance = max_pitch / 100
+    return len(bpms)>=2 and max(bpms)*(1-allowance) > min(bpms)*(1+allowance) + .05
 
 
 class AudioEvidenceChanged(ValueError):
@@ -227,6 +247,8 @@ def compile_plan(review, report, order, seconds, style='phrase'):
             raise ValueError('The AI plan cited a cue absent from this recording.')
         if cue.get('replayVerified') is not True:
             raise ValueError('The selected cue has not passed native replay verification.')
+        if source.get('timedPreparation') and incompatible_timed_grid(cue, report.get('maxPitchPercent',8)):
+            raise ValueError('The selected cue crosses a native tempo change outside the timed pitch range.')
         if not source.get('energyMap') or source['energyMap'].get('coverage')!=1:
             raise ValueError('The whole-track analysis is no longer available.')
         cues.append({'trackId':track['id'],'reason':selected.get('reason',''),**copy.deepcopy(cue)})

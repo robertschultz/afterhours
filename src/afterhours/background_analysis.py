@@ -546,7 +546,7 @@ class BackgroundAnalysis:
 
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
-        from afterhours.cue_planner import AudioEvidenceChanged, LimitedAudio
+        from afterhours.cue_planner import AudioEvidenceChanged, LimitedAudio, UnstableTimedGrid
         helper=DJSession(threading.Lock(),crate=getattr(self.session,'crate',None),
                          recordings=getattr(self.session,'recordings',None),
                          availability=self.session.availability);s=self.session.snapshot()
@@ -637,7 +637,7 @@ class BackgroundAnalysis:
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             changed_evidence = isinstance(exc, AudioEvidenceChanged) and exc.recording_id == track['id']
-            exact_analysis_failed = ((changed_evidence or isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout)))
+            exact_analysis_failed = ((changed_evidence or isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout,UnstableTimedGrid)))
                                      and self.owned and self.loaded==track['engine']['selection_id'])
             if isinstance(exc,(SpareStreamRejected,SpareLoadIdentityChanged)) or exact_analysis_failed:
                 self.analysis_miss=track['id']

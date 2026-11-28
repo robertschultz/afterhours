@@ -1,10 +1,13 @@
 """C/D isolation, queue priority and catalog ownership without live audio."""
 import threading
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 from afterhours.preparation_pool import PreparationPool, service_timed_analysis
 from afterhours.background_analysis import BackgroundAnalysis,allowed
 from afterhours.vdj_session import DJSession
+from afterhours.verified_cues import MAX_AGE, VerifiedCues
 from test_background_analysis import Peer
 
 
@@ -22,6 +25,41 @@ class PoolPeer(Peer):
 
 
 class PoolTests(unittest.TestCase):
+    def test_verified_cues_survive_a_new_reader_and_fail_closed_on_changed_evidence(self):
+        track = {'id':'virtualdj:'+'a'*64,'bpm':122,'camelot':'8A','engineChecked':True}
+        measured = {**track,'preparationSeconds':60,'timedPreparation':True,'cueCandidates':[{'id':'cue'}]}
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            VerifiedCues(root).write(measured)
+            reader = VerifiedCues(root)
+            reader.evidence.valid = Mock(return_value=True)
+            self.assertEqual(reader.read(track,60,True),measured)
+            self.assertIsNone(reader.read(track,30,True))
+            self.assertIsNone(reader.read(track,60,False))
+            self.assertIsNone(reader.read({**track,'bpm':124},60,True))
+            self.assertIsNone(reader.read({**track,'camelot':'7A'},60,True))
+            reader.evidence.valid.return_value = False
+            self.assertIsNone(reader.read(track,60,True))
+            reader.evidence.valid.return_value = True
+            path = reader.path(track['id'])
+            reader.clock = lambda: path.stat().st_mtime + MAX_AGE + 1
+            self.assertIsNone(reader.read(track,60,True))
+
+    def test_rolling_pool_can_prepare_a_current_cached_cue_without_a_spare_load(self):
+        session = DJSession(threading.Lock())
+        session.update(entryCadence=[60,30], secondsPerTrack=60)
+        candidate = {'id':'virtualdj:'+'a'*64,'title':'Fixture'}
+        measured = {**candidate, 'cueCandidates':[{'id':'cue'}]}
+        with patch('afterhours.preparation_pool.VerifiedCues') as storage:
+            storage.return_value.read.return_value = measured
+            pool = PreparationPool(session,'revision',[candidate])
+        client = Mock()
+        pool.step(client, 35)
+        self.assertTrue(pool.done)
+        self.assertEqual(pool.result,[measured])
+        storage.return_value.read.assert_called_once_with(candidate,60,True)
+        self.assertEqual(client.mock_calls, [])
+
     def test_timed_analysis_advances_several_mailbox_requests_between_transport_reads(self):
         timestamp = 0.0
         def wait(seconds):

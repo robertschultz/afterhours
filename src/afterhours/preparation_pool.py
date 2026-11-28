@@ -9,6 +9,7 @@ import time
 from afterhours.background_analysis import BackgroundAnalysis,guard_deck
 from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours import cue_planner
+from afterhours.verified_cues import VerifiedCues
 
 
 def service_timed_analysis(job, client, seconds_available, wait, *, clock=time.monotonic):
@@ -31,6 +32,7 @@ class PreparationPool:
         self.osc_reply_timeout=False
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
+        verified = VerifiedCues() if self.timed or state.get('rollingQueue') else None
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
@@ -40,6 +42,10 @@ class PreparationPool:
                     and bool(cached.get('timedPreparation')) == self.timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
+            reused = verified.read(track, state['secondsPerTrack'], self.timed) if verified else None
+            if reused:
+                self.result.append(reused)
+                continue
             self.pending.append(track)
 
     def decks(self):

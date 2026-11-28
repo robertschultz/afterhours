@@ -540,6 +540,9 @@ class BackgroundAnalysis:
                 if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
                 self.session.availability.verified(track['id'])
+                if (timed or s.get('rollingQueue')) and evidence['cueCandidates']:
+                    from afterhours.verified_cues import VerifiedCues
+                    VerifiedCues().write(evidence)
             self.status='complete';self.message='Upcoming recordings analyzed; validating their handoffs.'
         except AnalysisCancelled:
             self.status='cancelled';self.message='Background preparation paused; verified measurements were kept.'

@@ -24,6 +24,14 @@ class LimitedAudio(ValueError):
     """Verified decoded sound is only a short part of the advertised recording."""
 
 
+class AudioEvidenceChanged(ValueError):
+    """Local measurements no longer match the exact recording's proof."""
+
+    def __init__(self, recording_id):
+        super().__init__('Verified audio changed. Prepare track analysis again.')
+        self.recording_id = recording_id
+
+
 def limited_audio(evidence, rows):
     # A catalog duration alone is not proof of a full playable recording. Some
     # provider loads expose a 30-second preview inside a full-length zero buffer.
@@ -46,7 +54,7 @@ def measured_rows(evidence):
     energy = evidence.get('energyMap')
     observed = read_scan(evidence['id'].removeprefix('virtualdj:'))
     if not energy or not observed or observed[1] != energy.get('reportDigest'):
-        raise ValueError('Verified audio changed. Prepare track analysis again.')
+        raise AudioEvidenceChanged(evidence['id'])
     return observed[0]['features']
 
 

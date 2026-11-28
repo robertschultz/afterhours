@@ -16,7 +16,7 @@ from afterhours.dj_bridge import BridgeError, OSCReplyTimeout, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN, SPARE_SCAN_TIMEOUT
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.native_analysis import NativeAnalysisDatabaseUpdating, NativeAnalysisUnsettled, track_analysis
+from afterhours.native_analysis import NativeAnalysisDatabaseUpdating, NativeAnalysisUnsettled, finite, track_analysis
 from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
@@ -531,9 +531,22 @@ class BackgroundAnalysis:
             self.message = message
             return evidence
 
+    def refresh_cue_evidence(self, client, track):
+        """Repeat the duration read once while the original spare load is still isolated."""
+        sid = track['engine']['selection_id']
+        self.check()
+        guard_isolation(client, self.deck)
+        duration_ms = finite(client.query(f'deck {self.deck} get_time total absolute'), 1, 86_400_000)
+        if identity(str(client.query(f'deck {self.deck} get_filepath', 'text'))) != sid:
+            raise SpareLoadIdentityChanged('The isolated recording changed before its cue evidence could be refreshed.')
+        if duration_ms is None:
+            raise NativeAnalysisUnsettled('VirtualDJ did not confirm the isolated recording duration.')
+        refreshed = {**track, 'nativeDuration':duration_ms / 1000, 'duration':duration_ms / 1000}
+        return refreshed, self.read_evidence(refreshed)
+
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
-        from afterhours.cue_planner import LimitedAudio
+        from afterhours.cue_planner import AudioEvidenceChanged, LimitedAudio
         helper=DJSession(threading.Lock(),crate=getattr(self.session,'crate',None),
                          recordings=getattr(self.session,'recordings',None),
                          availability=self.session.availability);s=self.session.snapshot()
@@ -590,8 +603,18 @@ class BackgroundAnalysis:
                     prior_seconds = preparation_seconds(s, self.revision, batch[0])
                     if prior_seconds < seconds:
                         timed_option['alternate_seconds'] = prior_seconds
-                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
-                                                              deck=self.deck,isolated=True,**timed_option)
+                try:
+                    cues = helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
+                                               deck=self.deck,isolated=True,**timed_option)
+                except AudioEvidenceChanged as exc:
+                    if (display_waveform or exc.recording_id != track['id'] or not self.owned
+                            or self.loaded != track['engine']['selection_id']):
+                        raise
+                    self.message = 'Rechecking the decoded duration · ' + track['title']
+                    checked, evidence = self.refresh_cue_evidence(client, checked)
+                    cues = helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
+                                               deck=self.deck,isolated=True,**timed_option)
+                evidence['cueCandidates'] = cues
                 evidence['preparationSeconds']=seconds
                 if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
@@ -613,7 +636,8 @@ class BackgroundAnalysis:
                 self.osc_timeout_track_id=track['id']
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
-            exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+            changed_evidence = isinstance(exc, AudioEvidenceChanged) and exc.recording_id == track['id']
+            exact_analysis_failed = ((changed_evidence or isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout)))
                                      and self.owned and self.loaded==track['engine']['selection_id'])
             if isinstance(exc,(SpareStreamRejected,SpareLoadIdentityChanged)) or exact_analysis_failed:
                 self.analysis_miss=track['id']

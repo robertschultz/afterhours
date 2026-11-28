@@ -2009,6 +2009,9 @@ class DJSession:
                         pending['catalogMissId']=miss
                     if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:
                         pending['analysisMissId']=scan_miss
+                    if (not cleanup_failed and isinstance(exc, cue_planner.AudioEvidenceChanged)
+                            and self.replaceable_rolling_pick(self.state, pending, exc.recording_id)):
+                        pending['analysisMissId'] = exc.recording_id
                     readback = getattr(job, 'measured_fit_miss', None)
                     if not cleanup_failed and isinstance(readback, dict):
                         early_miss = self.replaceable_rolling_pick(self.state, pending, readback['id'])

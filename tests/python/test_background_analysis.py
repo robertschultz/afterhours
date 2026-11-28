@@ -1,7 +1,7 @@
 """Mailbox scheduling and deck isolation with simulated native replies only."""
 import queue,threading,time,unittest
 from unittest.mock import Mock,patch
-from afterhours import tempo_planner
+from afterhours import cue_planner, tempo_planner
 from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
 from afterhours.native_analysis import NativeAnalysisDatabaseUpdating
@@ -25,6 +25,66 @@ class Peer:
         if s=='deck 3 effect_active 1 off':self.values['deck 3 effect_active 1']=False
 
 class BackgroundTests(unittest.TestCase):
+    def test_spare_rechecks_exact_duration_after_cue_evidence_changes(self):
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered):
+                sid = identity('test')
+                track = {'id':'virtualdj:'+sid, 'title':'Replacement', 'bpm':125,
+                         'nativeDuration':100.075, 'engine':{'selection_id':sid}}
+                session = DJSession(threading.Lock())
+                session.update(entryCadence=[30,60], secondsPerTrack=30)
+                job = BackgroundAnalysis(session, 'revision', [track])
+                peer = Peer()
+                peer.values.update({'deck 3 volume':0, 'deck 3 get_time total absolute':100000})
+                job.owned = True
+                job.loaded = sid
+                stale = {'duration':100.075, 'energyMap':{'reportDigest':'stale'}}
+                fresh = {'duration':100, 'energyMap':{'reportDigest':'fresh'}}
+                misses = cue_planner.AudioEvidenceChanged(track['id'])
+                cues = [{'id':'verified-cue', 'replayVerified':True}]
+                with patch.object(DJSession,'analyze_deck',return_value=track), \
+                     patch.object(job,'request',side_effect=lambda operation, script, arg: peer.query(script,arg)), \
+                     patch.object(job,'read_evidence',side_effect=[stale,fresh]) as evidence, \
+                     patch.object(DJSession,'measure_cues',side_effect=[misses,cues if recovered else misses]), \
+                     patch('afterhours.verified_cues.VerifiedCues.write'):
+                    job.run()
+                self.assertEqual(evidence.call_args.args[0]['nativeDuration'], 100)
+                self.assertEqual(peer.queries.count('deck 3 get_time total absolute'), 1)
+                self.assertEqual(peer.commands, [])
+                if recovered:
+                    self.assertEqual(job.result[0]['cueCandidates'], cues)
+                    self.assertIsNone(job.analysis_miss)
+                else:
+                    self.assertEqual(job.analysis_miss, track['id'])
+                    self.assertEqual(job.result, [])
+
+    def test_changed_receipt_replaces_only_an_unpinned_automatic_tail(self):
+        for owner, pinned, expected in (('candidate', False, 'candidate'),
+                                       ('candidate', True, None), ('playing', False, None)):
+            with self.subTest(owner=owner, pinned=pinned):
+                playing = {'id':'playing', 'title':'Playing', 'bpm':125}
+                cued = {**playing, 'id':'cued', 'title':'Cued'}
+                candidate = {**playing, 'id':'candidate', 'title':'Candidate'}
+                session = DJSession(threading.Lock())
+                session.update(candidates=[playing,cued,candidate])
+                session.plan(['playing','cued'])
+                session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                               entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+                session.revise_queue(['playing','cued','candidate'], source='planner')
+                queued = session.state['queuedUpdate']
+                queued.update(status='analyzing', rollingTrackId='candidate')
+                if pinned:
+                    session.state['setPins'] = ['candidate']
+                job = PreparationPool(session, queued['id'], [])
+                job.done = True
+                session.background_job = job
+                with patch.object(session, 'fit_background_tracks',
+                                  side_effect=cue_planner.AudioEvidenceChanged(owner)):
+                    session.service_background(Mock(), 25)
+                result = session.snapshot()
+                self.assertEqual(result['queuedUpdate'].get('analysisMissId'), expected)
+                self.assertEqual(result['order'], [playing,cued])
+
     def job(self):return BackgroundAnalysis(DJSession(threading.Lock()),'revision',[{'id':'test','title':'Test'}])
 
     def test_database_write_retries_reads_without_using_the_native_mailbox(self):

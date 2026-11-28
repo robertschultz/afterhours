@@ -1,9 +1,11 @@
 """C/D isolation, queue priority and catalog ownership without live audio."""
+import json
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
+from afterhours import cue_planner
 from afterhours.preparation_pool import PreparationPool, service_timed_analysis
 from afterhours.background_analysis import BackgroundAnalysis,allowed
 from afterhours.vdj_session import DJSession
@@ -41,9 +43,31 @@ class PoolTests(unittest.TestCase):
             reader.evidence.valid.return_value = False
             self.assertIsNone(reader.read(track,60,True))
             reader.evidence.valid.return_value = True
-            path = reader.path(track['id'])
+            path = reader.path(track['id'], timed_seconds=60)
             reader.clock = lambda: path.stat().st_mtime + MAX_AGE + 1
             self.assertIsNone(reader.read(track,60,True))
+
+    def test_exact_cues_keep_both_timed_intervals_and_the_ordinary_variant(self):
+        track = {'id':'virtualdj:'+'b'*64, 'bpm':122, 'camelot':'8A', 'engineChecked':True}
+        with TemporaryDirectory() as temporary:
+            cache = VerifiedCues(Path(temporary))
+            cache.evidence.valid = Mock(return_value=True)
+            def measured(seconds, timed):
+                return {**track, 'preparationSeconds':seconds, 'timedPreparation':timed,
+                        'cueCandidates':[{'id':f'{seconds}-{timed}'}]}
+
+            old = measured(60, True)
+            cache.path(track['id']).write_text(json.dumps({'cueVersion':cue_planner.VERSION, 'measurement':old}))
+            cache.write(measured(30, True))
+            self.assertEqual(cache.read(track, 60, True), old)
+            self.assertEqual(cache.read(track, 30, True), measured(30, True))
+
+            cache.write(old)
+            cache.write(measured(60, False))
+            self.assertEqual(cache.read(track, 60, True), old)
+            self.assertEqual(cache.read(track, 30, True), measured(30, True))
+            self.assertEqual(cache.read(track, 60, False), measured(60, False))
+            self.assertIsNone(cache.read(track, 45, True))
 
     def test_rolling_pool_can_prepare_a_current_cached_cue_without_a_spare_load(self):
         session = DJSession(threading.Lock())

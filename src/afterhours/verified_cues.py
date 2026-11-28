@@ -20,14 +20,25 @@ class VerifiedCues:
         self.clock = clock
         self.evidence = PreparedEvidence()
 
-    def path(self, track_id):
-        return self.root / (track_id.removeprefix('virtualdj:') + '.json')
+    def path(self, track_id, *, timed_seconds=None):
+        selection_id = track_id.removeprefix('virtualdj:')
+        suffix = f'-timed-{timed_seconds}' if timed_seconds is not None else ''
+        return self.root / f'{selection_id}{suffix}.json'
 
     def read(self, track, seconds, timed):
         track_id = track.get('id')
         if not exact_id(track_id):
             return None
-        path = self.path(track_id)
+        if timed:
+            if type(seconds) is not int or not 30 <= seconds <= 180:
+                return None
+            item = self.read_file(self.path(track_id, timed_seconds=seconds), track, seconds, timed)
+            if item is not None:
+                return item
+        # Older timed receipts may still be valid in the recording-only slot.
+        return self.read_file(self.path(track_id), track, seconds, timed)
+
+    def read_file(self, path, track, seconds, timed):
         try:
             if path.is_symlink() or self.root.is_symlink():
                 return None
@@ -46,7 +57,7 @@ class VerifiedCues:
                 (track.get('camelot') and track['camelot'] != item.get('camelot'))
                 or (type(known_bpm) in (int, float)
                     and (type(bpm) not in (int, float) or not math.isfinite(bpm) or abs(known_bpm - bpm) > .15)))
-            if (saved.get('cueVersion') != cue_planner.VERSION or item['id'] != track_id or metadata_changed
+            if (saved.get('cueVersion') != cue_planner.VERSION or item['id'] != track['id'] or metadata_changed
                     or item.get('preparationSeconds') != seconds
                     or bool(item.get('timedPreparation')) != timed
                     or not self.evidence.valid(item)):
@@ -59,7 +70,12 @@ class VerifiedCues:
         track_id = measurement.get('id')
         if not exact_id(track_id):
             return
-        path = self.path(track_id)
+        seconds = None
+        if measurement.get('timedPreparation'):
+            seconds = measurement.get('preparationSeconds')
+            if type(seconds) is not int or not 30 <= seconds <= 180:
+                return
+        path = self.path(track_id, timed_seconds=seconds)
         try:
             if self.root.is_symlink() or path.is_symlink():
                 return

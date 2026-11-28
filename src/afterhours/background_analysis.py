@@ -201,7 +201,9 @@ def recover_unloaded_spare(client, descriptor, check, verify_deck_c=False):
         return
     if row['restoreRequested']:
         raise BridgeError('The previous spare baseline restoration has not been confirmed.')
-    if observed != (0.0, False):
+    # An owned unload may toggle auto headphone cue. Confirm the deck is
+    # empty and still muted before restoring both saved controls.
+    if observed[0] != 0.0:
         raise BridgeError('The isolated spare controls changed.')
     # The flag is set before dispatch. Any later uncertainty leaves the
     # descriptor quarantined and this live path cannot send the write again.

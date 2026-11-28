@@ -234,7 +234,7 @@ class DJSession:
         self.dig_clock = time.monotonic
         self.background_job = None
         self.deferred_spare_cleanup = None
-        self.late_spare_attempt = None
+        self.late_spare_attempts = {}
         self.analysis_cache = {}
         self.tempo_ramp = None
         self.copilot_requests = {}
@@ -1648,16 +1648,24 @@ class DJSession:
             quarantine = self.quarantined_preparation_decks()
             retained = state.get('cleanupPending') or {}
             descriptors = retained.get('analysis', [])
-            previous = self.late_spare_attempt
-            previous_owner = previous[2] if previous and previous[0] == state['id'] else None
-            row = next((item for item in descriptors if item['deck'] in quarantine
-                        and item['selectionId'] and (item['loadPending'] or item['ownerId'] == previous_owner)), None)
+            # Track attempts per deck. An unresolved load on C must not
+            # prevent D's independent unload from being verified.
+            window = (state['id'], state.get('startedAt'), state['index'])
+            row = None
+            for item in descriptors:
+                deck = item['deck']
+                if deck not in quarantine or not item['selectionId']:
+                    continue
+                owner = item['ownerId']
+                previous = self.late_spare_attempts.get(deck)
+                if previous == (owner, window):
+                    continue
+                if item['loadPending'] or item['unloadRequested'] or (previous and previous[0] == owner):
+                    row = item
+                    break
             if row is None:
                 return False
-            attempt = (state['id'], state['index'], row['ownerId'])
-            if attempt == self.late_spare_attempt:
-                return False
-            self.late_spare_attempt = attempt
+            self.late_spare_attempts[row['deck']] = (row['ownerId'], window)
             deadline = time.monotonic() + 1.25
 
             def check():

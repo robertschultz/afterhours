@@ -256,6 +256,32 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual(p.values['deck 3 volume'], 1)
         self.assertTrue(all(command.startswith('deck 3 ') for command in p.commands))
 
+    def test_live_spare_recovery_verifies_d_while_c_still_has_an_unconfirmed_load(self):
+        s, peer, first = self.owned()
+        _, _, second = self.owned(4, peer, s)
+        first.requested_load = first.loaded
+        first.loaded = None
+        peer.values['deck 3 loaded'] = False
+        peer.values['deck 1 play'] = True
+        second.cleanup_state['unloadRequested'] = True
+        peer.values['deck 4 loaded'] = False
+        peer.values['deck 4 pfl'] = True
+        s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+        s.remember_cleanup_failure('background', first)
+        descriptor = second.cleanup_descriptors()[0]
+        s.remember_cleanup_failure('background', second)
+
+        self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(peer.commands, [])
+        self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertTrue(peer.values['deck 1 play'])
+        self.assertFalse(peer.values['deck 4 pfl'])
+        self.assertEqual(peer.values['deck 4 volume'], descriptor['baseline']['volume'])
+        self.assertEqual(len(peer.commands), 1)
+        self.assertTrue(peer.commands[0].startswith('deck 4 '))
+        self.assertNotIn('unload', peer.commands[0])
+
     def test_live_late_load_resumes_readbacks_without_replaying_cleanup_writes(self):
         for interruption in ('unload', 'restore'):
             with self.subTest(interruption=interruption):

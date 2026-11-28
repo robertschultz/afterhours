@@ -193,6 +193,7 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     if index < len(rows):
         row = rows[index]
         earliest = max(earliest, cue['entryBeat']+row['startOffsetBeats']+row['durationBeats']+row['settleBeats'])
+    guarded_beat = earliest
     source = next((t for t in (snapshot.get('analysis') or {}).get('tracks', []) if t['id'] == current['id']), {})
     entry = actual_entry or cue
     target = earliest if entry_interval is None else entry['entryBeat'] + entry_interval * current['bpm'] / 60
@@ -237,9 +238,11 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
                   segmentBeats=window['endBeat']-entry['entryBeat'],
-                  basis='operator-steered-measured-exit', originalCandidateId=cue['id'])
+                  basis='operator-steered-measured-exit', originalCandidateId=cue['id'],
+                  scheduledFromBeat=position, guardedFromBeat=guarded_beat)
     if entry_interval is not None:
         window.update(basis='cadence-measured-exit', requestedEntryInterval=entry_interval,
+                      cadenceTargetBeat=target, scheduledBpm=current['bpm'],
                       plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'])
     return window
 
@@ -255,7 +258,8 @@ def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_ent
                         earliest_beat=earliest_beat, latest_beat=latest_beat, allow_outro_bars=True)
         planned = (window['mixAtBeat'] - window['entryBeat']) * 60 / current['bpm']
         window.update(basis='cadence-recovery-measured-exit', requestedEntryInterval=seconds,
-                      plannedEntryInterval=planned)
+                      plannedEntryInterval=planned, scheduledBpm=current['bpm'],
+                      cadenceTargetBeat=window['entryBeat'] + seconds*current['bpm']/60)
         return window
 
 

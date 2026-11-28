@@ -132,21 +132,23 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         if all(abs(offset-other)>=early_spacing for other in ranked):
             ranked.append(offset)
     if timed and ranked:
-        # Keep the early cues dense for normal cadence. Spend the remaining
-        # native checks splitting the widest gaps, so a late deck load need
-        # not wait minutes for the next verified exit. Use signal score to
-        # prefer a musically stronger window when coverage is comparable.
+        # Preserve another exit just beyond the early cluster. A late load
+        # often misses the cadence by seconds, where a midpoint several
+        # minutes into the recording gives a poor recovery.
+        first_late = next((offset for _, offset in possibilities if offset >= ranked[-1]+32), None)
+        if first_late is not None and limit - len(ranked) >= 2:
+            ranked.append(first_late)
+        # Spread the remaining checks across the rest of the recording.
+        start = ranked[-1]
         latest = possibilities[-1][1]
-        while len(ranked) < limit:
+        remaining = limit - len(ranked)
+        for slot in range(1, remaining+1):
+            target = start + (latest-start)*slot/(remaining+1)
             eligible = [(score, offset) for score, offset in possibilities
                         if all(abs(offset-other)>=32 for other in ranked)]
             if not eligible:
                 break
-            def recovery_rank(choice):
-                score, offset = choice
-                distance = min(abs(offset-other) for other in (*ranked, latest))
-                return distance // 16, score
-            ranked.append(max(eligible, key=recovery_rank)[1])
+            ranked.append(min(eligible, key=lambda row: (abs(row[1]-target), -row[0]))[1])
     else:
         for _,offset in sorted(possibilities,reverse=True):
             if len(ranked)>=limit:break

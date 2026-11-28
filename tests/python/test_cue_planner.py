@@ -71,8 +71,9 @@ class CueTests(unittest.TestCase):
         offsets = policy['offsets']
         latest = int(((track['duration']-.7)*126/60-policy['spanBeats']-policy['blendBeats'])//16)*16
         self.assertEqual(offsets[:7], list(range(0, 112, 16)))
+        self.assertEqual(offsets[7], offsets[6]+32)
         self.assertEqual(len(offsets), 10)
-        self.assertLessEqual(max(b-a for a,b in zip(offsets, offsets[1:]+[latest])), 192)
+        self.assertLessEqual(max(b-a for a,b in zip(offsets, offsets[1:]+[latest])), 224)
 
     def test_native_readbacks_cannot_move_into_silence_or_outside_track(self):
         rows,report,_=fixture();t=report['tracks'][0];native=t['cueCandidates'][0]

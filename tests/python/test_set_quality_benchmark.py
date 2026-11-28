@@ -75,6 +75,8 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             ])
             log('handoffs', [
                 {'kind':'native-handoff','verified':True,'synced':True,'at':1045,'blendSeconds':4,
+                 'schedulerReadback':{'scheduledFromBeat':64,'guardedFromBeat':72,
+                                      'cadenceTargetBeat':60,'mixAtBeat':80,'scheduledBpm':120},
                  'entryIntervalSeconds':40,'targetIntervalSeconds':30,'deckReadyRelativeToTargetSeconds':5},
                 {'kind':'native-handoff','verified':True,'synced':True,'at':1109,'blendSeconds':8,
                  'entryIntervalSeconds':60,'targetIntervalSeconds':60,'deckReadyRelativeToTargetSeconds':-2},
@@ -95,6 +97,8 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             self.assertEqual(score['lateEntriesOutside5Seconds'], [{
                 'outgoing':None, 'incoming':None, 'targetSeconds':30, 'secondsLate':10,
                 'secondsLateBeforeDeckReady':5, 'secondsLateAfterDeckReady':5, 'timingBasis':None,
+                'schedulerReadback':{'secondsTargetAlreadyPassed':2,'secondsPastTargetAfterGuards':6,
+                                     'secondsBeyondGuardAndTargetToChosenBar':4},
             }])
             self.assertEqual(score['openEntryInterval'], {'trackIndex':2,'elapsedSeconds':65,
                                                          'targetSeconds':30,'pastTargetSeconds':35})

@@ -419,12 +419,24 @@ def read_observed_run(prefix):
                 misses['readyAfterTarget' if ready > 0 else 'readyByTarget'] += 1
             if error > 5 and row.get('verified') is True:
                 deck_delay = max(0, ready) if ready is not None else None
+                trace = row.get('schedulerReadback') or {}
+                scheduled, guard, target_beat, chosen, bpm = (trace.get(key) for key in
+                    ('scheduledFromBeat','guardedFromBeat','cadenceTargetBeat','mixAtBeat','scheduledBpm'))
+                scheduler = {}
+                if (all(type(value) in (int,float) and isfinite(value) for value in
+                        (scheduled,guard,target_beat,chosen,bpm)) and scheduled <= guard <= chosen and 40 <= bpm <= 300):
+                    scheduler = {
+                        'secondsTargetAlreadyPassed':round(max(0, scheduled-target_beat)*60/bpm, 3),
+                        'secondsPastTargetAfterGuards':round(max(0, guard-target_beat)*60/bpm, 3),
+                        'secondsBeyondGuardAndTargetToChosenBar':round(max(0, chosen-max(guard,target_beat))*60/bpm, 3),
+                    }
                 late_entries.append({
                     'outgoing':row.get('outgoing'), 'incoming':row.get('incoming'),
                     'targetSeconds':int(target), 'secondsLate':round(error, 3),
                     'secondsLateBeforeDeckReady':round(deck_delay, 3) if deck_delay is not None else None,
                     'secondsLateAfterDeckReady':round(max(0, error - deck_delay), 3) if deck_delay is not None else None,
                     'timingBasis':row.get('timingBasis'),
+                    **({'schedulerReadback':scheduler} if scheduler else {}),
                 })
         timing[target].update(within2Seconds=on_target, missesOutside2Seconds=misses)
 

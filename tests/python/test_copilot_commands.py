@@ -232,6 +232,9 @@ class CopilotControlTests(unittest.TestCase):
         self.assertEqual(recovered['mixAtBeat'], 132)
         self.assertEqual(recovered['basis'], 'cadence-recovery-measured-exit')
         self.assertEqual(recovered['requestedEntryInterval'], 15)
+        self.assertEqual(recovered['scheduledFromBeat'], current['beatPosition'])
+        self.assertEqual(recovered['guardedFromBeat'], current['beatPosition']+8)
+        self.assertEqual(recovered['cadenceTargetBeat'], recovered['entryBeat']+15*current['bpm']/60)
         self.assertGreater(recovered['plannedEntryInterval'], 15)
         self.assertEqual(recovered['endBeat']-recovered['mixAtBeat'], 16)
         with self.assertRaises(cc.NoVerifiedHandoff):

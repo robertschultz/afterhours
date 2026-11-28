@@ -1587,8 +1587,10 @@ class DJSession:
                     if (getattr(job, 'osc_reply_timeout', False) is True
                             and pending.get('id') == job.revision and pending.get('rollingTrackId')
                             and attempts < 2 and self.state['active'] and self.state['phase'] == 'playing'
-                            and not self.state.get('resumeBlocked') and not self.cancel.is_set()
-                            and not self.state['copilot'].get('held') and self.state['copilot'].get('mode') != 'off'):
+                            and not self.cancel.is_set()
+                            and not self.state['copilot'].get('held') and self.state['copilot'].get('mode') != 'off'
+                            and (not self.state.get('resumeBlocked') or
+                                 (self.verify_preparation_quarantine(client) and self.preparation_decks()))):
                         pending.update(status='needs-analysis', oscReadRetries=attempts+1)
                         self.update(backgroundAnalysis={**progress, 'status':'queued',
                                     'message':'Retrying verified spare-deck preparation after a missed VirtualDJ reply.'})

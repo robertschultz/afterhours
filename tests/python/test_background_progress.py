@@ -67,6 +67,28 @@ class BackgroundProgressTests(unittest.TestCase):
         self.assertFalse(state.get('resumeBlocked'))
 
 
+    def test_read_timeout_retries_when_another_spare_is_already_isolated(self):
+        s = DJSession(threading.Lock())
+        tracks = [{'id': str(i), 'title': str(i)} for i in range(3)]
+        s.update(order=tracks[:2], active=True, phase='playing', resumeBlocked=True,
+                 cleanupPending={'unknown': False, 'analysis': [{'deck': 3}], 'ramps': []},
+                 queuedUpdate={'id': 'refill', 'status': 'analyzing', 'tracks': tracks,
+                               'protectedIds': ['0', '1'], 'rollingTrackId': '2'})
+        s.state['copilot']['mode'] = 'leading'
+        job = Mock(revision='refill', cache={})
+        job.step.side_effect = OSCReplyTimeout('Lost spare-deck reply.')
+        job.snapshot.return_value = {'message': 'Preparing a measured refill.', 'decks': []}
+        s.background_job = job
+        client = Mock()
+        with patch('afterhours.vdj_session.guard_isolation') as guard:
+            s.service_background(client, 20)
+            guard.assert_called_once_with(client, 3)
+        job.close.assert_called_once_with(client)
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertEqual(s.state['queuedUpdate']['status'], 'needs-analysis')
+        client.send.assert_not_called()
+
     def test_missed_native_read_retries_only_the_cleaned_rolling_job(self):
         s=DJSession(threading.Lock())
         tracks=[{'id':str(i),'title':str(i)} for i in range(3)]

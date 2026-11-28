@@ -11,7 +11,7 @@ from unittest.mock import Mock,patch
 
 from afterhours.background_analysis import BackgroundAnalysis,cleanup_analysis_deck,merge_cleanup_pending
 from afterhours.preparation_pool import PreparationPool
-from afterhours.dj_bridge import BridgeError
+from afterhours.dj_bridge import BridgeError, OSCReplyTimeout
 from afterhours.session_recovery import SessionRecovery
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_mixing import NativeHandoff,TransitionMixer
@@ -92,6 +92,24 @@ class AnalysisCleanupTests(unittest.TestCase):
                 self.assertFalse(peer.values['deck 3 deck_has_error'])
                 self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
                 self.assertTrue(descriptor['restoreRequested'])
+
+    def test_one_lost_cleanup_reply_does_not_repeat_the_unload(self):
+        _, peer, job = self.owned(deck=4)
+        native_query = peer.query
+        lost = []
+
+        def query(script, kind=None):
+            if not lost and script == 'deck 4 get_deck' and any(
+                    command.endswith('deck 4 unload') for command in peer.commands):
+                lost.append(script)
+                raise OSCReplyTimeout('Missed one native reply.')
+            return native_query(script, kind)
+
+        peer.query = query
+        job.close(peer)
+        self.assertEqual(lost, ['deck 4 get_deck'])
+        self.assertEqual(sum(command.endswith('deck 4 unload') for command in peer.commands), 1)
+        self.assertFalse(job.owned)
 
     def test_failed_close_keeps_ownership_until_explicit_cleanup_verifies_it(self):
         s,p,j=self.owned();self.latch(s,p,j)

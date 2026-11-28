@@ -118,8 +118,28 @@ def merge_cleanup_pending(*sources):
     if retained_loops:result['loops']=retained_loops
     return result
 
+class CleanupReadbacks:
+    """Retry one lost reply during spare cleanup without replaying a write."""
+    def __init__(self, client):
+        self.client = client
+        self.retry_available = True
+
+    def query(self, script, kind=None):
+        try:
+            return self.client.query(script, kind)
+        except OSCReplyTimeout:
+            if not self.retry_available:
+                raise
+            self.retry_available = False
+            return self.client.query(script, kind)
+
+    def send(self, script):
+        return self.client.send(script)
+
+
 def cleanup_analysis_deck(client, descriptor):
     """Recover only the retained exact spare-deck ownership; never start audio."""
+    client=CleanupReadbacks(client)
     row=cleanup_descriptor(descriptor);deck=row['deck'];baseline=row['baseline']
     expected_effect=baseline['effect'] or PLUGIN
     def effect_is_restored():

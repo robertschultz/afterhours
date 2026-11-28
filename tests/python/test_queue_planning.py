@@ -390,6 +390,24 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(len(queued['rollingTrackIds']), 2)
         self.assertEqual(queued['protectedIds'], ['a', 'b'])
 
+    def test_timed_refill_does_not_stage_two_versions_of_one_song_in_the_same_batch(self):
+        self.session.update(candidates=[
+            track('a'), track('b'),
+            {**track('c'), 'title':'Latch (Original Mix)', 'artist':'Disclosure'},
+            {**track('d'), 'title':'Latch (feat. Sam Smith) [Extended]', 'artist':'Disclosure & Sam Smith'},
+            {**track('e', bpm=125.5), 'title':'Another Song', 'artist':'Different Artist'},
+        ])
+        self.session.plan(['a','b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        batch = self.session.snapshot()['queuedUpdate']['rollingTrackIds']
+        self.assertEqual(len(batch), 2)
+        self.assertEqual(len(set(batch) & {'c','d'}), 1)
+        self.assertIn('e', batch)
+
     def test_timed_refill_discovers_successors_while_the_current_batch_is_measured(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},

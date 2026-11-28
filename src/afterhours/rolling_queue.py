@@ -38,13 +38,18 @@ def fits_style(track, style, opening=None):
 def base_song_title(track):
     # Providers may include featured artists and release versions in the title.
     suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring|with)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
-    base = re.sub(r'(?:\s*'+suffix+r')+\s*$', '', track['title'], flags=re.I)
+    bare_version = r'[\[(](?:extended|original|radio|vip|instrumental|a cappella|acapella|live)[\])]'
+    base = re.sub(r'(?:\s*(?:'+suffix+'|'+bare_version+r'))+\s*$', '', track['title'], flags=re.I)
     base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
     words = normalized(base).split()
     without_article = [word for word in words if word != 'the']
     # Keep short names intact. Longer titles sometimes lose an article in
     # catalog listings, even under the same artist credit.
     return ' '.join(without_article if len(without_article) >= 3 else words)
+
+def song_credit_keys(track):
+    base = base_song_title(track)
+    return {(base, artist) for artist in credit(track.get('artist'))} if base else set()
 
 
 def repeated_artists(order):
@@ -141,8 +146,7 @@ class RollingQueue:
                 return
             ids = [track['id'] for track in order]
             titles = {song_identity(track)[0] for track in order} | self.missed_titles
-            song_versions = {(base_song_title(track), artist)
-                             for track in order for artist in credit(track.get('artist'))}
+            song_versions = set().union(*(song_credit_keys(track) for track in order))
             unavailable = {row['trackId'] for row in state.get('recordingAvailability', [])}
             if state.get('resumeBlocked'):
                 # Leave an unverified native Load alone until its deck is inspected.
@@ -171,8 +175,7 @@ class RollingQueue:
                           # recording and have a baked-in DJ transition.
                           and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
-                          and not any((base_song_title(track), artist) in song_versions
-                                      for artist in credit(track.get('artist')))
+                          and not song_credit_keys(track).intersection(song_versions)
                           and fits_style(track, style, order[0])
                           and finite(track.get('bpm')) and track['bpm'] > 0]
             upcoming = len(order) - state['index'] - 1
@@ -231,6 +234,9 @@ class RollingQueue:
                 # alternative fails the native queue and tempo checks.
                 slot = next((i for i, row in enumerate(remaining) if brings_new_artist(row, repeat)), 0) if repeat else 0
                 track = remaining.pop(slot)
+                keys = song_credit_keys(track)
+                if keys & song_versions:
+                    continue
                 try:
                     session.revise_queue(ids + [t['id'] for t in picked] + [track['id']],
                                          reason=f"Continuing the set with {', '.join(t['title'] for t in picked+[track])}.",
@@ -238,6 +244,7 @@ class RollingQueue:
                 except (ValueError, BridgeError):
                     continue
                 picked.append(track)
+                song_versions.update(keys)
             if receipt:
                 description = {
                     'selected': 'GPT-6.2 Sol ranked a shortlisted candidate first.',

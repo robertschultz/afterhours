@@ -141,7 +141,8 @@ def start_and_prepare(session,client,requested):
     # the running deck's measured tempo when preparing the first handoff.
     s.send(client,'deck 1 pitch 100% & deck 1 master_tempo on & deck 1 goto_first_beat')
     s.send(client,'crossfader 0%')
-    s.mixer=TransitionMixer(s.q,s.send);s.mixer.initialize_opening(client)
+    s.mixer = TransitionMixer(s.q,s.send,lead_control=snapshot.get('mixLeadControl','auto'))
+    s.mixer.initialize_opening(client)
     before=s.telemetry(client)
     if before['crossfader']>.02 or before['decks'][0].get('id')!=first['id'] or any(d.get('playing') for d in before['decks']):
         raise BridgeError('The opening recording and paused mixer could not be confirmed.')

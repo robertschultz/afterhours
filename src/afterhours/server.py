@@ -441,6 +441,8 @@ class Handler(RuntimeStaticHandler):
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
                     if 'entryCadence' in data:
                         options['entry_cadence'] = data['entryCadence']
+                    if 'mixLeadControl' in data:
+                        options['lead_control'] = data['mixLeadControl']
                     if data.get('loopHandoffs') is True:
                         options['loop_handoffs'] = True
                     if data.get('prepareWhilePlaying') is True:

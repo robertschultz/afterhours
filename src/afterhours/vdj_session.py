@@ -21,7 +21,7 @@ from afterhours.track_metadata import musical_key
 from afterhours.vdj_catalog import (folder_state, selection, identity, selected_recording_id, load_selected, search_literal, count_value,
                          paused_load_target, load_exact_recording)
 from afterhours.native_recording import RECORDINGS
-from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, measured_bridge_loop, measured_recipe, transition_recipe
+from afterhours.vdj_mixing import LEAD_CONTROL_CHOICES, NativeHandoff, TransitionMixer, MixerControlChanged, measured_bridge_loop, measured_recipe, transition_recipe
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
 from afterhours.audio_analysis import exceeds_scan_duration, scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
@@ -3077,11 +3077,17 @@ class DJSession:
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False,
-              allow_grid_opening=False, cue_led_opening=False):
+              allow_grid_opening=False, cue_led_opening=False, lead_control='auto'):
         from afterhours.rolling_queue import RollingQueue
 
-        self.dig_restart()
         snapshot = self.snapshot()
+        if resume:
+            lead_control = snapshot.get('mixLeadControl','auto')
+        if lead_control not in LEAD_CONTROL_CHOICES:
+            raise ValueError('Choose automatic stems or frequency EQ.')
+        if lead_control != 'auto' and snapshot['mixStyle'] != 'phrase':
+            raise ValueError('Selecting lead control requires a measured phrase-mixing set.')
+        self.dig_restart()
         if resume and snapshot.get('entryCadence'):
             entry_cadence = snapshot['entryCadence'] if entry_cadence is None else entry_cadence
             rolling_queue = bool(rolling_queue or snapshot.get('rollingQueue'))
@@ -3192,7 +3198,8 @@ class DJSession:
             nonlocal order,planned
             self.verify_preparation_quarantine(client)
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
-                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[])
+                        entryCadence=entry_cadence, loopHandoffs=loop_handoffs, timedContinuation=[],
+                        mixLeadControl=lead_control)
             if not immediate and not resume:self.update(startup=None)
             before = client.status()
             if before['automix'] or (not resume and any(d['playing'] for d in before['decks'])):
@@ -3283,7 +3290,7 @@ class DJSession:
                 active, index = 1, 0
             entries = {d['deck']: round(d['beatPosition']) for d in t['decks']}
             if snapshot['mixStyle']=='phrase' and not measured_opening:
-                self.mixer = TransitionMixer(self.q,self.send)
+                self.mixer = TransitionMixer(self.q,self.send,lead_control=lead_control)
                 if resume:
                     self.mixer.resume_preflight(client,active,snapshot.get('mixerBaselines'),adopt_playing=adopt_mixer,
                                                 **({'paused_current':True} if paused_current else {}),

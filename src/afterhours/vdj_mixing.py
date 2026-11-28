@@ -308,9 +308,13 @@ class NativeHandoff:
         self.blend_intro = None
 
 
+LEAD_CONTROL_CHOICES = ('auto', 'frequency-eq')
+
+
 class TransitionMixer:
-    def __init__(self, query, send):
+    def __init__(self, query, send, *, lead_control='auto'):
         self.q, self.send = query, send
+        self.lead_control = lead_control
         self.baselines = {}
         self.ramps = {}
         self.done = set()
@@ -443,14 +447,18 @@ class TransitionMixer:
         incoming_controls=self.read(client,incoming)
         if any(abs(incoming_controls[k]-.5)>.025 for k in LEAD_CONTROLS):
             raise BridgeError('Incoming vocal/instrument controls changed; restore them before preparing a mix.')
-        ready={d:self.stems_ready(client,d) for d in (outgoing,incoming)}
-        self.lead_mode='stems' if all(ready.values()) else 'frequency-eq'
-        self.stems_upgrade_pending = self.lead_mode == 'frequency-eq'
-        # Record the actual control path in the reusable session evidence.
+        try_stems = self.lead_control == 'auto'
+        readiness = [self.stems_ready(client, deck) for deck in (outgoing, incoming)] if try_stems else []
+        stems_ready = try_stems and all(readiness)
+        self.lead_mode = 'stems' if stems_ready else 'frequency-eq'
+        self.stems_upgrade_pending = try_stems and not stems_ready
+        note = 'High-quality stems not ready; midrange EQ reduces overlap but cannot isolate vocals.'
+        if stems_ready:
+            note = 'Native vocal and instrument handoff; phrase boundaries remain unverified.'
+        elif not try_stems:
+            note = 'Frequency EQ selected for this set.'
         recipe.update(leadPolicy=LEAD_POLICY,tonalOverlap=False,leadControl=self.lead_mode,
-                      leadControlNote=('Native vocal and instrument handoff; phrase boundaries remain unverified.'
-                                       if self.lead_mode=='stems' else
-                                       'High-quality stems not ready; midrange EQ reduces overlap but cannot isolate vocals.'))
+                      requestedLeadControl=self.lead_control,leadControlNote=note)
         settings={'eq_low_freq':0, 'eq_mid_freq':.5 if self.lead_mode=='stems' else 0,
                   'eq_high_freq':recipe.get('incomingHighEq', .5), 'level':self.baselines[incoming]['level']*recipe['entryLevel']}
         if self.lead_mode=='stems':settings.update(dict.fromkeys(LEAD_CONTROLS,0))

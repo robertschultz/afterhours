@@ -46,7 +46,7 @@ class MixerTests(unittest.TestCase):
         self.assertFalse(transition_recipe(track(),track(key='3B'))['tonalOverlap'])
         self.assertEqual(transition_recipe(track(),track(),'quick')['technique'],'crossfade')
 
-    def mixer(self, stems=True):
+    def mixer(self, stems=True, *, lead_control='auto'):
         values={deck:{**dict.fromkeys(CONTROLS[:3]+LEAD_CONTROLS,.5),'level':.8,'play':False,'stems':stems} for deck in (1,2)}
         sent=[]
         def query(client,script,kind=None):
@@ -61,7 +61,7 @@ class MixerTests(unittest.TestCase):
                 for part in script.split(' & '):
                     head,amount=part.rsplit(' ',1);_,deck,key=head.split(maxsplit=2)
                     values[int(deck)][key]=float(amount.rstrip('%'))/100
-        m=TransitionMixer(query,send);m.preflight(None)
+        m=TransitionMixer(query,send,lead_control=lead_control);m.preflight(None)
         return m,values,sent
 
     def test_explicit_opening_restores_paused_channels_and_preserves_master_and_usable_level(self):
@@ -302,6 +302,17 @@ class MixerTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeError,'no longer silent'):
             mixer.upgrade_to_ready_stems(None)
         self.assertEqual(sent,[])
+
+    def test_requested_frequency_eq_keeps_ready_stems_neutral(self):
+        mixer, values, _ = self.mixer(lead_control='frequency-eq')
+        recipe = transition_recipe(track(), track())
+        mixer.arm(None, 1, 2, recipe)
+        self.assertEqual(recipe['requestedLeadControl'], 'frequency-eq')
+        self.assertEqual(recipe['leadControl'], 'frequency-eq')
+        self.assertEqual(values[2]['eq_mid_freq'], 0)
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        for deck in (1, 2):
+            self.assertTrue(all(values[deck][key] == .5 for key in LEAD_CONTROLS))
 
     def test_unavailable_stems_use_explicit_eq_guard_without_stem_mutation(self):
         m,v,sent=self.mixer(stems=False);recipe=transition_recipe(track(),track());m.arm(None,1,2,recipe);m.begin(None)

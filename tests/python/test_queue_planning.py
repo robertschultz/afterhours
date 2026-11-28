@@ -525,6 +525,28 @@ class QueuePlanningTests(unittest.TestCase):
         roller.tick(self.session, 32)
         roller.search.assert_not_called()
 
+    def test_manual_timed_queue_makes_room_for_related_artists_before_another_repeat(self):
+        rows = [{**track(tid), 'artist':'Resident DJ', 'genre':'House'} for tid in ('a','b','c','d')]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b','c'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.live_matches.add('d')
+        roller.search = Mock(return_value=True)
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, self.session.state['order'],
+                                              'house', True, lookahead=True)
+        self.assertIsNone(self.session.state['queuedUpdate'])
+        self.session.catalog_job = Mock(done=False, rolling=True, seen=set())
+        roller.tick(self.session, 28)
+        self.assertIsNone(self.session.state['queuedUpdate'])
+        self.session.catalog_job.done = True
+        roller.tick(self.session, 28)
+        self.assertEqual(self.session.state['queuedUpdate']['rollingTrackId'], 'd')
+        roller.search.assert_called_once()
+
     def test_timed_refill_skips_provider_continuous_mix_cuts(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

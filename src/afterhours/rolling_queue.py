@@ -151,6 +151,7 @@ class RollingQueue:
         self.failed_scan_songs = set()
         self.scan_failure_index = None
         self.artist_expansion = None
+        self.artist_search_index = None
 
     def timed_ready_ids(self, state, candidates):
         cadence, order = state.get('entryCadence'), state['order']
@@ -277,6 +278,20 @@ class RollingQueue:
             upcoming = len(order) - state['index'] - 1
             if upcoming <= 4:
                 request_missing_house_evidence(style, candidates, unresolved, tail['bpm'], state.get('maxTempoShift', 8))
+            # With two successors already committed, yield one catalog
+            # search to broaden an operator-started queue that has become
+            # dominated by one artist. The shorter buffer can still refill.
+            if (timed_set and upcoming >= 2 and slack >= 22
+                    and not state.get('agentDirection') and candidates):
+                avoid = repeated_artists(order) | heavily_played_credits(order)
+                if avoid and not any(brings_new_artist(row, avoid) for row in candidates):
+                    if self.artist_search_index == state['index']:
+                        if catalog and not catalog.done:
+                            return
+                    elif slack >= 26 and (not catalog or catalog.done):
+                        self.artist_search_index = state['index']
+                        if self.search(session, state, order, style, timed_set, lookahead=True):
+                            return
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.
             urgent_refill = upcoming <= 2 and bool(candidates)

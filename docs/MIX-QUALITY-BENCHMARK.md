@@ -99,3 +99,24 @@ Run `python3 scripts/evaluate-set-quality.py --judgments labels.json` against th
 ```
 
 Choices are `a`, `b`, `tie`, or null for an abstention. The swapped choice is in the reversed presentation's coordinates. The scorer requires a strict majority with two matching human votes, excludes human ties from the headline agreement rate, and includes judge abstentions in its denominator. It reports the count behind each rate, the Wilson 95% interval, and order-swap inconsistencies by brief and dimension. Only held-out comparisons count. Use the same recordings and instructions in both presentations.
+
+### Freeze a prospective offline draft
+
+Use `scripts/freeze-set-quality-plan.py` with copies of saved measured Afterhours set checkpoints and their local analysis reports. Choose one provider, one fixed tempo, the brief's allowed genres and an entry schedule before looking at the result. Supply the captured Unix time and the local recording-availability snapshot from the same evidence bundle.
+
+```sh
+PYTHONPATH=src python3 scripts/freeze-set-quality-plan.py \
+    --checkpoint saved-opening.json --checkpoint saved-continuation.json \
+    --reports ./saved-native-scans --availability ./saved-recording-availability.json \
+    --captured-at 1700000000 --provider beatport --bpm 122 \
+    --genre 'house' --genre 'tech house' --cadence 60 30 \
+    --brief steady-house-60-30-v1 --out ./private-benchmark-pool
+```
+
+The tool joins each replay-verified cue to an exact recording edition and compares the saved whole-audio scan digest against its checkpoint. It excludes known provider restrictions, incomplete decoded coverage and tracks outside the fixed pitch range. It reports the generous maximum measured coverage before subtracting overlaps and how many recordings have a measured exit within five seconds of each cadence target.
+
+When the pool supports a complete hour, the tool uses Afterhours' existing discovery ranking, cue fit, tempo validation and transition recipes to produce `plan.json` for the offline scorecard. The local baseline uses no unpinned live chart or stem caches. The last eight beats fit inside an existing measured exit window. The plan is a prospective draft and requires exact provider and deck revalidation before playback. The tool has no playback path.
+
+Keep the checkpoint copies, report copies, availability snapshot and CLI parameters together for reproducibility. The output directory is new and private. A coverage shortfall exits with status 2 and saves `source-pool.json` and `coverage.json`. A complete draft additionally saves `plan.json`. Capped or absent provider playback evidence, scan files without saved replay-verified windows, and incomplete archival receipts cannot be used to fill missing portions.
+
+An observed hour with 65 handoffs can supply an exact retrospective order and transition timings. Treat it as an execution control. Its order was found during playback, and older receipts lack the source cue positions needed for a prospective manifest.

@@ -66,6 +66,18 @@ class DiscoveryTests(unittest.TestCase):
         now[0] = dj_discovery.MAX_AGE + 2
         self.assertEqual(discovery.evidence({'title': 'Home', 'artist': 'Steph, Alex'}), {})
 
+    def test_dance_chart_matches_do_not_require_genre_percentiles(self):
+        discovery = dj_discovery.Discovery(clock=lambda: 1)
+        discovery.feeds['dance'] = {'observedAt': 1, 'source': 'iTunes Dance',
+                                    'rows': [{'title': 'Track', 'artist': 'Artist', 'rank': 2}]}
+        track = {'id': 'exact', 'title': 'Track', 'artist': 'Artist', 'genre': 'Dance'}
+        ranked, facts = dj_discovery.rank_candidates([track], 'dance', [], [], lambda _: (0, 0),
+                                                      discovery=discovery)
+        self.assertEqual(ranked, [track])
+        self.assertEqual(facts['exact']['danceChart']['rank'], 2)
+        self.assertNotIn('genrePopularity', facts['exact'])
+        self.assertEqual(discovery.hints('dance', [])[0]['rank'], 2)
+
     def test_ranking_keeps_request_priority_and_avoids_artist_repeats(self):
         played = {'id': 'playing', 'artist': 'Alex', 'label': 'A Label', 'genre': 'House'}
         same_artist = {'id': 'same', 'artist': 'Alex', 'label': 'A Label', 'genre': 'House'}

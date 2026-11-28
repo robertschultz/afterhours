@@ -247,7 +247,7 @@ class Discovery:
                 result['danceChart'] = {'rank': hit['rank'], 'source': dance['source'],
                                         'observedAt': dance['observedAt']}
         preferred = style_for(track.get('genre'))
-        feed = self.fresh(preferred)
+        feed = self.fresh(preferred) if preferred in HOUSE_STYLES else None
         if feed:
             hit = next((row for row in feed['rows'] if identity(row['title'], row['artist']) == key), None)
             if hit:
@@ -263,7 +263,10 @@ class Discovery:
         used = set()
         results = []
         # Give the DJ a mix of familiar and less familiar directions.
-        rows = sorted(feed['rows'], key=lambda row: -row['percentile'])
+        if style == 'dance':
+            rows = sorted(feed['rows'], key=lambda row: row['rank'])
+        else:
+            rows = sorted(feed['rows'], key=lambda row: -row['percentile'])
         current = [row for row in rows if row.get('releaseYear', 0) >= time.gmtime(self.clock()).tm_year-1]
         for row in current[:2] + rows[:len(rows)//2:2] + rows[len(rows)//2::2] + rows:
             artist = credit(row['artist'])

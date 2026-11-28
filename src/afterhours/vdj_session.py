@@ -2778,7 +2778,8 @@ class DJSession:
             if abs(beat-cue['entryBeat'])>.2 or abs(position-cue['entrySeconds'])>.2:
                 raise CueReplayMismatch(actual, cue, beat, position)
         self.match_tempo(client, track, deck, target_bpm)
-        self.event(f"Deck {deck_rotation.letter(deck)} ready · {track['title']} at {target_bpm:.1f} BPM", 'loaded')
+        self.event(f"Deck {deck_rotation.letter(deck)} ready · {track['title']} at {target_bpm:.1f} BPM",
+                   'loaded', trackId=track['id'], deck=deck)
 
     def match_tempo(self, client, track, deck, target_bpm):
         if as_bool(self.q(client,f'deck {deck} play','bool')):
@@ -3238,6 +3239,10 @@ class DJSession:
                     resume_window['basis']='measured-continuation-exit'
                     self.event('Upcoming tracks are ready. Using the next verified exit on the playing recording.', 'timing')
                 if entry_cadence and planned and not final and not resume:
+                    # Arming the mixer can consume the lead time on the previous
+                    # beat sample. Schedule against the current native position.
+                    t=self.read_playing_transport(client, active, track['id'], clock_only=True)
+                    current=t['decks'][active-1]
                     try:
                         resume_window = copilot_commands.automatic_timed_window(self.snapshot(), current, recipe['fadeBeats'],
                             entry_cadence[index % len(entry_cadence)],
@@ -3474,6 +3479,7 @@ class DJSession:
                     self.mixer.begin(client)
                 deadline = time.monotonic() + fade_beats*60/target + 8
                 evidence = {'from': track['id'], 'to': expected['id'], 'at': dispatch_at, 'samples': [],
+                            'incomingDeck': incoming,
                             'timing': copy.deepcopy(window), 'observedStartBeat':current['beatPosition'],
                             'incomingCueBeat':entries[incoming], 'recipe':recipe, 'mixerSamples':[]}
                 if self.handoff.loop:

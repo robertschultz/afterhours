@@ -827,6 +827,8 @@ class SessionTests(unittest.TestCase):
             s.prepare_deck(None,source,1,155)
         self.assertEqual(sent[-2:],["deck 1 goto +64",'MATCH'])
         self.assertEqual(s.snapshot()['order'][0]['bpm'],163)
+        loaded = next(row for row in s.snapshot()['events'] if row['kind'] == 'loaded')
+        self.assertEqual((loaded['trackId'], loaded['deck']), ('a', 1))
         self.assertFalse(any(' play' in c for c in sent))
 
     def test_large_tempo_or_key_change_still_requires_replanning(self):

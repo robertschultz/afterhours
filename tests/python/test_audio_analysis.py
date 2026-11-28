@@ -182,7 +182,24 @@ class AudioAnalysisTests(unittest.TestCase):
             self.assertFalse(peer.active); self.assertEqual(peer.effect, 'Flanger')
             self.assertFalse((root/(SID+'.verified.json')).exists())
 
-    def test_completed_native_scan_reports_split_storage_without_waiting(self):
+    def test_stale_completion_readback_allows_the_new_native_pass_to_arrive(self):
+        class StaleCompletionPeer(Peer):
+            def send(self, q):
+                if q == 'deck 1 effect_button 1 1' and self.scans == 1:
+                    self.commands.append(q)
+                    self.scans += 1
+                    return  # The prior pass is still the most recent OSC status and file.
+                super().send(q)
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            peer = StaleCompletionPeer(root)
+            receipt = scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait)
+            self.assertEqual(peer.scans, 3)
+            self.assertEqual(receipt['passes'], 2)
+            self.assertIsNotNone(verified_energy(SID, 10, root))
+
+    def test_completed_native_scan_reports_split_storage_with_bounded_retries(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             native = root / 'bridge-reports'
@@ -192,7 +209,8 @@ class AudioAnalysisTests(unittest.TestCase):
                 scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait)
             self.assertTrue((native/(SID+'.json')).is_file())
             self.assertFalse((root/(SID+'.verified.json')).exists())
-            self.assertLess(peer.now, 1)
+            self.assertLess(peer.now, 1.2)
+            self.assertGreater(peer.scans, 1)
             self.assertEqual(peer.effect, 'Flanger')
             self.assertFalse(peer.active)
 

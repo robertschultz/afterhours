@@ -57,6 +57,15 @@ class NativeStreamRejected(BridgeError):
     """VirtualDJ reported a rejected load on a paused playback deck."""
 
 
+class CueReplayMismatch(BridgeError):
+    """An exact recording on the incoming deck could not replay a measured cue."""
+    def __init__(self, track, cue, beat, position):
+        self.track = track
+        self.expected = {'beat':cue['entryBeat'], 'seconds':cue['entrySeconds']}
+        self.observed = {'beat':beat, 'seconds':position}
+        super().__init__('The selected cue moved after analysis. Prepare and plan again; playback was not started.')
+
+
 class TrackMetadataChanged(BridgeError):
     def __init__(self, track):
         self.track=track
@@ -2670,7 +2679,7 @@ class DJSession:
             beat=number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000)
             position=number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000
             if abs(beat-cue['entryBeat'])>.2 or abs(position-cue['entrySeconds'])>.2:
-                raise BridgeError('The selected cue moved after analysis. Prepare and plan again; playback was not started.')
+                raise CueReplayMismatch(actual, cue, beat, position)
         self.match_tempo(client, track, deck, target_bpm)
         self.event(f"Deck {deck_rotation.letter(deck)} ready · {track['title']} at {target_bpm:.1f} BPM", 'loaded')
 
@@ -2775,7 +2784,7 @@ class DJSession:
         cue_planner.verify_receipts(prepared['analysis'])
         return order,prepared
 
-    def substitute_rejected_preload(self, index, *, metadata_changed=None):
+    def substitute_rejected_preload(self, index, *, metadata_changed=None, cue_mismatch=None):
         """Remove an unusable planner pick and refit the existing measured tail."""
         with self.lock:
             state = self.snapshot()
@@ -2783,8 +2792,11 @@ class DJSession:
             rejected = order[index]
             policy = state['setlist']
             queued = state.get('queuedUpdate')
-            failure = metadata_changed or NativeStreamRejected('VirtualDJ reports a streamed-track error.')
-            if metadata_changed is not None and metadata_changed.track['id'] != rejected['id']:
+            failure = metadata_changed or cue_mismatch or NativeStreamRejected('VirtualDJ reports a streamed-track error.')
+            if (metadata_changed or cue_mismatch) and failure.track['id'] != rejected['id']:
+                raise failure
+            if cue_mismatch and (policy.get('sourceById', {}).get(rejected['id']) != 'planner'
+                                 or rejected['id'] in state.get('setPins', [])):
                 raise failure
             if (state['phase'] != 'playing' or index != state['index']+1 or not state.get('entryCadence')
                     or not state.get('rollingQueue') or not policy['allowReorder'] or dj_settings.lead(state) != 'all'
@@ -2796,18 +2808,37 @@ class DJSession:
             targets = state.get('tempoTargets')
             if targets:
                 targets = [row for row in targets if row['trackId'] != rejected['id']]
-            problem = 'was rejected by VirtualDJ' if metadata_changed is None else 'changed its verified tempo or key on the paused deck'
+            if cue_mismatch:
+                problem = 'could not replay its measured entry cue on the paused deck'
+            elif metadata_changed:
+                problem = 'changed its verified tempo or key on the paused deck'
+            else:
+                problem = 'was rejected by VirtualDJ'
             reason = f"{rejected['title']} {problem}. Keeping the playing track and refitting the remaining queue."
-            prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
+            try:
+                prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
+            except ValueError:
+                if not cue_mismatch or any(
+                        policy.get('sourceById', {}).get(row['id']) != 'planner' or row['id'] in state.get('setPins', [])
+                        for row in retained[index:]):
+                    raise
+                # The unstarted planner tail can be reconsidered on a new
+                # measured route. The playing selection stays exactly as applied.
+                retained = retained[:index]
+                retained_ids = {row['id'] for row in retained}
+                targets = [row for row in targets if row['trackId'] in retained_ids] if targets else targets
+                prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
             cue_planner.verify_receipts(prepared['analysis'])
             plan = prepared['executionPlan']
             plan['applied'] = True
-            if metadata_changed is None:
+            if not metadata_changed and not cue_mismatch:
                 self.availability.record(rejected['id'],'native-stream-rejected',reason)
-            policy['sourceById'].pop(rejected['id'], None)
+            accepted_ids = {row['id'] for row in retained}
+            policy['sourceById'] = {tid:source for tid,source in policy['sourceById'].items() if tid in accepted_ids}
             self.update(order=retained,setlist=policy,queuedUpdate=None,tempoTargets=targets,
                         rollingQueue={'status':'ready'},mixPlans=plan['transitions'],**prepared)
-            self.event(reason,'queue-skipped',trackId=rejected['id'])
+            cue_evidence = {'expectedCue':cue_mismatch.expected, 'observedCue':cue_mismatch.observed} if cue_mismatch else {}
+            self.event(reason,'queue-skipped',trackId=rejected['id'],**cue_evidence)
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
@@ -2908,14 +2939,15 @@ class DJSession:
             nonlocal order,planned
             try:
                 ready(client,order[index],deck,target,index)
-            except (NativeStreamRejected, TrackMetadataChanged) as exc:
+            except (NativeStreamRejected, TrackMetadataChanged, CueReplayMismatch) as exc:
                 rejected = order[index]
                 changed = exc if isinstance(exc, TrackMetadataChanged) else None
-                if changed is not None:
+                mismatch = exc if isinstance(exc, CueReplayMismatch) else None
+                if changed or mismatch:
                     if (as_bool(self.q(client,f'deck {deck} play','bool')) or
                             identity(str(self.q(client,f'deck {deck} get_filepath','text'))) != rejected['engine']['selection_id']):
                         raise
-                order,planned = self.substitute_rejected_preload(index, metadata_changed=changed)
+                order,planned = self.substitute_rejected_preload(index, metadata_changed=changed, cue_mismatch=mismatch)
                 if rolling:
                     rolling.missed.add(rejected['id'])
                 if index < len(order):

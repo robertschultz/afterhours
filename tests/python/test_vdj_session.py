@@ -6,7 +6,7 @@ import unittest
 from contextlib import nullcontext
 from unittest.mock import Mock, call, patch
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_session import DJSession, Cancelled, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
+from afterhours.vdj_session import DJSession, Cancelled, CueReplayMismatch, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
 from test_vdj_catalog import CatalogPeer
 from afterhours.vdj_catalog import load_selected
 from afterhours.vdj_catalog import identity
@@ -18,6 +18,53 @@ def tracks():
 
 
 class SessionTests(unittest.TestCase):
+    def test_fractional_native_cue_shift_rejects_the_paused_incoming_recording(self):
+        session = DJSession(threading.Lock())
+        candidate = {'id':'offshore','title':'Offshore','bpm':127.88,'camelot':'8A',
+                     'engine':{'selection_id':identity('track')}}
+        cue = {'entryBeat':0.0, 'entrySeconds':8.29, 'recordingDuration':417.816}
+        client = Mock()
+        with patch.object(session, 'analyze_deck', return_value=candidate), \
+                patch.object(session, 'sleep'), patch.object(session, 'send') as send, \
+                patch.object(session, 'q', side_effect=[-14.51896095, 8289]), \
+                patch.object(session, 'match_tempo') as tempo:
+            with self.assertRaises(CueReplayMismatch) as raised:
+                session.prepare_deck(client, candidate, 2, 122, cue)
+        self.assertEqual(raised.exception.expected, {'beat':0.0, 'seconds':8.29})
+        self.assertEqual(raised.exception.observed, {'beat':-14.51896095, 'seconds':8.289})
+        self.assertTrue(all('play' not in args[1] for args, _ in send.call_args_list))
+        tempo.assert_not_called()
+
+    def test_timed_cue_mismatch_refits_only_an_unpinned_planner_selection(self):
+        for source, pinned in [('planner',False),('planner',True),('operator',False)]:
+            with self.subTest(source=source, pinned=pinned):
+                session=DJSession(threading.Lock())
+                a,b,c=tracks()
+                session.update(order=[a,b,c],index=0,active=True,phase='playing',
+                    entryCadence=[60,30],rollingQueue={'status':'ready'},setPins=['b'] if pinned else [],
+                    setlist={'sourceById':{'a':'operator','b':source,'c':'planner'},
+                             'allowReorder':True,'lockedIds':[]})
+                session.state['copilot']['mode']='leading'
+                error=CueReplayMismatch(b,{'entryBeat':0.0,'entrySeconds':8.29},-14.51896,8.289)
+                with patch('afterhours.cue_planner.complete_background_queue',
+                           return_value={'analysis':{},'executionPlan':{'transitions':[]}}) as fit, \
+                        patch('afterhours.cue_planner.verify_receipts'), \
+                        patch.object(session.availability,'record') as blocked:
+                    if source=='operator' or pinned:
+                        with self.assertRaises(CueReplayMismatch):
+                            session.substitute_rejected_preload(1,cue_mismatch=error)
+                        fit.assert_not_called()
+                        self.assertEqual(session.state['order'],[a,b,c])
+                    else:
+                        retained,plan=session.substitute_rejected_preload(1,cue_mismatch=error)
+                        self.assertEqual(retained,[a,c])
+                        self.assertTrue(plan['applied'])
+                        self.assertEqual(fit.call_args.args[4],1)
+                        self.assertTrue(session.state['active'])
+                        self.assertEqual(session.state['events'][-1]['kind'],'queue-skipped')
+                        self.assertEqual(session.state['events'][-1]['observedCue']['beat'],-14.51896)
+                    blocked.assert_not_called()
+
     def test_suspect_playing_transport_is_confirmed_without_dispatching_controls(self):
         session = DJSession(threading.Lock())
         client = Mock()

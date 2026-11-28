@@ -129,6 +129,24 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertIsNone(SCORER['observed_curatorial_variety'](rows))
         self.assertIsNone(SCORER['observed_curatorial_variety']([{'verified': True}]))
 
+    def test_observed_mix_techniques_use_verified_deck_and_mixer_readbacks(self):
+        out, incoming = 'Clearing outgoing bass and lead', 'Bringing in incoming bass'
+        rows = [
+            {'verified':True, 'maxPhaseGapBeats':.12, 'overlapSamples':8,
+             'eqOrder':[out, incoming], 'leadControl':['stems', 'stems'],
+             'loopBeats':4, 'loopWraps':2, 'loopRelease':'released'},
+            {'verified':True, 'overlapSamples':0, 'eqOrder':[incoming, out], 'leadControl':['frequency-eq'],
+             'loopBeats':4, 'loopWraps':1, 'loopRelease':'unconfirmed'},
+            {'verified':True},
+            {'verified':False, 'maxPhaseGapBeats':.45, 'overlapSamples':99, 'leadControl':['frequency-eq']},
+        ]
+        result = SCORER['observed_mix_techniques'](rows)
+        self.assertEqual((result['withPhaseReadback'], result['worstObservedPhaseGapBeats']), (1, .12))
+        self.assertEqual((result['withOverlapReadback'], result['withMeasuredSignalOnBothDecksDuringCrossfade']), (2, 1))
+        self.assertEqual((result['withBothBassSwapStages'], result['withOrderedBassSwapPhases']), (2, 1))
+        self.assertEqual(result['leadControlHandoffs'], {'frequency-eq':1, 'stems':1})
+        self.assertEqual((result['loopHandoffs'], result['loopWrappedAndReleased']), (2, 1))
+
     def test_judge_reports_abstention_and_order_swap_on_held_out_pairs(self):
         human = [{'reviewerId': 'one', 'choice': 'a'}, {'reviewerId': 'two', 'choice': 'a'}]
         base = {'briefId': 'house', 'dimension': 'transition-sound', 'humanLabels': human,

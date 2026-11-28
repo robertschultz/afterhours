@@ -280,6 +280,34 @@ def observed_curatorial_variety(handoffs):
     }
 
 
+def observed_mix_techniques(handoffs):
+    rows = [row for row in handoffs if row.get('verified') is True]
+    if not rows:
+        return None
+    phase = [row['maxPhaseGapBeats'] for row in rows
+             if type(row.get('maxPhaseGapBeats')) in (int, float) and isfinite(row['maxPhaseGapBeats'])]
+    overlap = [row['overlapSamples'] for row in rows if type(row.get('overlapSamples')) is int]
+    eq = [row['eqOrder'] for row in rows if isinstance(row.get('eqOrder'), list) and row['eqOrder']]
+    modes = Counter(mode for row in rows for mode in set(row.get('leadControl') or ()) if mode)
+    loops = [row for row in rows if type(row.get('loopBeats')) is int and row['loopBeats'] > 0]
+    outgoing, incoming = 'Clearing outgoing bass and lead', 'Bringing in incoming bass'
+    bass_swaps = [controls for controls in eq if outgoing in controls and incoming in controls]
+    return {
+        'withPhaseReadback':len(phase),
+        'worstObservedPhaseGapBeats':max(phase, default=None),
+        'withOverlapReadback':len(overlap),
+        'withMeasuredSignalOnBothDecksDuringCrossfade':sum(samples > 0 for samples in overlap),
+        'withMixerPhaseReadback':len(eq),
+        'withBothBassSwapStages':len(bass_swaps),
+        'withOrderedBassSwapPhases':sum(
+            controls.index(outgoing) < controls.index(incoming) for controls in bass_swaps),
+        'leadControlHandoffs':dict(sorted(modes.items())),
+        'loopHandoffs':len(loops),
+        'loopWrappedAndReleased':sum(
+            (row.get('loopWraps') or 0) > 0 and row.get('loopRelease') == 'released' for row in loops),
+    }
+
+
 def read_observed_run(prefix):
     """Compare native handoff timing with independent master capture logs."""
     owner = json.loads(Path(f'{prefix}-owner.json').read_text())
@@ -354,6 +382,7 @@ def read_observed_run(prefix):
         'timingByTarget':timing,
         'upNextOverlay':observed_up_next(browser, start),
         'curatorialVariety':observed_curatorial_variety(handoffs),
+        'mixTechniques':observed_mix_techniques(handoffs),
         'masterCapturedSeconds':meter.get('capturedAudioSeconds'),
         'masterStartedAfterPlaybackSeconds':starts[0].get('afterStartSeconds'),
         'captureSequenceDiscontinuities':meter.get('sequenceDiscontinuities'),

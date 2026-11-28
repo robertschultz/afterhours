@@ -254,8 +254,27 @@ def observed_up_next(browser, start):
     changes = []
     last_label = None
     handoffs = Counter()
+    track_settlement = False
+    last_handoff = None
+    settlement_samples = []
+    tracked_handoffs = 0
     for row in browser:
+        if row.get('event') == 'Endurance window':
+            track_settlement = row.get('trackUpNextSettlement') is True
+        if row.get('event') == 'Up Next committed after handoff' and last_handoff:
+            index, current, at = last_handoff
+            next_id = row.get('nextRecordingId')
+            if (row.get('index') == index and current == row.get('currentRecordingId')
+                    and isinstance(next_id, str) and next_id and next_id != current
+                    and next_id == row.get('expectedNextRecordingId')):
+                elapsed = datetime.fromisoformat(row['at']).timestamp() - at
+                settlement_samples.append(number(elapsed, 'Up Next commitment delay'))
+                last_handoff = None
         if row.get('event') == 'Rolling handoff':
+            if track_settlement and row.get('expectedCurrentRecordingId'):
+                tracked_handoffs += 1
+                last_handoff = (row.get('index'), row['expectedCurrentRecordingId'],
+                                datetime.fromisoformat(row['at']).timestamp())
             expected = row.get('expectedNextLabel')
             title = row.get('next')
             if not changes or changes[-1][1] != 'committed' or not last_label or not title:
@@ -292,6 +311,13 @@ def observed_up_next(browser, start):
         result['missingWhilePlayingSamples'] = browser[-1].get('missingNextSamples')
     if handoffs:
         result['handoffSamples'] = dict(sorted(handoffs.items()))
+    if track_settlement:
+        result['afterHandoffCommitment'] = {
+            'observed':len(settlement_samples),
+            'unobserved':tracked_handoffs-len(settlement_samples),
+            'medianSecondsFromHandoffSample':round(median(settlement_samples), 3) if settlement_samples else None,
+            'maxSecondsFromHandoffSample':round(max(settlement_samples), 3) if settlement_samples else None,
+        }
     return result
 
 

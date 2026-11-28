@@ -209,6 +209,27 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertEqual(score['sampledSecondsByState'], {'searching':3, 'staged':3, 'committed':4,
                                                          'named-unverified':4, 'hidden':2})
 
+    def test_overlay_commitment_can_be_confirmed_after_an_initially_unobserved_handoff(self):
+        def event(second, name, **fields):
+            return {'event':name, 'at':f'1970-01-01T00:00:{second:02}+00:00', **fields}
+
+        rows = [
+            event(3, 'Endurance window', trackUpNextSettlement=True),
+            event(4, 'Up Next overlay changed', visible=True, label='Finding a track', state='searching'),
+            event(5, 'Rolling handoff', index=1, expectedCurrentRecordingId='one', expectedNextRecordingId=None),
+            event(6, 'Up Next committed after handoff', index=1, currentRecordingId='one',
+                  expectedNextRecordingId='two', nextRecordingId='stale'),
+            event(8, 'Up Next committed after handoff', index=1, currentRecordingId='one',
+                  expectedNextRecordingId='two', nextRecordingId='two'),
+            event(9, 'Rolling handoff', index=2, expectedCurrentRecordingId='two', expectedNextRecordingId=None),
+            event(10, 'Endurance reached'),
+        ]
+        score = SCORER['observed_up_next'](rows, 1)
+        self.assertEqual(score['handoffSamples'], {'unobserved':2})
+        self.assertEqual(score['afterHandoffCommitment'],
+                         {'observed':1, 'unobserved':1,
+                          'medianSecondsFromHandoffSample':3, 'maxSecondsFromHandoffSample':3})
+
     def test_overlay_score_reports_wrong_artist_at_a_sampled_handoff(self):
         overlay = {'event':'Up Next overlay changed','at':'1970-01-01T00:00:03+00:00',
                    'visible':True,'label':'One · Correct Artist','state':'committed'}

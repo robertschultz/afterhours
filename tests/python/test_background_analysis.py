@@ -195,4 +195,23 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(sequence,['features','waveform','cues'])
         self.assertEqual(job.result[0]['energyMap']['reportDigest'],'fresh')
 
+    def test_timed_refill_still_verifies_audio_and_cues_without_display_waveform(self):
+        track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
+        cold = {'duration':10,'points':[{'label':'realEnd','seconds':9.8}]}
+        verified = {**cold,'energyMap':{'reportDigest':'fresh'}}
+        session = DJSession(threading.Lock())
+        session.update(entryCadence=[60,30])
+        job = BackgroundAnalysis(session,'revision',[track])
+        with patch.object(DJSession,'analyze_deck',return_value=track), \
+             patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
+             patch('afterhours.background_analysis.track_analysis',side_effect=[{'tracks':[cold]},{'tracks':[verified]}]), \
+             patch('afterhours.background_analysis.scan_track') as features, \
+             patch('afterhours.background_analysis.scan_waveform') as waveform:
+            job.run()
+        features.assert_called_once()
+        waveform.assert_not_called()
+        self.assertEqual(cues.call_args.args[2]['energyMap'],verified['energyMap'])
+        self.assertTrue(cues.call_args.kwargs['timed'])
+        self.assertTrue(job.result[0]['timedPreparation'])
+
 if __name__=='__main__':unittest.main()

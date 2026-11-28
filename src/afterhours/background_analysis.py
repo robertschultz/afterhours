@@ -419,15 +419,17 @@ class BackgroundAnalysis:
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
                 evidence=track_analysis([checked])['tracks'][0]
-                waveform_ready = bool(evidence.get('energyMap')) and verified_waveform(
+                waveform_ready = timed or bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])
-                if not waveform_ready:
-                    # Keep the waveform and features bound to the same decode.
+                if not evidence.get('energyMap') or not waveform_ready:
+                    # Timed sets need verified audio features and replayed
+                    # cues, but can skip the separate display waveform pass.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
                     scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
                     evidence=track_analysis([checked])['tracks'][0]
-                    self.message='Preparing waveform · '+track['title']
-                    scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
+                    if not timed:
+                        self.message='Preparing waveform · '+track['title']
+                        scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=120,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
                 timed_option = {'timed': True} if timed else {}
                 evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],

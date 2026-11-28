@@ -23,7 +23,8 @@ def finite(value, low, high):
         raise ValueError('Invalid tempo plan value.')
     return float(value)
 
-def schedule(order, cues, transitions, opening=None, limit=8, targets=None, frozen=None, _estimated=False):
+def schedule(order, cues, transitions, opening=None, limit=8, targets=None, frozen=None, _estimated=False,
+             *, entry_cadence=None):
     """Use exact measured spans, never ramp during a two-track overlap.
 
     frozen holds already heard/playing/cued rows when extending a running set.
@@ -47,7 +48,15 @@ def schedule(order, cues, transitions, opening=None, limit=8, targets=None, froz
         cue=cues[i];span=finite(cue['exitBeat']-cue['entryBeat'],8,4096)
         previous_blend=transitions[i-1]['fadeBeats'] if i else 0
         start=math.ceil((previous_blend+4)/4)*4
-        beats=max(0,math.floor((span-SETTLE_BEATS-start)/4)*4)
+        ramp_span = span
+        if entry_cadence and i < len(order) - 1 and i >= len(frozen):
+            # A measured exit can be much later than the requested entry.
+            # Budget the ramp at the slow edge of its allowed tempo range,
+            # with a bar for transport readback before the next mix.
+            interval = entry_cadence[i % len(entry_cadence)]
+            cadence_beats = interval * max(40, bpm - MAX_CHANGE) / 60
+            ramp_span = min(span, cadence_beats - 4)
+        beats=max(0,math.floor((ramp_span-SETTLE_BEATS-start)/4)*4)
         allowed=min(MAX_CHANGE,beats*BPM_PER_BEAT)
         if _estimated and i<len(frozen):
             # A running prefix was compiled against its actual cue/overlap.

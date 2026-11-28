@@ -251,7 +251,8 @@ def compile_plan(review, report, order, seconds, style='phrase'):
             'musicalAcceptance':'not-auditioned','applied':False}
     if report.get('tempoVersion')==tempo_planner.VERSION:
         result['tempoSchedule']=tempo_planner.schedule(order,cues,recipes,report['targetBpm'],
-            report.get('maxPitchPercent',8),report.get('tempoTargets'),report.get('frozenTempo'))
+            report.get('maxPitchPercent',8),report.get('tempoTargets'),report.get('frozenTempo'),
+            entry_cadence=report.get('entryCadence'))
     result['id']=fingerprint(result)
     return result
 
@@ -509,6 +510,7 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
             'reason':'Local measured transition. '+recipe['reason']+reason_detail})
     report['tracks']=[evidence[i] for i in ids];report['fingerprint']=fingerprint(report['tracks'])
     report.update(tempoVersion=tempo_planner.VERSION,tempoTargets=tempo_targets,
+                  entryCadence=snapshot.get('entryCadence'),
                   maxPitchPercent=snapshot.get('maxTempoShift',8))
     # Legacy fixed-tempo playback is also frozen; new tracks may ramp later.
     report['frozenTempo']=copy.deepcopy(old.get('tempoSchedule') or [

@@ -143,6 +143,10 @@ class PreparationPool:
             self.cache.update(job.cache)
             try:job.close(client)
             except (BridgeError,OSError,ValueError) as exc:errors.append(f'Deck {job.deck}: {exc}')
+            else:
+                if job.done and not job.error and not getattr(job, 'pool_closed', False):
+                    self.result.extend(job.result)
+                    job.pool_closed = True
         if errors:raise BridgeError('; '.join(errors))
 
     def cleanup_descriptors(self):

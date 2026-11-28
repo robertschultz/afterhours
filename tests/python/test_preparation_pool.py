@@ -187,6 +187,24 @@ class PoolTests(unittest.TestCase):
         pool=PreparationPool(s,'rev',[{'id':'x','title':'X'}]);pool.step(peer,40)
         self.assertTrue(pool.done);self.assertIn('in use',pool.error);self.assertEqual(peer.commands,[])
 
+    def test_close_harvests_a_completed_sibling_after_another_job_failed(self):
+        session = DJSession(threading.Lock())
+        pool = PreparationPool(session, 'revision', [])
+        failed = BackgroundAnalysis(session, 'revision', [], deck=3)
+        survivor = BackgroundAnalysis(session, 'revision', [], deck=4)
+        failed.done = survivor.done = True
+        failed.error = 'Exact lookup failed.'
+        survivor.result = [{'id':'verified'}]
+        pool.jobs = [failed, survivor]
+        peer = PoolPeer()
+        pool.step(peer, 35)
+        self.assertTrue(pool.done)
+        self.assertEqual(pool.result, [])
+        pool.close(peer)
+        pool.close(peer)
+        self.assertEqual(pool.result, survivor.result)
+        self.assertEqual(peer.commands, [])
+
     def test_failure_stops_other_work_without_retrying_a_load(self):
         s=DJSession(threading.Lock());pool=PreparationPool(s,'rev',[]);peer=PoolPeer()
         job=BackgroundAnalysis(s,'rev',[],deck=4);job.done=True;job.error='Load unconfirmed'

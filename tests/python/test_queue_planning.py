@@ -576,6 +576,43 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
         self.assertEqual(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 0)
 
+    def test_native_miss_retains_a_verified_automatic_successor(self):
+        for field, basis, missed in (('catalog_miss', 'catalog', '2'), ('analysis_miss', 'analysis', '3')):
+            with self.subTest(field=field):
+                old, revision, measured = self.staged_measured_batch(missed)
+                job = self.session.background_job
+                job.error = 'Native preparation failed.'
+                job.result = [item for item in measured if item['id'] != missed]
+                setattr(job, field, missed)
+                client = Mock()
+                with patch('afterhours.cue_planner.verify_receipts'):
+                    self.session.service_background(client, 24)
+                    pending = self.session.snapshot()['queuedUpdate']
+                    survivor = job.result[0]['id']
+                    self.assertEqual(pending['id'], revision)
+                    self.assertEqual(pending['status'], 'ready')
+                    self.assertEqual([item['id'] for item in pending['tracks']], ['0', '1', survivor])
+                    self.assertTrue(any(event.get('basis') == f'verified-rolling-{basis}-miss'
+                                        for event in self.session.snapshot()['events']))
+                    self.session.update(index=1)
+                    _, applied = self.session.adopt_queue(1)
+                self.assertEqual(applied['selections'][:2], old['selections'])
+                rolling = RollingQueue()
+                self.session.update(queuedUpdate={'status':'analyzing'})
+                rolling.tick(self.session, 4)
+                self.assertIn(missed, rolling.missed)
+                client.send.assert_not_called()
+
+    def test_an_unattributed_native_error_cannot_drop_a_pick(self):
+        _, revision, measured = self.staged_measured_batch('2')
+        self.session.background_job.error = 'Native preparation failed.'
+        self.session.background_job.result = measured[1:]
+        self.session.service_background(Mock(), 24)
+        pending = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(pending['id'], revision)
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertEqual([item['id'] for item in pending['tracks']], ['0', '1', '2', '3'])
+
     def test_operator_owned_sibling_is_not_removed_with_the_failed_revision(self):
         _, revision, _ = self.staged_measured_batch('2')
         self.session.state['queuedUpdate']['sourceById']['3'] = 'operator'

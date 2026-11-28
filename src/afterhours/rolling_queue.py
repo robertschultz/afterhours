@@ -90,6 +90,9 @@ class RollingQueue:
             if slack < 4 or session.cancel.is_set():
                 return
             pending = state.get('queuedUpdate') or {}
+            omission = (state.get('lastQueueApplication') or {}).get('refillOmission') or {}
+            if omission.get('trackId'):
+                self.missed.add(omission['trackId'])
             timed_set = bool(state.get('entryCadence'))
             pinned = set(state.get('setPins', [])) | set(state['setlist'].get('lockedIds', []))
             miss = failed_rolling_recording(pending, pinned=pinned)

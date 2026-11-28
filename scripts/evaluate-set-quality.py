@@ -252,9 +252,23 @@ def observed_up_next(browser, start):
               'No compatible track found':'no-match', 'End of queue':'ended'}
     valid = {*legacy.values(), 'committed', 'staged'}
     changes = []
+    last_label = None
+    handoffs = Counter()
     for row in browser:
+        if row.get('event') == 'Rolling handoff':
+            expected = row.get('expectedNextLabel')
+            title = row.get('next')
+            if not changes or changes[-1][1] != 'committed' or not last_label or not title:
+                handoffs['unobserved'] += 1
+            elif expected:
+                handoffs['fullLabelMatches' if last_label == expected else 'fullLabelMismatches'] += 1
+            elif last_label == title or last_label.startswith(f'{title} · '):
+                handoffs['titleMatches'] += 1
+            else:
+                handoffs['titleMismatches'] += 1
         if row.get('event') != 'Up Next overlay changed':
             continue
+        last_label = row.get('label')
         at = datetime.fromisoformat(row['at']).timestamp()
         if not row.get('visible'):
             state = 'hidden'
@@ -276,6 +290,8 @@ def observed_up_next(browser, start):
     }
     if browser[-1].get('event') == 'Endurance reached':
         result['missingWhilePlayingSamples'] = browser[-1].get('missingNextSamples')
+    if handoffs:
+        result['handoffSamples'] = dict(sorted(handoffs.items()))
     return result
 
 

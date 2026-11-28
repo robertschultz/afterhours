@@ -181,6 +181,18 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertEqual(score['sampledSecondsByState'], {'searching':3, 'staged':3, 'committed':4,
                                                          'named-unverified':4, 'hidden':2})
 
+    def test_overlay_score_reports_wrong_artist_at_a_sampled_handoff(self):
+        overlay = {'event':'Up Next overlay changed','at':'1970-01-01T00:00:03+00:00',
+                   'visible':True,'label':'One · Correct Artist','state':'committed'}
+        verified = {'event':'Rolling handoff','at':'1970-01-01T00:00:04+00:00',
+                    'next':'One','expectedNextLabel':'One · Correct Artist'}
+        mismatch = {**verified,'at':'1970-01-01T00:00:06+00:00',
+                    'expectedNextLabel':'One · Other Artist'}
+        legacy = {'event':'Rolling handoff','at':'1970-01-01T00:00:08+00:00','next':'One'}
+        score = SCORER['observed_up_next']([overlay, verified, mismatch, legacy], 1)
+        self.assertEqual(score['handoffSamples'],
+                         {'fullLabelMatches':1,'fullLabelMismatches':1,'titleMatches':1})
+
     def test_observed_variety_requires_a_contiguous_exact_recording_sequence(self):
         def handoff(outgoing, incoming, artist, incoming_artist):
             return {'verified':True, 'outgoingRecordingId':outgoing, 'incomingRecordingId':incoming,

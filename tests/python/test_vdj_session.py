@@ -65,6 +65,41 @@ class SessionTests(unittest.TestCase):
                         self.assertEqual(session.state['events'][-1]['observedCue']['beat'],-14.51896)
                     blocked.assert_not_called()
 
+    def test_preload_repair_rechecks_only_an_independent_automatic_append(self):
+        a, b, c = tracks()
+        d, e = {**c, 'id':'d'}, {**c, 'id':'e'}
+        for separate_revision in ({}, {'hostedRefill':True}, {'cueChoices':[{'trackId':'d'}]}):
+            with self.subTest(separate_revision=separate_revision):
+                session = DJSession(threading.Lock())
+                queued = {'id':'old', 'tracks':[a,b,c,d,e], 'status':'ready',
+                          'prepared':{'stale':True}, 'partialTracks':[a,b,c,d],
+                          'rollingTrackId':'d', 'rollingTrackIds':['d','e'],
+                          'sourceById':{'d':'planner','e':'planner'}, **separate_revision}
+                session.update(order=[a,b,c], index=0, active=True, phase='playing',
+                               entryCadence=[30,60], rollingQueue={'status':'preparing'},
+                               queuedUpdate=queued, setlist={'sourceById':{'b':'planner','c':'planner'},
+                                                             'allowReorder':True,'lockedIds':[]})
+                session.state['copilot']['mode'] = 'leading'
+                mismatch = CueReplayMismatch(b, {'entryBeat':0.0,'entrySeconds':8.29}, -14.52, 8.289)
+                fit = {'analysis':{},'executionPlan':{'transitions':[]}}
+                with (patch('afterhours.cue_planner.complete_background_queue', return_value=fit),
+                      patch('afterhours.cue_planner.verify_receipts')):
+                    retained, _ = session.substitute_rejected_preload(1, cue_mismatch=mismatch)
+                self.assertEqual(retained, [a,c])
+                result = session.state['queuedUpdate']
+                if separate_revision:
+                    self.assertIsNone(result)
+                    continue
+                self.assertNotEqual(result['id'], 'old')
+                self.assertEqual(result['tracks'], [a,c,d,e])
+                self.assertEqual(result['protectedIds'], ['a','c'])
+                self.assertEqual(result['rollingTrackIds'], ['d','e'])
+                self.assertEqual(result['status'], 'needs-analysis')
+                self.assertIsNone(result['prepared'])
+                self.assertNotIn('partialTracks', result)
+                analysis = session.state['backgroundAnalysis']
+                self.assertEqual((analysis['revision'], analysis['status']), (result['id'], 'queued'))
+
     def test_suspect_playing_transport_is_confirmed_without_dispatching_controls(self):
         session = DJSession(threading.Lock())
         client = Mock()

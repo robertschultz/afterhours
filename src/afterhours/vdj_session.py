@@ -3069,10 +3069,42 @@ class DJSession:
                 self.availability.record(rejected['id'],'native-stream-rejected',reason)
             accepted_ids = {row['id'] for row in retained}
             policy['sourceById'] = {tid:source for tid,source in policy['sourceById'].items() if tid in accepted_ids}
-            self.update(order=retained,setlist=policy,queuedUpdate=None,tempoTargets=targets,
-                        rollingQueue={'status':'ready'},mixPlans=plan['transitions'],**prepared)
+            # The unrelated automatic append may already be decoding. Give
+            # it a new revision so the worker rechecks its new tempo and cue
+            # slots instead of adopting the old fit against a different prefix.
+            pending = None
+            if (queued and state.get('rollingQueue')
+                    and queued.get('status') in ('needs-analysis', 'analyzing', 'ready')
+                    and not any(queued.get(key) for key in ('hostedRefill', 'startId', 'mixTransitions',
+                                                          'tempoTargets', 'cueChoices'))
+                    and [row['id'] for row in queued['tracks'][:len(order)]] == [row['id'] for row in order]):
+                staged = queued['tracks'][len(order):]
+                staged_ids = [row['id'] for row in staged]
+                proposed_ids = queued.get('rollingTrackIds') or [queued.get('rollingTrackId')]
+                if staged_ids and staged_ids == proposed_ids and all(
+                        queued.get('sourceById', {}).get(tid) == 'planner' for tid in staged_ids):
+                    pending = {
+                        'id': uuid.uuid4().hex, 'tracks': retained + staged,
+                        'protectedIds': [row['id'] for row in retained],
+                        'status': 'needs-analysis', 'reason': queued.get('reason', ''),
+                        'prepared': None, 'standingStyle': queued.get('standingStyle'),
+                        'sourceById': dict.fromkeys(staged_ids, 'planner'),
+                        'rollingTrackId': staged_ids[0],
+                        **({'rollingTrackIds': staged_ids} if len(staged_ids) > 1 else {}),
+                    }
+            if pending:
+                prepared['backgroundAnalysis'] = {
+                    'revision': pending['id'], 'status': 'queued', 'completed': 0, 'total': len(staged_ids),
+                    'message': 'Rechecking the staged recordings against the repaired queue.',
+                    'decks': [], 'operations': 0, 'audioSaved': False,
+                }
+            self.update(order=retained,setlist=policy,queuedUpdate=pending,tempoTargets=targets,
+                        rollingQueue={'status':'preparing' if pending else 'ready'},mixPlans=plan['transitions'],**prepared)
             cue_evidence = {'expectedCue':cue_mismatch.expected, 'observedCue':cue_mismatch.observed} if cue_mismatch else {}
             self.event(reason,'queue-skipped',trackId=rejected['id'],**cue_evidence)
+            if pending:
+                self.event(prepared['backgroundAnalysis']['message'], 'queue',
+                           trackIds=staged_ids, queueRevision=pending['id'])
             return retained,plan
 
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,

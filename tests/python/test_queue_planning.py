@@ -259,6 +259,20 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
 
+    def test_rolling_refill_avoids_returning_to_one_artist_every_other_track(self):
+        rows = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in (
+            ('a','Resident DJ'), ('b','Different Artist'), ('c','Resident DJ & Guest'),
+            ('d','Resident DJ'), ('x','Compatible Artist'))]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b','c'])
+        self.session.update(index=2,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.add('d')
+        roller.advisor.enabled = False
+        roller.tick(self.session, 24)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'], 'x')
+
     def test_rolling_search_tries_related_artists_before_extending_an_artist_streak(self):
         order=[{**track('a'),'artist':'Resident DJ','genre':'House'},
                {**track('b'),'artist':'Resident DJ & Guest','genre':'House'}]
@@ -472,6 +486,29 @@ class QueuePlanningTests(unittest.TestCase):
                                               lookahead=True)
         self.assertEqual(self.session.state['queuedUpdate']['id'], pending['id'])
         self.assertEqual(self.session.state['rollingQueue']['status'], 'preparing')
+
+    def test_timed_lookahead_digs_when_live_search_only_found_the_repeated_artist(self):
+        rows = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in (
+            ('a','Resident DJ'), ('b','Resident DJ & Guest'), ('c','Resident DJ'),
+            ('d','Resident DJ'), ('e','Resident DJ'), ('x','Different Artist'), ('y','Other Artist'))]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        self.session.revise_queue(['a','b','c'], source='planner')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='c')
+        self.session.background_job = Mock(revision=pending['id'])
+        roller = RollingQueue()
+        roller.live_matches.update(('d','e'))
+        roller.search = Mock()
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], 'house', True,
+                                              lookahead=True)
+        roller.search.reset_mock()
+        roller.live_matches.update(('x','y'))
+        roller.tick(self.session, 32)
+        roller.search.assert_not_called()
 
     def test_timed_refill_skips_provider_continuous_mix_cuts(self):
         self.session.plan(['a', 'b'])

@@ -112,7 +112,12 @@ def song_credit_keys(track):
 def repeated_artists(order):
     if len(order) < 2:
         return set()
-    return credit(order[-2].get('artist')) & credit(order[-1].get('artist'))
+    seen, repeated = set(), set()
+    for track in order[-3:]:
+        artists = credit(track.get('artist'))
+        repeated.update(seen & artists)
+        seen.update(artists)
+    return repeated
 
 
 def brings_new_artist(track, repeated):
@@ -208,10 +213,12 @@ class RollingQueue:
                     used = {row['id'] for row in staged} | self.missed
                     used.update(row['trackId'] for row in state.get('recordingAvailability', []))
                     titles = {song_identity(row)[0] for row in staged} | self.missed_titles
-                    supply = sum(row['id'] in self.live_matches and row['id'] not in used
-                                 and song_identity(row)[0] not in titles and matches_style(row)
-                                 for row in state['candidates'])
-                    if supply < 2:
+                    repeated = repeated_artists(staged)
+                    supply = {title for row in state['candidates']
+                              if row['id'] in self.live_matches and row['id'] not in used
+                              and (title := song_identity(row)[0]) and title not in titles
+                              and matches_style(row) and (not repeated or brings_new_artist(row, repeated))}
+                    if len(supply) < 2:
                         self.search(session, state, staged, style, timed_set, lookahead=True)
                 return
 

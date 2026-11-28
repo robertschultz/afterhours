@@ -142,6 +142,29 @@ class AnalysisCleanupTests(unittest.TestCase):
                 self.assertTrue(all('deck 3' in command for command in peer.commands))
                 self.assertEqual(sum(command.count('deck 3 unload') for command in peer.commands),1)
 
+    def test_late_owned_load_can_clear_native_auto_cue_but_never_touches_another_recording(self):
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                _, peer, job = self.owned()
+                job.requested_load, job.loaded = job.loaded, None
+                peer.values['deck 3 pfl'] = True
+                if not valid:
+                    peer.values['deck 3 get_filepath'] = 'operator'
+                descriptor = job.cleanup_descriptors()[0]
+                if valid:
+                    cleanup_analysis_deck(peer, descriptor)
+                    self.assertFalse(descriptor['loadPending'])
+                    self.assertFalse(peer.values['deck 3 loaded'])
+                    self.assertFalse(peer.values['deck 3 pfl'])
+                    self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
+                    self.assertEqual(sum(command.endswith('deck 3 unload') for command in peer.commands), 1)
+                    self.assertFalse(any(re.search(r'\bload\b', command) for command in peer.commands))
+                else:
+                    with self.assertRaisesRegex(BridgeError, 'no longer paused and isolated'):
+                        cleanup_analysis_deck(peer, descriptor)
+                    self.assertTrue(descriptor['loadPending'])
+                    self.assertEqual(peer.commands, [])
+
     def test_failed_owned_load_keeps_spare_when_disk_error_does_not_clear(self):
         _, peer, job = self.owned()
         job.requested_load = job.loaded

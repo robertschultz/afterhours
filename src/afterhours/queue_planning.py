@@ -8,7 +8,7 @@ from afterhours.dj_discovery import credit, normalized, style_for
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
 from afterhours.stem_profiles import cue_pair
-from afterhours.track_metadata import clean_text
+from afterhours.track_metadata import clean_text, continuous_mix_cut
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, validate_order
 
@@ -69,7 +69,7 @@ def quick_opening(session, query, found, *, allow_spoken_spelling=False):
                             and (row['id'] in found or (provider and same_artist(row)
                                 and (row.get('catalog') or {}).get('provider') == provider))
                             and (not qualified or normalized(row.get('title')) != first_title)
-                            and not row['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))),
+                            and not continuous_mix_cut(row)),
                            key=lambda row: (row['id'] not in found, not same_artist(row),
                                bool(first_style and first_style != style_for(row.get('genre'))),
                                abs(first['bpm'] - row['bpm'])))

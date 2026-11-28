@@ -11,7 +11,7 @@ from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
 from afterhours.set_research import hints as research_hints
-from afterhours.track_metadata import clean_text
+from afterhours.track_metadata import clean_text, continuous_mix_cut
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 from afterhours.verified_cues import VerifiedCues
 
@@ -98,6 +98,11 @@ def base_song_title(track):
     suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring|with)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
     bare_version = r'[\[(](?:extended|original|radio|vip|instrumental|a cappella|acapella|live)[\])]'
     base = re.sub(r'(?:\s*(?:'+suffix+'|'+bare_version+r'))+\s*$', '', clean_text(track.get('title')) or '', flags=re.I)
+    version = normalized(track.get('remix'))
+    tail = re.search(r'\s+[\[(]([^\[\]()]+)[\])]$', base)
+    # Keep a subtitle unless the catalog identifies it as the release version.
+    if version and tail and normalized(tail[1]) == version:
+        base = base[:tail.start()]
     base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
     words = normalized(base).split()
     without_article = [word for word in words if word != 'the']
@@ -266,7 +271,7 @@ class RollingQueue:
                           # Continuous-mix cuts often duplicate the full
                           # recording and have a baked-in DJ transition.
                           and clean_text(track.get('title'))
-                          and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
+                          and not continuous_mix_cut(track)
                           and song_identity(track)[0] not in titles
                           and not song_credit_keys(track).intersection(song_versions)
                           and fits_style(track, style, order[0])
@@ -489,7 +494,7 @@ class RollingQueue:
                 used.update(row['trackId'] for row in state.get('recordingAvailability', []))
                 titles = {song_identity(row)[0] for row in order} | self.missed_titles
                 job.set_rolling_seed(artist, title, eligible=lambda row: row['id'] not in used
-                    and song_identity(row)[0] not in titles and matches_style(row))
+                    and song_identity(row)[0] not in titles and not continuous_mix_cut(row) and matches_style(row))
                 if title and artist:
                     self.artist_expansion = (job, artist, style, direction)
                 job.reuse_matches = True

@@ -22,6 +22,14 @@ def clean_text(value, limit=300):
     return value or None
 
 
+def continuous_mix_cut(track):
+    """Recognize provider-marked cuts from continuous DJ releases."""
+    title = (clean_text(track.get('title')) or '').casefold()
+    album = (clean_text(track.get('album')) or '').casefold()
+    return (title.endswith((' [mixed]', ' (mixed)'))
+            or album.endswith((' [dj mix]', ' (dj mix)')))
+
+
 def finite_number(value, low, high):
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None

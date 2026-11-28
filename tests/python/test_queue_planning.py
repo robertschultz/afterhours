@@ -645,14 +645,29 @@ class QueuePlanningTests(unittest.TestCase):
         self.session.plan(['a', 'b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
                             entryCadence=[60,30], executionPlan={'applied':True, 'targetBpm':125})
-        for row, suffix in zip(self.session.state['candidates'][2:4], [' [Mixed]', ' (Mixed)']):
-            row['title'] += suffix
+        self.session.state['candidates'][2]['title'] += ' [Mixed]'
+        self.session.state['candidates'][3]['album'] = 'Fixture Continuous Set (DJ Mix)'
         roller = RollingQueue()
         roller.live_matches.update(row['id'] for row in self.tracks)
         roller.tick(self.session, 35)
         added = self.session.snapshot()['queuedUpdate']['tracks'][2:]
         self.assertTrue(added)
-        self.assertTrue(all(not row['title'].endswith((' [Mixed]', ' (Mixed)')) for row in added))
+        self.assertEqual([row['id'] for row in added], ['x'])
+
+    def test_timed_refill_avoids_a_title_suffix_that_matches_its_version_tag(self):
+        self.session.state['candidates'][0].update(title='Demented', artist='Tres Demented', remix='Or Just Crazy')
+        self.session.state['candidates'][2].update(title='Demented (Or Just Crazy)',
+                                                   artist='Carl Craig & Tres Demented', remix='Or Just Crazy')
+        self.session.state['candidates'][3].update(title='Demented Drums', artist='Tres Demented')
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True, 'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.update(row['id'] for row in self.tracks)
+        roller.tick(self.session, 35)
+        planned = {row['id'] for row in self.session.snapshot()['queuedUpdate']['tracks']}
+        self.assertNotIn('c', planned)
+        self.assertIn('d', planned)
 
     def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
         self.session.plan(['a','b'])

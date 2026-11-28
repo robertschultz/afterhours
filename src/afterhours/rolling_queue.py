@@ -76,6 +76,7 @@ class RollingQueue:
         self.missed = set()
         self.live_matches = set()
         self.missed_titles = set()
+        self.artist_expansion = None
 
     def tick(self, session, slack):
         with session.lock:
@@ -276,28 +277,37 @@ class RollingQueue:
     def search(self, session, state, order, style, timed_set, *, lookahead=False):
         tail = order[-1]
         recent = list(reversed(order[-8:]))
-        terms = [str(track.get('artist') or '').strip() for track in recent[:3]]
+        artists = [str(track.get('artist') or '').strip() for track in recent[:3]]
+        seeds = [(artist, artist if timed_set else '', '') for artist in artists]
         if timed_set or state.get('mixStyle') == 'phrase':
             suggestions = research_hints(style, order, self.searched)
             suggestions += DISCOVERY.hints(style, order, searched=self.searched)
-            terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
-            terms += list(DISCOVERY.neighbors(tail.get('artist')))
-            terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
+            seeds = [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
+                     for row in suggestions] + seeds
+            seeds += [(name, name, '') for name in DISCOVERY.neighbors(tail.get('artist'))]
+            seeds += [(str(track.get('label') or '').strip(), '', '') for track in reversed(order[-5:])]
             if style == 'house' and not style_for(state.get('agentDirection')):
                 for related in ('deep house', 'tech house'):
-                    terms += [f"{row['artist']} {row['title']}"
+                    seeds += [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
                               for row in DISCOVERY.hints(related, order, searched=self.searched)]
-            terms += [str(tail.get('genre') or style).strip(), style]
-            # The first providers can exhaust a literal artist or a broad
-            # genre search. Try credits further back in the same set and
-            # neighboring genres, while still applying the regular fit checks.
-            terms += [artist for track in recent for artist in sorted(credit(track.get('artist')))]
+            seeds += [(str(tail.get('genre') or style).strip(), '', ''), (style, '', '')]
+            seeds += [(name, name, '') for track in recent for name in sorted(credit(track.get('artist')))]
             if not style_for(state.get('agentDirection')):
-                terms += sorted({neighbor for group in STYLE_GROUPS if style in group
-                                 for neighbor in group if neighbor!=style})
+                neighbors = {name for group in STYLE_GROUPS if style in group for name in group if name!=style}
+                seeds += [(name, '', '') for name in sorted(neighbors)]
+        direction = state.get('agentDirection')
+        expansion = self.artist_expansion
+        if expansion:
+            job, artist, previous_style, previous_direction = expansion
+            if (session.catalog_job is job and job.done and not job.seen
+                    and (style, direction) == (previous_style, previous_direction)):
+                # A chart title may be missing under this provider's release
+                # spelling. Give its credited artist one broader native search.
+                seeds.insert(0, (artist, artist, ''))
+        self.artist_expansion = None
         if repeat := repeated_artists(order):
-            terms.sort(key=lambda term: repeats_artist_query(term, repeat))
-        for term in terms:
+            seeds.sort(key=lambda seed: repeats_artist_query(seed[0], repeat))
+        for term, artist, title in seeds:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:
                 continue
@@ -310,6 +320,9 @@ class RollingQueue:
             job = session.catalog_job
             job.rolling = True
             if timed_set:
+                job.set_rolling_seed(artist, title)
+                if title and artist:
+                    self.artist_expansion = (job, artist, style, direction)
                 job.reuse_matches = True
                 job.target = job.quota = 4
                 job.max_rows = 12

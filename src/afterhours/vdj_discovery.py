@@ -3,6 +3,7 @@ import copy
 import re
 import time
 from afterhours.dj_bridge import BridgeError
+from afterhours.dj_discovery import credit, normalized
 from afterhours.vdj_catalog import folder_state, selection, search_literal
 
 
@@ -13,6 +14,8 @@ class CatalogSearch:
         self.external_request_id=external_request_id;self.authorize=authorize;self.external_finish=finish
         self.recheck_missing=recheck_missing
         self.artist=[v.strip().casefold() for v in artist.split(';') if v.strip()]
+        self.rolling_artist = frozenset()
+        self.rolling_title = ''
         self.genre=re.sub(r'[^a-z0-9]','',genre.casefold())
         self.bpm_min=bpm_min;self.bpm_max=bpm_max
         self.filters={'artist':artist,'genre':genre,'bpmMin':bpm_min,'bpmMax':bpm_max}
@@ -31,6 +34,11 @@ class CatalogSearch:
         self.max_rows=12 if opening else 30
         self.seconds=25 if opening else 45
         self.quota=max(2,self.target//len(terms))
+
+    def set_rolling_seed(self, artist, title):
+        """Keep native text hits tied to the artist or recording that seeded the search."""
+        self.rolling_artist = credit(artist)
+        self.rolling_title = normalized(title)
 
     def publish(self,status,message):
         self.session.update(catalogSearch={'status':status,'query':'; '.join(self.terms),
@@ -88,6 +96,8 @@ class CatalogSearch:
             self.latest={key:str(track.get(key) or '')[:120] for key in ('title','artist')}
             if self.recheck_missing:self.session.availability.found_again(track['id'])
             matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
+            matches = matches and (not self.rolling_artist or bool(self.rolling_artist & credit(selected['artist'])))
+            matches = matches and (not self.rolling_title or self.rolling_title == normalized(track.get('title')))
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))
             matches=matches and type(bpm) in (int,float) and self.bpm_min<=bpm<=self.bpm_max
             matches=matches and not s.availability.blocked(track['id'])

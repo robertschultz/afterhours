@@ -241,6 +241,41 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertTrue(roller.search(session, {}, order, 'house', True))
         self.assertEqual(session.discover_more.call_args.args, ('Related Artist',))
 
+    def test_rolling_exact_title_miss_broadens_once_to_the_same_credited_artist(self):
+        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
+        hints = [{'artist':'Related Artist', 'title':'Catalog Version'},
+                 {'artist':'Another Artist', 'title':'Second Candidate'}]
+        for seen, direction, expected, scope in (
+            (set(), 'house late set', 'Related Artist', ('Related Artist','')),
+            ({'found'}, 'house late set', 'Another Artist Second Candidate', ('Another Artist','Second Candidate')),
+            (set(), 'house early set', 'Another Artist Second Candidate', ('Another Artist','Second Candidate')),
+        ):
+            with self.subTest(seen=seen, direction=direction):
+                roller = RollingQueue()
+                session = Mock()
+                searches = []
+
+                def discover(term, **_):
+                    searches.append(term)
+                    session.catalog_job = Mock(done=False, seen=set())
+
+                session.discover_more.side_effect = discover
+                def research(_, __, searched):
+                    return [row for row in hints
+                            if f"{row['artist']} {row['title']}".lower() not in searched]
+
+                with patch('afterhours.rolling_queue.research_hints', side_effect=research), \
+                        patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+                    discovery.hints.return_value = []
+                    discovery.neighbors.return_value = []
+                    self.assertTrue(roller.search(session, {'agentDirection':'house late set'}, order, 'house', True))
+                    session.catalog_job.set_rolling_seed.assert_called_once_with('Related Artist','Catalog Version')
+                    session.catalog_job.done = True
+                    session.catalog_job.seen = seen
+                    self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
+                    self.assertEqual(searches, ['Related Artist Catalog Version', expected])
+                    session.catalog_job.set_rolling_seed.assert_called_once_with(*scope)
+
     def test_rolling_search_recovers_from_exhausted_recent_collaboration_queries(self):
         order = [{**track('a'), 'artist':'Earlier Artist'},
                  {**track('b'), 'artist':'Recent Duo & Guest Artist', 'genre':'Pop'},

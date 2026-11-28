@@ -4,7 +4,9 @@ const boundedContext=content=>new TextDecoder().decode(new TextEncoder().encode(
 // when GPT-Live does not create a delegation for it.
 function transportWords(text){
   return String(text||'').toLowerCase().trim()
+    .replace(/^[.!?, ]+/,'').replace(/^(?:(?:ok(?:ay)?|yes|um+|uh+)[ ,.!?]+)+/,'')
     .replace(/^(?:hey\s+)?dot[, ]+/,'')
+    .replace(/^(?:hey[, ]+)?(?:(?:ok(?:ay)?|yes|um+|uh+)[ ,.!?]+)*/,'')
     .replace(/^(?:can|could|would|will) you (?:please )?/,'')
     .replace(/^please /,'').replace(/[.!?]+$/,'')
     .replace(/[, ]+please$/,'').trim();
@@ -104,6 +106,7 @@ export class LiveVoiceClient {
         const previous=this.pendingInput.at(-1);
         if(previous&&fragment.startMs-previous.endMs>950)this.pendingInput=[];
         this.pendingInput.push(fragment);this.pendingInput=this.pendingInput.slice(-160);
+        this.lastInputAt=performance.now();
         this.scheduleDelegation();
       }
       this.onTranscript(fragment);
@@ -135,9 +138,10 @@ export class LiveVoiceClient {
   flushDelegation(){
     clearTimeout(this.dispatchTimer);
     if(!this.ready||this.phase==='closing')return;
-    if(this.operatorSpeaking()){this.scheduleDelegation();return;}
-    const waiting=this.waitingDelegation;
     const text=this.pendingInput.map(part=>part.text).join('').trim();
+    const stopSettled=explicitStop(text)&&performance.now()-this.lastInputAt>=900;
+    if(this.operatorSpeaking()&&!stopSettled){this.scheduleDelegation();return;}
+    const waiting=this.waitingDelegation;
     const transport=directTransport(text);
     this.waitingDelegation=null;
     if(!waiting&&!transport)return;

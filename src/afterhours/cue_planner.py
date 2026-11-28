@@ -11,14 +11,45 @@ import statistics
 from afterhours import tempo_planner
 
 from afterhours.audio_analysis import read_scan
-from afterhours.vdj_mixing import transition_recipe
+from afterhours.dj_bridge import BridgeError
+from afterhours.dj_discovery import style_for
+from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
+from afterhours.stem_profiles import cue_pair
 
 
 VERSION = 'afterhours.cues.v1'
+RHYTHM_STYLES = {'dance', 'electronic', 'disco', 'house', 'deep house', 'tech house', 'techno', 'drum and bass'}
 
 
 class LimitedAudio(ValueError):
     """Verified decoded sound is only a short part of the advertised recording."""
+
+class UnstableTimedGrid(BridgeError):
+    """The measured cue spans tempo sections without a common pitch range."""
+
+
+def incompatible_timed_grid(cue, max_pitch=8):
+    """Use only measured beat spans with enough evidence to rule out a fit."""
+    points = ('entryBeat','exitBeat','endBeat','maxBlendBeats',
+              'entrySeconds','introEndSeconds','exitSeconds','endSeconds')
+    values = [cue.get(key) for key in points]
+    if any(type(value) not in (int, float) or not math.isfinite(value) for value in values):
+        return False
+    entry, exit_beat, end, intro_beats, start_time, intro_time, exit_time, end_time = values
+    sections = ((intro_beats, intro_time-start_time),
+                (exit_beat-entry-intro_beats, exit_time-intro_time),
+                (end-exit_beat, end_time-exit_time))
+    bpms = [beats*60/seconds for beats, seconds in sections if beats>=4 and seconds>0]
+    allowance = max_pitch / 100
+    return len(bpms)>=2 and max(bpms)*(1-allowance) > min(bpms)*(1+allowance) + .05
+
+
+class AudioEvidenceChanged(ValueError):
+    """Local measurements no longer match the exact recording's proof."""
+
+    def __init__(self, recording_id):
+        super().__init__('Verified audio changed. Prepare track analysis again.')
+        self.recording_id = recording_id
 
 
 def limited_audio(evidence, rows):
@@ -43,7 +74,7 @@ def measured_rows(evidence):
     energy = evidence.get('energyMap')
     observed = read_scan(evidence['id'].removeprefix('virtualdj:'))
     if not energy or not observed or observed[1] != energy.get('reportDigest'):
-        raise ValueError('Verified audio changed. Prepare track analysis again.')
+        raise AudioEvidenceChanged(evidence['id'])
     return observed[0]['features']
 
 
@@ -63,6 +94,24 @@ def window_stats(rows, start, end):
             'crestDb': round(sum(r['crestDb']*w for r,w in selected)/weight, 2),
             'levelVariationDb': round(statistics.pstdev(r['rmsDb'] for r,_ in selected), 2),
             'silentFraction': round(sum(w for r,w in selected if r['rmsDb'] < -55)/weight, 3)}
+
+
+def loop_bridge_beats(rows, native):
+    """Look for a stable one- or two-bar rhythm bed at the native exit."""
+    start, end = native['exitSeconds'], native['endSeconds']
+    span = native['endBeat'] - native['exitBeat']
+    for beats in (8, 4):
+        if span < 2 * beats:
+            continue
+        middle = start + (end - start) * beats / (2 * span)
+        finish = 2 * middle - start
+        a, b = window_stats(rows, start, middle), window_stats(rows, middle, finish)
+        if (max(a['silentFraction'], b['silentFraction']) == 0
+                and max(a['levelVariationDb'], b['levelVariationDb']) <= 2
+                and abs(a['rmsDb'] - b['rmsDb']) <= 1.5
+                and abs(a['bassDb'] - b['bassDb']) <= 2.5):
+            return beats
+    return None
 
 
 def excerpt_beats(seconds, target_bpm):
@@ -110,10 +159,29 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         if len(ranked)>=min(early_count,limit):break
         if all(abs(offset-other)>=early_spacing for other in ranked):
             ranked.append(offset)
-    for _,offset in sorted(possibilities,reverse=True):
-        if len(ranked)>=limit:break
-        if all(abs(offset-other)>=32 for other in ranked):
-            ranked.append(offset)
+    if timed and ranked:
+        # Preserve another exit just beyond the early cluster. A late load
+        # often misses the cadence by seconds, where a midpoint several
+        # minutes into the recording gives a poor recovery.
+        first_late = next((offset for _, offset in possibilities if offset >= ranked[-1]+32), None)
+        if first_late is not None and limit - len(ranked) >= 2:
+            ranked.append(first_late)
+        # Spread the remaining checks across the rest of the recording.
+        start = ranked[-1]
+        latest = possibilities[-1][1]
+        remaining = limit - len(ranked)
+        for slot in range(1, remaining+1):
+            target = start + (latest-start)*slot/(remaining+1)
+            eligible = [(score, offset) for score, offset in possibilities
+                        if all(abs(offset-other)>=32 for other in ranked)]
+            if not eligible:
+                break
+            ranked.append(min(eligible, key=lambda row: (abs(row[1]-target), -row[0]))[1])
+    else:
+        for _,offset in sorted(possibilities,reverse=True):
+            if len(ranked)>=limit:break
+            if all(abs(offset-other)>=32 for other in ranked):
+                ranked.append(offset)
     return {'offsets':sorted(ranked), 'spanBeats':span, 'blendBeats':blend,
             'medianRmsDb':round(median,2)}
 
@@ -141,6 +209,7 @@ def candidate(evidence, rows, native, policy):
             'entry':a,'exit':b,'body':body,
             'exitChangeDb':round(b['rmsDb']-before['rmsDb'],2),
             'exitBassChangeDb':round(b['bassDb']-before['bassDb'],2),
+            'loopBridgeBeats':loop_bridge_beats(rows,native),
             'gridSource':'VirtualDJ paused seek and readback',
             'phraseConfidence':'estimated','vocals':'unknown'}
 
@@ -178,6 +247,8 @@ def compile_plan(review, report, order, seconds, style='phrase'):
             raise ValueError('The AI plan cited a cue absent from this recording.')
         if cue.get('replayVerified') is not True:
             raise ValueError('The selected cue has not passed native replay verification.')
+        if source.get('timedPreparation') and incompatible_timed_grid(cue, report.get('maxPitchPercent',8)):
+            raise ValueError('The selected cue crosses a native tempo change outside the timed pitch range.')
         if not source.get('energyMap') or source['energyMap'].get('coverage')!=1:
             raise ValueError('The whole-track analysis is no longer available.')
         cues.append({'trackId':track['id'],'reason':selected.get('reason',''),**copy.deepcopy(cue)})
@@ -210,7 +281,8 @@ def compile_plan(review, report, order, seconds, style='phrase'):
             'musicalAcceptance':'not-auditioned','applied':False}
     if report.get('tempoVersion')==tempo_planner.VERSION:
         result['tempoSchedule']=tempo_planner.schedule(order,cues,recipes,report['targetBpm'],
-            report.get('maxPitchPercent',8),report.get('tempoTargets'),report.get('frozenTempo'))
+            report.get('maxPitchPercent',8),report.get('tempoTargets'),report.get('frozenTempo'),
+            entry_cadence=report.get('entryCadence'))
     result['id']=fingerprint(result)
     return result
 
@@ -314,18 +386,34 @@ def complete_background_queue(snapshot, order, measured, reason, protected, tran
         return result
 
 
+def has_recovery_bar(entry, verified_exits, target, bpm):
+    # Allow for a slow decode and the executor's two-bar lead time. Look for
+    # an actual verified four-bar blend within a phrase of that deadline.
+    earliest = entry + target + bpm * .75 + 8
+    latest = earliest + 16
+    for cue in verified_exits:
+        if cue.get('replayVerified') is not True:
+            continue
+        start = cue['exitBeat']
+        span = min(cue['endBeat'] - start, cue['maxBlendBeats'])
+        bar = start + 4 * max(0, math.ceil((earliest - start) / 4))
+        if bar <= latest and bar + 16 <= start + span + 1e-4:
+            return True
+    return False
+
+
 def _background_fit(snapshot, order, measured, reason, protected, transitions=None, tempo_targets=None, standing_style=None, cue_choices=None):
     """Keep the agent's selection; fit verified cues locally without a paid call.
 
     This transparent fallback is signal-based, not another model decision or
     vocal classifier. It never changes an already cued/armed selection.
     """
-    preferred_beats=16
+    preferred_beats=32
     if standing_style is not None:
         from afterhours.dj_settings import style_context
         # Unknown lead activity keeps the existing conservative ceiling. A
         # short preference can tighten it; a long preference cannot bypass it.
-        preferred_beats=min(16,style_context(standing_style)['preferredBlendBeats'])
+        preferred_beats=min(32,style_context(standing_style)['preferredBlendBeats'])
     old=snapshot['executionPlan'];report=copy.deepcopy(snapshot['analysis'])
     evidence={t['id']:copy.deepcopy(t) for t in report['tracks']}
     evidence.update({t['id']:copy.deepcopy(t) for t in measured})
@@ -350,22 +438,26 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                 bpm = report['targetBpm']
                 target = cadence[i % len(cadence)] * bpm / 60
                 exits = [c['exitBeat'] for c in candidates if c['maxBlendBeats'] >= 8]
-                if exits and snapshot.get('rollingQueue'):
-                    # The first eligible exit targets the cadence. Keep a
-                    # second measured exit available if discovery or decoding
-                    # needs most of the early track's runway.
-                    last_exit = max(exits)
-                    reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + bpm * .75]
-                    if not reserve:
-                        reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + 16]
-                    if reserve:
-                        candidates = reserve
                 def cadence_error(c):
                     return min((abs(exit_beat-c['entryBeat']-target) for exit_beat in exits
                                 if exit_beat-c['entryBeat'] >= 16), default=math.inf)
                 best_error = min(map(cadence_error, candidates))
                 if math.isfinite(best_error):
                     candidates = [c for c in candidates if cadence_error(c) <= best_error + 4]
+                    if snapshot.get('rollingQueue'):
+                        # Favor runway among cues that can already land near
+                        # the target. A much later exit is only a fallback.
+                        last_exit = max(exits)
+                        reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + bpm * .75]
+                        if not reserve:
+                            reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + 16]
+                        if reserve:
+                            candidates = reserve
+                    if snapshot.get('rollingQueue') or snapshot.get('active'):
+                        recovery = [c for c in candidates if has_recovery_bar(
+                            c['entryBeat'], source['cueCandidates'], target, bpm)]
+                        if recovery:
+                            candidates = recovery
                     # Prefer a nearby alternative exit when the next load
                     # clears the exact target by only a few bars.
                     flexible = [c for c in candidates if any(4 <= beat-c['entryBeat']-target <= bpm/6 for beat in exits)]
@@ -381,11 +473,20 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                     candidates=reserve or [min(usable,key=lambda c:c['exitSeconds'])]
             def cost(c):
                 before=cues[-1]['exit'] if cues else c['entry']
-                return (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])
-                        + c['entry']['levelVariationDb'] + c['entry']['silentFraction']*100)
+                bands=window_pair_evidence(cues[-1],c) if cues else {}
+                fit = (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])
+                        + c['entry']['levelVariationDb'] + c['entry']['silentFraction']*100
+                        + .25*abs(bands.get('highDb',0)) + 2*bool(bands.get('sharedBrightHighs')))
+                measured_stems = cue_pair(order[i-1]['id'],track['id'],cues[-1],c) if cues else None
+                if measured_stems:
+                    fit += measured_stems['scoreAdjustment']
+                return fit
             cue=min(candidates,key=cost)
+            stems = cue_pair(order[i-1]['id'], track['id'], cues[-1], cue) if cues else None
+            explanation = (' Compensated for measured vocal and bass overlap.' if stems
+                           else ' Vocal activity remains unverified.')
             previous={'trackId':track['id'],'candidateId':cue['id'],
-                'reason':'Local measured cue fit: stable entrance, similar level and controlled bass overlap; vocals remain unknown.'}
+                'reason':'Local measured cue fit: stable entrance, similar level and controlled bass overlap.'+explanation}
         chosen.append(copy.deepcopy(previous));cues.append(cue)
     pairs=[]
     for i,(a,b) in enumerate(zip(order,order[1:])):
@@ -397,22 +498,48 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         # Conservative one-lead transition. Do not represent signal energy as
         # proof of instrumental/vocal sections or a listening judgment.
         max_beats=min(cues[i]['maxBlendBeats'],cues[i+1]['maxBlendBeats'],preferred_beats)
-        choices = (8, 16)
-        reason_detail = ''
+        outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
+        level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
+        bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
+        bands = window_pair_evidence(cues[i], cues[i+1])
+        gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
+        use_long_blend = (gradual and snapshot['secondsPerTrack'] > 30
+                          and recipe['genreFamily'] in ('house', 'techno', 'dnb')
+                          and not bands.get('sharedBrightHighs'))
+        choices = (8, 16, 32) if use_long_blend else (8, 16)
+        reason_detail = f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
         if snapshot.get('entryCadence'):
-            outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
-            level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
-            bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
-            gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
-            choices = (8, 16) if gradual else (8,)
-            reason_detail = (f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
-                             + (' Both support a longer blend.' if gradual else ' Use a shorter overlap.'))
+            # Broad dance catalog tags often lack compatible keys. A stable
+            # measured rhythm on both sides can support four bars while the
+            # mixer continues to hand over bass and lead independently.
+            rhythm_blend = (
+                style_for(a.get('genre')) in RHYTHM_STYLES and style_for(b.get('genre')) in RHYTHM_STYLES
+                and cues[i].get('loopBridgeBeats') == cues[i+1].get('loopBridgeBeats') == 8
+                and level_gap <= 2.5 and bass_gap <= 3.5
+                and bands.get('sharedBrightHighs') is False
+            )
+            choices = (8, 16) if (gradual or rhythm_blend) and not bands.get('sharedBrightHighs') else (8,)
+        elif not gradual and (level_gap > 6 or bass_gap > 8):
+            choices = (8,)
+        if bands.get('sharedBrightHighs'):
+            reason_detail += ' Shorter overlap avoids stacking strongly measured highs.'
+        stem_fit = cue_pair(a['id'],b['id'],cues[i],cues[i+1])
+        if stem_fit:
+            vocal_conflict = stem_fit['vocalOverlapFraction']
+            reason_detail += (f' Vocal stems are prominent together in {vocal_conflict:.0%} of the metered bins. '
+                              f'Normalized shared bass activity is {stem_fit["lowEndOverlap"]:.0%}.')
+            if vocal_conflict >= .5 or stem_fit['lowEndOverlap'] >= .55:
+                choices = (8,)
         beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
-        pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':'restrained-bass-swap',
+        if snapshot.get('entryCadence') and beats == 16 and rhythm_blend and not gradual:
+            reason_detail += ' Stable rhythm and closely matched levels support a four-bar single-lead blend.'
+        technique = 'bass-swap' if beats==32 else 'restrained-bass-swap'
+        pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':technique,
             'reason':'Local measured transition. '+recipe['reason']+reason_detail})
     report['tracks']=[evidence[i] for i in ids];report['fingerprint']=fingerprint(report['tracks'])
     report.update(tempoVersion=tempo_planner.VERSION,tempoTargets=tempo_targets,
+                  entryCadence=snapshot.get('entryCadence'),
                   maxPitchPercent=snapshot.get('maxTempoShift',8))
     # Legacy fixed-tempo playback is also frozen; new tracks may ramp later.
     report['frozenTempo']=copy.deepcopy(old.get('tempoSchedule') or [
@@ -438,7 +565,9 @@ def execution_window(cue, current, fade_beats, final=False):
     if current > goal-4:
         raise ValueError('The analyzed transition window was missed. Take over; no substitute cue was used.')
     end=goal+(0 if final else fade_beats)
+    loop = cue.get('loopBridgeBeats') if cue.get('replayVerified') is True and not final else None
     return {'entryBeat':cue['entryBeat'],'mixAtBeat':goal,'endBeat':end,
             'segmentBeats':end-cue['entryBeat'],'phraseBeats':4,
             'fadeBeats':0 if final else fade_beats,'basis':'measured-audio-candidate',
-            'candidateId':cue['id'],'entrySeconds':cue['entrySeconds'],'exitSeconds':cue['exitSeconds']}
+            'candidateId':cue['id'],'entrySeconds':cue['entrySeconds'],'exitSeconds':cue['exitSeconds'],
+            **({'verifiedLoopBeats':loop,'verifiedLoopExitBeat':goal} if loop else {})}

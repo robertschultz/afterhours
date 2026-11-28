@@ -11,6 +11,7 @@ from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_mixing import TransitionMixer
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
+from afterhours.preparation_pool import service_timed_analysis
 from afterhours import cue_planner
 from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, skipped_message
 from afterhours.recording_availability import PREVIEW_ONLY
@@ -140,7 +141,8 @@ def start_and_prepare(session,client,requested):
     # the running deck's measured tempo when preparing the first handoff.
     s.send(client,'deck 1 pitch 100% & deck 1 master_tempo on & deck 1 goto_first_beat')
     s.send(client,'crossfader 0%')
-    s.mixer=TransitionMixer(s.q,s.send);s.mixer.initialize_opening(client)
+    s.mixer = TransitionMixer(s.q,s.send,lead_control=snapshot.get('mixLeadControl','auto'))
+    s.mixer.initialize_opening(client)
     before=s.telemetry(client)
     if before['crossfader']>.02 or before['decks'][0].get('id')!=first['id'] or any(d.get('playing') for d in before['decks']):
         raise BridgeError('The opening recording and paused mixer could not be confirmed.')
@@ -174,11 +176,17 @@ def start_and_prepare(session,client,requested):
                     raise BridgeError('The opening decks changed. Background preparation yielded to manual control.')
                 remaining=duration-current['position']
                 if remaining<12:raise BridgeError('The opening recording is nearly finished; no unverified handoff was started.')
-                job.step(client,remaining)
+                timed_window = bool(snapshot.get('entryCadence')) and remaining >= 14
+                if timed_window:
+                    s.service_late_spare_load(client, remaining)
+                    service_timed_analysis(job, client, remaining, s.sleep)
+                else:
+                    job.step(client,remaining)
                 progress=job.snapshot();s.update(backgroundAnalysis=progress)
                 if progress['message']!=previous:
                     previous=progress['message'];s.event(previous,'analysis')
-                s.sleep(.04)
+                if not timed_window:
+                    s.sleep(.04)
             s.analysis_cache.update(job.cache);job.close(client);s.background_job=None
             if not job.error:break
             if job.analysis_timed_out:
@@ -202,10 +210,29 @@ def start_and_prepare(session,client,requested):
         for track in pair:
             row=measured[track['id']];track.update(bpm=row['bpm'],camelot=row.get('camelot'),engineChecked=True)
         t=s.telemetry(client);current=t['decks'][0]
-        if abs(current['bpm']-target)>.15:raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
+        if (current.get('id')!=first['id'] or not current.get('playing') or t['crossfader']>.02
+                or t['decks'][1].get('playing') or t['decks'][1].get('id')!=initial_incoming):
+            raise BridgeError('The opening decks changed. Background preparation yielded to manual control.')
+        if abs(current['bpm']-target)>.15:
+            # VirtualDJ can initially report a catalog/default tempo before
+            # the decoded grid is ready. A larger change needs agreement
+            # between both native decks and the independently replayed grid.
+            native=number(s.q(client,'deck 1 get_bpm absolute'),40,300)
+            measured_bpm=measured[first['id']]['bpm']
+            small_change=abs(native/target-1)<=.02 and abs(native/measured_bpm-1)<=.02
+            if abs(current['bpm']-native)>.15 or not (small_change or abs(native-measured_bpm)<=.15):
+                s.event('Opening deck tempo did not match the confirmed analysis grid.', 'analysis',
+                        firstBpm=target, observedBpm=current['bpm'], nativeBpm=native, measuredBpm=measured_bpm)
+                raise BridgeError('Opening tempo changed during analysis. Music keeps playing; the handoff is held.')
+            startup['targetBpm']=current['bpm']
+            s.event(f'Opening grid refined to {current["bpm"]:.2f} BPM. Preparing the handoff at the observed tempo.',
+                    'analysis', previousBpm=target, observedBpm=current['bpm'])
         targets=snapshot.get('tempoTargets')
         subset={**snapshot,'tempoTargets':[r for r in targets if r['trackId'] in {t['id'] for t in pair}] if targets else targets}
-        prepared=measured_plan({**subset,'startup':startup},pair,job.result,current)
+        # A timed opening can use a shorter preload buffer. Retiming still
+        # checks the fresh transport and two-bar margin after the load.
+        lead = 12 if snapshot.get('entryCadence') else 28
+        prepared=measured_plan({**subset,'startup':startup},pair,job.result,current,lead_seconds=lead)
         cue_planner.verify_receipts(prepared['analysis'])
         plan=prepared['executionPlan']
         try:s.prepare_deck(client,pair[1],2,plan['tempoSchedule'][1]['fromBpm'],cue=plan['selections'][1])
@@ -216,7 +243,8 @@ def start_and_prepare(session,client,requested):
             s.prepare_deck(client,pair[1],2,plan['tempoSchedule'][1]['fromBpm'],cue=plan['selections'][1],checked=exc.track)
         t=s.telemetry(client)
         if (t['decks'][0].get('id')!=first['id'] or not t['decks'][0].get('playing') or t['crossfader']>.02
-                or t['decks'][1].get('id')!=pair[1]['id'] or t['decks'][1].get('playing')):
+                or t['decks'][1].get('id')!=pair[1]['id'] or t['decks'][1].get('playing')
+                or abs(t['decks'][0]['bpm']-startup['targetBpm'])>.15):
             raise BridgeError('Opening pair was not confirmed; no handoff was started.')
         window=cue_planner.execution_window(plan['selections'][0],t['decks'][0]['beatPosition'],plan['transitions'][0]['fadeBeats'])
         window.update(entryBeat=startup['entryBeat'],entrySeconds=startup['entrySeconds'],
@@ -227,7 +255,7 @@ def start_and_prepare(session,client,requested):
         if len(order)>len(pair):
             checked={t['id']:t for t in pair};order=[copy.deepcopy(checked.get(t['id'],t)) for t in order]
             next_tracks = order
-            if snapshot.get('entryCadence') and snapshot.get('rollingQueue') and can_omit and not targets:
+            if snapshot.get('rollingQueue') and can_omit and not targets:
                 next_tracks = order[:len(pair)+1]
                 deferred = order[len(pair)+1:]
             future={'id':uuid.uuid4().hex,'tracks':next_tracks,'protectedIds':[t['id'] for t in pair],
@@ -235,6 +263,10 @@ def start_and_prepare(session,client,requested):
                     'prepared':None,'mixTransitions':None,'tempoTargets':targets,
                     'startId':startup['id'],'skipped':copy.deepcopy(skipped),
                     'sourceById':copy.deepcopy(policy.get('sourceById',{}))}
+            next_id=next_tracks[len(pair)]['id']
+            if (snapshot.get('rollingQueue') and len(next_tracks)==len(pair)+1
+                    and next_id not in pinned and policy.get('sourceById',{}).get(next_id)=='planner'):
+                future['rollingTrackId']=next_id
         current_ids={t['id'] for t in pair}
         policy={**policy,'sourceById':{tid:source for tid,source in policy.get('sourceById',{}).items() if tid in current_ids}}
         s.update(order=pair,**prepared,queuedUpdate=future,timedContinuation=deferred,setlist=policy,startup=copy.deepcopy(startup),

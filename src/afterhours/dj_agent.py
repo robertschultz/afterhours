@@ -32,7 +32,7 @@ from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, ski
 from afterhours.planner_journal import PlannerJournal, comparison
 from afterhours import conversation_feed
 from afterhours import catalog_browser
-from afterhours import agent_loop
+from afterhours import agent_loop, booth_primitives
 from afterhours import dj_settings, dj_discovery
 from afterhours import set_plan
 from afterhours import learned_preferences
@@ -76,6 +76,7 @@ LOOKUP_ROOM_ROWS = 4
 STR = {'type':'string'}
 SCHEMA = ai_mix.obj({
     'reply':STR, 'direction':STR,
+    'boothControl':{'type':['string','null'],'enum':[None,*booth_primitives.CONTROL_HELP]},
     'playbackAction':{'anyOf':[{'type':'null'},ai_mix.obj({'requestId':STR,'action':{'type':'string','enum':['start-now']}})]},
     'sessionScope':{'anyOf':[{'type':'null'},ai_mix.obj({'mode':{'type':'string','enum':['ongoing','finite','clarify']},'message':STR})]},
     'sessionPlan':prompt_plan.SCHEMA,
@@ -122,7 +123,7 @@ Omission from this bounded catalog does not prove absence. Catalog names/audienc
 Never invent availability, BPM, key, vocal/phrase analysis or audience observations. Numeric energy is not vocal/phrase detection. Current requests/tonight's plan outrank settings.style. Known means in this crate, not personal familiarity. Hype/humor/callouts are persona style, not feelings or crowd evidence.
 
 Selection:
-sessionScope: ongoing, finite, or clarify with one natural question; null for unrelated turns/refills. Clarify has no search/trackIds. sessionIntent retains start approval: resolve relevant answers with scope and search/selection, no second Play confirmation. Unrelated answers cannot start; ongoing stays within its allowance.
+sessionScope: artist, genre or mood starts an ongoing set with related follow-ups. Finite requires a defined ending. Clarify asks one question with no search/trackIds. Unrelated turns/refills use null. A relevant answer keeps start approval within its allowance.
 Open with 6-8 fitting recordings when available, fewer only for a requested shorter set or insufficient fit; keep at least 4 ahead, not a four-record cap. Choose 2-12 supplied exact IDs by groove, tempo, key, genre, energy, contrast, operator priorities and history. Explain fit honestly. Questions/insufficient evidence: search=null, trackIds=[]. Rechecks may keep the order.
 selectionEligible=false records are evidence only: defer them if needed, never select them.
 Artist/track additions queue feasible music, not just results. Preserve exclusions/prepared next; add later if needed. Broad artist requests allow any suitable recording; old rejected titles/BPM constrain nothing unless user-specified.
@@ -182,7 +183,7 @@ def context_key(s):
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 
-def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tracks=(), full=False):
+def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tracks=(), full=False, *, night_plan=None):
     queued=(s.get('queuedUpdate') or {}).get('tracks') or s.get('order',[])
     ordered={t['id']:t for t in queued}
     candidates={t['id']:t for t in s.get('candidates',[])}
@@ -207,7 +208,7 @@ def music_context(s, deferred=None, now=None, request='', guest_ids=(), heard_tr
         return (-score,distance)
     identity_order=sorted(candidates.values(),key=relevance) if terms else list(candidates.values())
     style=dj_discovery.style_for(request)
-    set_slot=dj_discovery.set_slot(request)
+    set_slot=dj_discovery.set_slot(request,plan=night_plan,at=now)
     order=s.get('order') or []
     cursor=max(0,s.get('index',0))
     anchors=order[max(0,cursor-1):cursor+2]
@@ -467,6 +468,8 @@ def planning_request(packet, lookups=None, transcript=None):
         music['catalog']=[{k:v for k,v in track.items() if v is not None} for track in music['catalog']]
     schema=copy.deepcopy(SCHEMA)
     operator_turn=packet.get('reason')=='operator message'
+    controls=packet.get('boothControls') or {}
+    schema['properties']['boothControl']={'type':['string','null'],'enum':[None,*controls]} if controls else {'type':'null'}
     handoff_allowed=operator_turn and bool(packet.get('mentionedAgents'))
     performance_allowed=operator_turn and (packet.get('performanceContext') or {}).get('ready') is True
     if not handoff_allowed:schema['properties']['handoff']={'type':'null'}
@@ -500,6 +503,12 @@ def planning_request(packet, lookups=None, transcript=None):
                 (POLL_INSTRUCTIONS if packet.get('crowdPolicy',{}).get('canOffer') else '')+
                 ('\nFor one requested addition use trackInsertion with its supplied trackId and leave other actions empty. The engine places it.' if packet.get('canInsertTrack') else '')+
                 ('\nPrefer openers outside recentOpeningIds unless explicitly requested.' if music.get('recentOpeningIds') else '')+
+                ('\nFor a direct request to control the next handoff or set a blend preference, select one boothControl from boothControls. '
+                 'Leave all other action fields empty. "Let this one breathe a bit longer" means hold the currently playing track. '
+                 '"Bring the other one in" means go now when offered. "Choose a different one to follow this" means skip. '
+                 'Choose a blend preference only if the operator asks for a standing change across future mixes. '
+                 'Use null for questions, conditional or delayed actions, corrections that only negate an action, or ambiguity. '
+                 'The engine returns the actual control receipt.' if controls else '')+
                 (agent_loop.DIGEST_INSTRUCTIONS if packet.get('lookups') else '')+
                 (CUE_INSTRUCTIONS if packet.get('mixWindows') else ''))
     body={'model':ai_mix.model_policy()[0],'store':False,'service_tier':'default',
@@ -723,9 +732,13 @@ def evaluate(packet, opener=urlopen, lookups=None, on_step=None, allowed=None, s
 
 def validate_decision(result, session):
     # Older saved proposals and local fixtures predate performance directions.
-    if isinstance(result,dict):result={'playbackAction':None,'sessionScope':None,'sessionPlan':None,'performance':None,'handoff':None,'deferredTracks':None,'tempoTargets':None,'selectionReview':None,'requestVerdicts':None,'crowdChoice':None,'cueChoices':None,'trackInsertion':None,**result}
+    if isinstance(result,dict):result={'playbackAction':None,'sessionScope':None,'sessionPlan':None,'performance':None,'handoff':None,'deferredTracks':None,'tempoTargets':None,'selectionReview':None,'requestVerdicts':None,'crowdChoice':None,'cueChoices':None,'trackInsertion':None,'boothControl':None,**result}
     if not isinstance(result,dict) or set(result)!=set(SCHEMA['properties']):
         raise ValueError('AI direction has an invalid format.')
+    control=result['boothControl']
+    if control is not None and (not isinstance(control,str) or control not in booth_primitives.CONTROL_HELP
+            or any(result[k] for k in result if k not in ('boothControl','reply','direction','reason'))):
+        raise ValueError('A booth control must be offered and cannot be combined with another action.')
     insertion=result['trackInsertion']
     conflicting=('trackIds','search','mixTransitions','tempoTargets','cueChoices','selectionReview',
                  'crowdChoice','sessionScope','sessionPlan','playbackAction','handoff','performance')
@@ -833,6 +846,13 @@ def validate_decision(result, session):
     targets=result['tempoTargets']
     if targets is not None and not ids:raise ValueError('Tempo targets need a selected track order.')
     if ids:
+        by_id = {track['id']: track for track in session.get('candidates', [])}
+        if all(tid in by_id for tid in ids):
+            live_order = session.get('order', []) if session.get('active') else []
+            dj_discovery.require_faith_set([by_id[tid] for tid in ids],
+                                          direction=result.get('direction'),
+                                          existing={track['id'] for track in live_order},
+                                          opening=live_order[0] if live_order else None)
         plan=session.get('executionPlan') or {};protected=len(protected_ids(session))
         validate_order(ids,session.get('candidates',[]),session.get('maxTempoShift',8),
             session.get('secondsPerTrack',30),targets,(plan.get('tempoSchedule') or [])[:protected],
@@ -975,6 +995,7 @@ class DJAgent:
             if hasattr(self.session,'set_reorder_preference'):
                 self.session.set_reorder_preference(self.settings.state['allowReorder'])
             self.session.standing_style=copy.deepcopy(self.settings.state['style'])
+            self.session.standing_night_plan=copy.deepcopy(self.settings.state['plan'])
             if hasattr(self.session,'set_pins'):
                 known=[tid for tid in self.settings.state['pins'] if self.session.crate.get(tid)]
                 self.session.set_pins(known,restoring=True)
@@ -1174,6 +1195,7 @@ class DJAgent:
             self.settings.state['revision']+=1
         self.settings.state['allowReorder']=reorder
         self.state['settings']=copy.deepcopy(self.settings.state)
+        self.session.standing_night_plan=copy.deepcopy(self.settings.state['plan'])
         if not self.path:return
         self.path.parent.mkdir(parents=True,exist_ok=True)
         tmp=self.path.with_suffix('.tmp')
@@ -1326,7 +1348,7 @@ class DJAgent:
             self.seen_context=context_key(self.session.snapshot())
             return self.snapshot()
 
-    def disable(self,preserve_playback=False):
+    def disable(self,preserve_playback=False,*,keep_talk=False):
         with self.lock:
             if not preserve_playback:
                 self.curation.end('revoked','Automatic curation was stopped.')
@@ -1345,7 +1367,8 @@ class DJAgent:
                 self.background_allowance=True
                 self.save();return self.snapshot()
             committed=preserve_playback and self.playback_request and self.playback_request['status']=='preparing' and self.pipeline and 'reviewRemaining' in self.pipeline
-            self.generation+=1;self.deadline=0;self.remaining=0
+            self.generation+=1
+            if not keep_talk:self.deadline=0;self.remaining=0
             self.background_allowance=False
             self.planner.cancel_evaluating('Evaluation ended before the decision was accepted.')
             if not committed:
@@ -1625,7 +1648,14 @@ class DJAgent:
                     current=self.session.snapshot()
                     message=continuation_message or execution_error(current) or current.get('message') or self.state['message']
                 elif transport=='stop':
-                    self.disable();self.session.stop(pause=True)
+                    self.disable(keep_talk=source=='voice' and voice_start)
+                    self.awaiting_catalog=False
+                    # Cancellation supersedes this worker's generation. Its late
+                    # result cannot hold the next explicit Play request.
+                    self.worker=None
+                    if self.playback_request and self.playback_request['status']=='starting':
+                        self.playback_request.update(status='cancelled',message='The operator stopped playback.')
+                    self.session.stop(pause=True)
                     message='Stopping the music. Waiting for deck confirmation.'
                 else:
                     with getattr(self.session,'lock',nullcontext()):
@@ -1638,7 +1668,8 @@ class DJAgent:
                     message=self.state['message']
                 self.state['messages'].extend([
                     {'id':message_id,'role':'user',**self._origin(source,external),'text':text.strip(),'at':self.clock(),'queueMode':queue_mode},
-                    {'id':message_id+'-reply','role':'assistant','source':'engine','text':message,'at':self.clock()}])
+                    {'id':message_id+'-reply','role':'assistant','source':'engine','text':message,'at':self.clock(),
+                     **({'transport':'stop','sessionId':self.session.snapshot()['id']} if transport=='stop' else {})}])
                 self.state['messages']=self.state['messages'][-24:]
                 self.save();return self.snapshot()
             if control:
@@ -1727,7 +1758,7 @@ class DJAgent:
                     _,artist=playback_requests.named_recording(query)
                     search=f'{query}; {artist}' if artist and len(query)+len(artist)+2<=160 else query
                     try:
-                        self.session.discover_more(search)
+                        self.session.discover_more(search, opening_query=query)
                     except (ValueError,OSError,BridgeError) as exc:
                         self.fail_planning('Catalog search could not start: '+str(exc))
                         return self.snapshot()
@@ -1829,7 +1860,8 @@ class DJAgent:
                     and request.get('revision')==self.state['revision'] and self.clock()<request['expiresAt']
                     and not s.get('active') and not s.get('order') and not mixing_only
                     and not any(deck.get('playing') for deck in (s.get('telemetry') or {}).get('decks',[]))):
-                pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])))
+                pair=queue_planning.quick_opening(s,request['fastOpeningQuery'],set(catalog.get('foundIds',[])),
+                                                 allow_spoken_spelling=request.get('source')=='voice')
                 if pair:
                     try:
                         self.session.plan(pair,s.get('secondsPerTrack',30),0,s.get('maxTempoShift',8),'phrase')
@@ -1838,6 +1870,7 @@ class DJAgent:
                     else:
                         self.awaiting_catalog=False
                         self.state['direction']=request['intent']
+                        self.session.update(agentDirection=request['intent'])
                         self.bind_playback()
                         self.advance_playback()
                         return
@@ -1903,7 +1936,8 @@ class DJAgent:
                     'reason':'operator message' if pending else 'choose from catalog results' if catalog_ready else 'replace unavailable upcoming recordings' if repair else 'consider exact audience requests' if guest_work else 'recheck upcoming queue after music changed' if recheck else 'refill upcoming queue',
                     'searchPolicy':{'canSearch':can_search,'roundsRemaining':max(0,2-self.search_rounds) if self.settings.state['discover'] else 0,
                                     'previousQueries':sorted(self.searches),'openingTarget':6},'music':music_context(planning,[r for r in self.state['deferredTracks'] if r['trackId'] not in history],self.clock(),ranking_text,
-                                        guest_ids=[r['trackId'] for r in guest_rows],heard_tracks=s.get('order',[])[:len(history)],full=True)}
+                                        guest_ids=[r['trackId'] for r in guest_rows],heard_tracks=s.get('order',[])[:len(history)],
+                                        full=True,night_plan=self.settings.state['plan'])}
             # The planner is sent a bounded view; the whole eligible crate stays
             # here as the book its lookups read.
             working_rows=packet['music']['catalog']
@@ -1923,6 +1957,8 @@ class DJAgent:
                     if value['reason']:row['preferenceReason']=value['reason']
             packet['music']['catalog']=working_rows[:32]
             packet['canInsertTrack']=bool(queued and not mixing_only and not external)
+            if pending and not external and (operator or {}).get('source')=='voice':
+                packet['boothControls']={name:booth_primitives.CONTROL_HELP[name] for name in booth_primitives.offered_controls(s)}
             # The cache answers named lookups. The current set and live searches
             # supply recommendations, so arbitrary cached artists cannot steer digging.
             crate=getattr(self.session,'crate',None)
@@ -2162,6 +2198,34 @@ class DJAgent:
                     self.save();return
                 if key!=context_key(observed):
                     self.overtaken(packet,s,key,round_id,curation_token);return
+                if result['boothControl']:
+                    action=result['boothControl']
+                    request=packet.get('operatorRequest') or {}
+                    if (external or curation_token or packet['reason']!='operator message' or request.get('source')!='voice'
+                            or action not in (packet.get('boothControls') or {})):
+                        raise ValueError('This booth control was not offered for this voice request.')
+                    request_id=request['id']
+                    if action not in booth_primitives.offered_controls(observed):
+                        raise ValueError('The booth state changed before the control was ready.')
+                    if action in booth_primitives.BLEND_PREFERENCE_STOPS:
+                        change={'kind':'style','value':{'id':'blend','stop':booth_primitives.BLEND_PREFERENCE_STOPS[action]}}
+                        settings=self.settings_action(request_id,change,self.settings.expected(observed,rev))
+                        control={'id':request_id,'action':action,'status':'confirmed','message':settings['settings']['receipt']['message']}
+                        current=self.session.snapshot()
+                    else:
+                        current=self.copilot_action(action,request_id,copilot_commands.context(s))
+                        control=current['copilot']['command']
+                    result.update(reply=control['message'],direction=packet.get('direction',''))
+                    self.planner.finish(round_id,result,s,receipt,supplied_ids)
+                    self.planner.reply(round_id,request_id+'-reply',control['message'],request_id)
+                    self.state['messages'].append({'id':request_id+'-reply','role':'assistant','source':'engine',
+                        'text':control['message'],'at':self.clock()})
+                    self.state['messages']=self.state['messages'][-24:]
+                    self.state.update(status='ready',message=control['message'],copilotControl=copy.deepcopy(control),
+                                      lastEvaluation=receipt)
+                    self.seen_context=context_key(current)
+                    self.save()
+                    return
                 if packet['reason']=='operator message' and not any(result.get(k) for k in ('search','trackIds','performance','handoff','tempoTargets','sessionPlan')):
                     latest=next((m['text'] for m in reversed(packet.get('messages',[])) if m.get('role')=='user'),'')
                     facts=music_facts.answer(latest,observed,self.clock())
@@ -2347,6 +2411,8 @@ class DJAgent:
                             targets=staged.get('tempoTargets') if staged else s.get('tempoTargets')
                             if blends is None and isinstance(source,list) and len(source)==len(p['trackIds'])-1:blends=copy.deepcopy(source)
                             if 'tempo_targets' not in tempo and targets is not None:tempo['tempo_targets']=copy.deepcopy(targets)
+                    if s.get('rollingQueue'):
+                        tempo['source']='planner'
                     self.session.revise_queue(p['trackIds'],reason=p['reason'],mix_transitions=blends,**tempo)
                     message=self.session.snapshot()['message']
                 else:message='The DJ kept the current order. Existing mix preparation is preserved.'
@@ -2719,7 +2785,10 @@ class DJAgent:
             skipped={r['trackId'] for r in startup.get('skipped',[])
                      if r.get('code') in ('limited-decoded-audio','recording-unavailable','provider-preview-only')}
             selected=[tid for tid in request['orderIds'] if tid not in skipped]
-            future=[t['id'] for t in (s.get('queuedUpdate') or {}).get('tracks',[])]
+            queued = s.get('queuedUpdate') or {}
+            future = [t['id'] for t in queued.get('tracks',[])]
+            if queued.get('startId') == startup.get('id') and startup.get('id'):
+                future.extend(t['id'] for t in s.get('timedContinuation') or [])
             grid_started = (startup.get('mode')=='native-beat-grid' and startup.get('status')=='ready'
                             and startup.get('playingAt') is not None
                             and s.get('startedAt')==startup.get('playingAt')
@@ -2743,9 +2812,11 @@ class DJAgent:
         request.update(status='starting',message='Starting the opening recording.')
         voice = request.get('source')=='voice'
         rolling=(voice and request.get('scope')!='finite' and self.settings.state['discover']
-                 and (request.get('scope')=='ongoing' or bool(request.get('fastOpeningQuery'))))
+                 and (request.get('scope')=='ongoing' or bool(request.get('freshQueue'))))
         options = {'rolling_queue': True} if rolling else {}
         if voice:options['allow_grid_opening'] = True
+        if request.get('source')=='voice' and request.get('freshQueue'):
+            options['cue_led_opening'] = True
         try:self.session.start(initialize_mixer=True,immediate=True,**options)
         except (ValueError,OSError,BridgeError) as exc:return fail(str(exc))
         self.state.update(status='starting',message='Starting the opening recording. Waiting for deck confirmation.')

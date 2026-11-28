@@ -77,6 +77,20 @@ class NativeRecordingTests(unittest.TestCase):
             self.index.find(identity('netsearch://va1'))
         self.assertFalse(self.index.cache)
 
+    def test_closed_database_torn_trailer_preserves_exact_identity_checks(self):
+        locator = 'netsearch://va1'
+        selection = identity(locator)
+        database(self.path, [locator])
+        document = self.path.read_bytes()
+        damaged = document + b'\r\n\x00>\r\n'
+        self.path.write_bytes(damaged)
+        self.assertEqual(self.index.find(selection).value_for(selection), locator)
+        self.assertIsNone(self.index.find(identity('missing')))
+        self.assertEqual(self.path.read_bytes(), damaged)
+        self.path.write_bytes(document + b'\r\n\x00<Song/>\r\n')
+        with self.assertRaisesRegex(BridgeError, 'unconfirmed'):
+            self.index.find(selection)
+
     def test_database_size_and_concurrent_rewrite_are_bounded(self):
         database(self.path, ['netsearch://va1'])
         with patch('afterhours.native_recording.MAX_DATABASE_BYTES', 20), self.assertRaisesRegex(BridgeError, 'bounded'):

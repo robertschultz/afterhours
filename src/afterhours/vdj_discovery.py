@@ -3,16 +3,24 @@ import copy
 import re
 import time
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_catalog import folder_state, selection, search_literal
+from afterhours.dj_discovery import credit, normalized
+from afterhours.track_metadata import clean_text
+from afterhours.vdj_catalog import count_value, folder_state, selection, search_literal
 
 
 class CatalogSearch:
+    EMPTY_RESULT_SETTLE_SECONDS = 1.5
+
     def __init__(self, session, terms, artist, genre, bpm_min, bpm_max, clock=time.monotonic, recheck_missing=False,
-                 external_request_id=None,authorize=None,finish=None):
+                 external_request_id=None,authorize=None,finish=None, *, opening_query=None):
         self.session=session;self.terms=terms;self.clock=clock;self.folder=None
         self.external_request_id=external_request_id;self.authorize=authorize;self.external_finish=finish
         self.recheck_missing=recheck_missing
         self.artist=[v.strip().casefold() for v in artist.split(';') if v.strip()]
+        self.rolling_artist = frozenset()
+        self.rolling_title = ''
+        self.rolling_eligible = None
+        self.rolling_prospects = 0
         self.genre=re.sub(r'[^a-z0-9]','',genre.casefold())
         self.bpm_min=bpm_min;self.bpm_max=bpm_max
         self.filters={'artist':artist,'genre':genre,'bpmMin':bpm_min,'bpmMax':bpm_max}
@@ -21,21 +29,30 @@ class CatalogSearch:
         self.matched=0;self.seen=set()
         self.phase='begin';self.ready_at=0;self.deadline=None;self.done=False
         self.last_id=None;self.repeated=0
+        self.empty_since=None
         self.latest=None
         # A set opening can reuse its first matching records immediately.
         # An explicit import or expansion must dig beyond known archive rows.
         opening=not session.snapshot().get('order') and not recheck_missing
         self.reuse_matches=opening
+        self.opening_query=opening_query if opening else None
         self.target=3 if opening else 6
         self.max_rows=12 if opening else 30
         self.seconds=25 if opening else 45
         self.quota=max(2,self.target//len(terms))
+
+    def set_rolling_seed(self, artist, title, *, eligible=None):
+        """Keep native text hits tied to the artist or recording that seeded the search."""
+        self.rolling_artist = credit(artist)
+        self.rolling_title = normalized(title)
+        self.rolling_eligible = eligible
 
     def publish(self,status,message):
         self.session.update(catalogSearch={'status':status,'query':'; '.join(self.terms),
             **({'externalRequestId':self.external_request_id} if self.external_request_id else {}),
             'term':self.terms[min(self.term_index,len(self.terms)-1)],'filters':copy.deepcopy(self.filters),
             'examined':self.examined,'added':self.added,'matched':self.matched,'latest':self.latest,
+            **({'rollingProspects':self.rolling_prospects} if self.rolling_eligible else {}),
             'foundIds':sorted(self.seen)[:32],'message':message,'updated':time.time()})
         if self.external_finish and status in ('complete','error'):
             self.external_finish('confirmed' if status=='complete' else 'blocked',
@@ -45,12 +62,14 @@ class CatalogSearch:
     def finish(self,message=None):
         self.done=True
         self.publish('complete',message or f'{self.added} new recordings added to the crate.')
-        self.session.event(message or f'Crate search finished: {self.added} new recordings. Existing queue kept.','catalog')
+        detail = {'rollingProspects':self.rolling_prospects} if self.rolling_eligible else {}
+        self.session.event(message or f'Crate search finished: {self.added} new recordings. Existing queue kept.','catalog', **detail)
 
     def resume_search(self):
         # Preloading may use a different browser search on the same engine.
         # Re-enter this term before reading more rows; retain every found track.
-        if not self.done:self.phase='begin';self.position=0;self.last_id=None;self.repeated=0
+        if not self.done:
+            self.phase='begin';self.position=0;self.last_id=None;self.repeated=0;self.empty_since=None
 
     def step(self,client):
         """One bounded browser operation; the music worker chooses a safe gap."""
@@ -60,6 +79,7 @@ class CatalogSearch:
         if self.deadline is None:self.deadline=now+self.seconds
         if now>=self.deadline:self.finish('Search window ended. Keeping the recordings already found.');return
         if self.phase=='settle' and now<self.ready_at:return
+        if self.empty_since is not None and now-self.empty_since<self.EMPTY_RESULT_SETTLE_SECONDS:return
         current_folder=folder_state(client)
         if self.folder is None:
             self.folder=current_folder
@@ -80,26 +100,48 @@ class CatalogSearch:
             s.send(client,"browser_window 'songs' & browser_scroll 'top'");self.phase='read';return
         try:selected=selection(client,True)
         except BridgeError:selected=None
+        if not selected and self.position==0 and getattr(self,'rolling',False):
+            try:empty=count_value(client.query('file_count'))==0
+            except BridgeError:empty=False
+            if empty and self.empty_since is None:
+                # The provider may still populate the selected source after
+                # VirtualDJ opens its search results.
+                self.empty_since=now
+                return
+            if empty:self.position=self.max_rows
+        self.empty_since=None
         self.examined+=1
         if selected:
             self.repeated=self.repeated+1 if selected['id']==self.last_id else 0;self.last_id=selected['id']
             track=selected['metadata'];bpm=track.get('bpm')
             self.latest={key:str(track.get(key) or '')[:120] for key in ('title','artist')}
             if self.recheck_missing:self.session.availability.found_again(track['id'])
-            matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
+            matches=bool(clean_text(track.get('title'))) and (
+                not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
+            matches = matches and (not self.rolling_artist or bool(self.rolling_artist & credit(selected['artist'])))
+            matches = matches and (not self.rolling_title or self.rolling_title == normalized(track.get('title')))
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))
             matches=matches and type(bpm) in (int,float) and self.bpm_min<=bpm<=self.bpm_max
             matches=matches and not s.availability.blocked(track['id'])
             if matches and track['id'] not in self.seen:
                 # Every considered recording survives in the archive even when
                 # its bounded planning pool already has 48 entries.
-                _,inserted=s.remember_record(track,source='discovery',query=term,position=self.position)
+                record,inserted=s.remember_record(track,source='discovery',query=term,position=self.position)
                 self.seen.add(track['id']);self.matched+=1
-                self.per_term+=int(inserted or self.reuse_matches)
+                if self.rolling_eligible is None or self.rolling_eligible(record):
+                    self.per_term+=int(inserted or self.reuse_matches)
+                    self.rolling_prospects+=int(self.rolling_eligible is not None)
                 self.added+=int(inserted)
+                if self.opening_query:
+                    from afterhours.queue_planning import quick_opening
+                    if quick_opening(s.snapshot(), self.opening_query, self.seen):
+                        self.finish('Live catalog found an opening and a feasible next slot.')
+                        return
         self.publish('searching',f'{self.added} new recordings found. Existing queue kept.')
         self.position+=1
         progress=self.matched if self.reuse_matches else self.added
+        if self.rolling_eligible is not None:
+            progress=self.rolling_prospects
         if self.repeated>=2 or self.position>=self.max_rows or self.per_term>=self.quota or progress>=self.target:
             self.term_index+=1;self.position=0;self.per_term=0;self.repeated=0;self.last_id=None
             if self.term_index>=len(self.terms) or progress>=self.target:self.finish();return

@@ -64,6 +64,17 @@ class CueTests(unittest.TestCase):
         self.assertLessEqual(len(timed['offsets']), 10)
         self.assertEqual(timed['spanBeats'], standard['spanBeats'])
 
+    def test_timed_cue_policy_spreads_recovery_checks_across_a_long_track(self):
+        rows, report, _ = fixture()
+        track = report['tracks'][0]
+        policy = cp.propose_offsets(track, rows, .2, 126, 126, 30, limit=10, timed=True)
+        offsets = policy['offsets']
+        latest = int(((track['duration']-.7)*126/60-policy['spanBeats']-policy['blendBeats'])//16)*16
+        self.assertEqual(offsets[:7], list(range(0, 112, 16)))
+        self.assertEqual(offsets[7], offsets[6]+32)
+        self.assertEqual(len(offsets), 10)
+        self.assertLessEqual(max(b-a for a,b in zip(offsets, offsets[1:]+[latest])), 224)
+
     def test_native_readbacks_cannot_move_into_silence_or_outside_track(self):
         rows,report,_=fixture();t=report['tracks'][0];native=t['cueCandidates'][0]
         policy={'spanBeats':64,'blendBeats':32,'medianRmsDb':-14}
@@ -95,6 +106,113 @@ class CueTests(unittest.TestCase):
         _,report,_=fixture();cue=report['tracks'][0]['cueCandidates'][0]
         self.assertEqual(cp.execution_window(cue,80,32)['mixAtBeat'],128)
         with self.assertRaisesRegex(ValueError,'missed'):cp.execution_window(cue,126,32)
+
+    def test_measured_music_fit_controls_blend_length(self):
+        for bass_gap, bright, expected in ((0,False,32),(0,True,16),(10,False,8)):
+            with self.subTest(bass_gap=bass_gap,bright=bright):
+                _,report,_=fixture(2,60)
+                order=report['tracks']
+                order[1]['cueCandidates'][0]['entry']['bassDb']+=bass_gap
+                for cue in (order[0]['cueCandidates'][0]['exit'], order[1]['cueCandidates'][0]['entry']):
+                    cue['highDb']=cue['rmsDb']-(8 if bright else 24)
+                snapshot={'analysis':report,'mixStyle':'phrase','secondsPerTrack':60,
+                          'executionPlan':{'orderIds':[],'targetBpm':155},
+                          'aiReview':{'decision':'propose','secondsBetweenEntries':60,'selections':[],'transitions':[]}}
+                result=cp.complete_background_queue(snapshot,order,[],'Measured fit fixture.',0)
+                recipe=result['executionPlan']['transitions'][0]
+                self.assertEqual(recipe['fadeBeats'],expected)
+                self.assertFalse(recipe['tonalOverlap'])
+
+    def test_rolling_cue_fit_preserves_a_full_minute_when_a_shorter_cue_has_more_runway(self):
+        rows, report, _ = fixture(2,60)
+        order = report['tracks']
+        report['targetBpm'] = 128
+        for track in order:
+            track['bpm'] = 128
+
+        def measured(entry, span, blend):
+            return {**cp.candidate(order[1], rows, {
+                'anchorBeat':0, 'offsetBeats':entry, 'entryBeat':entry, 'entrySeconds':entry*60/128,
+                'introEndSeconds':(entry+blend)*60/128,
+                'exitBeat':entry+span, 'exitSeconds':(entry+span)*60/128,
+                'endBeat':entry+span+blend, 'endSeconds':(entry+span+blend)*60/128,
+            }, {'spanBeats':span,'blendBeats':blend,'medianRmsDb':-14}), 'replayVerified':True}
+
+        short, full = measured(0,64,32), measured(131,128,64)
+        order[1]['cueCandidates'] = [short, full]
+        snapshot = {'analysis':report,'mixStyle':'phrase','secondsPerTrack':60,'entryCadence':[30,60],
+                    'rollingQueue':{'status':'preparing'},'executionPlan':{'orderIds':[],'targetBpm':128},
+                    'aiReview':{'decision':'propose','secondsBetweenEntries':60,'selections':[],'transitions':[]}}
+        result = cp.complete_background_queue(snapshot,order,[],'Measured fit fixture.',0)
+        self.assertEqual(result['executionPlan']['selections'][1]['id'],full['id'])
+
+    def test_rolling_cue_fit_prefers_a_real_recovery_bar_over_a_distant_outro(self):
+        rows, report, _ = fixture(2)
+        order = report['tracks']
+        report['targetBpm'] = 125
+        for track in order:
+            track['bpm'] = 125
+        measured = []
+        for offset in (0,16,32,48,64,80,96,400):
+            start = offset + 64
+            native = {'anchorBeat':0, 'offsetBeats':offset, 'entryBeat':offset,
+                      'entrySeconds':offset*60/125+.2, 'introEndSeconds':(offset+32)*60/125+.2,
+                      'exitBeat':start, 'exitSeconds':start*60/125+.2,
+                      'endBeat':start+32, 'endSeconds':(start+32)*60/125+.2}
+            cue = cp.candidate(order[0], rows, native,
+                               {'spanBeats':64,'blendBeats':32,'medianRmsDb':-14})
+            cue['replayVerified'] = True
+            cue['entry']['levelVariationDb'] = 0 if offset == 80 else 1
+            measured.append(cue)
+        order[0]['cueCandidates'] = measured
+        self.assertTrue(cp.has_recovery_bar(0, measured, 62.5, 125))
+        self.assertFalse(cp.has_recovery_bar(80, measured, 62.5, 125))
+        for rolling, expected_entry in ((False,80), (True,0)):
+            with self.subTest(rolling=rolling):
+                snapshot = {'analysis':report, 'mixStyle':'phrase', 'secondsPerTrack':30,
+                            'entryCadence':[30,60], 'rollingQueue':rolling,
+                            'executionPlan':{'orderIds':[], 'targetBpm':125},
+                            'aiReview':{'decision':'propose','secondsBetweenEntries':30,
+                                        'selections':[],'transitions':[]}}
+                result = cp.complete_background_queue(snapshot, order, [], 'Fit recovery around cadence.', 0)
+                self.assertEqual(result['executionPlan']['selections'][0]['entryBeat'], expected_entry)
+
+    def test_timed_rhythm_windows_allow_four_bars_only_with_matching_signal(self):
+        for loops, bright, stem_overlap, bass_gap, expected in (
+            (True, False, 0, 0, 16), (False, False, 0, 0, 8),
+            (True, True, 0, 0, 8), (True, False, .7, 0, 8),
+            (True, False, 0, 8, 8),
+        ):
+            with self.subTest(loops=loops, bright=bright, stem_overlap=stem_overlap, bass_gap=bass_gap):
+                _, report, _ = fixture(2, 60)
+                order = report['tracks']
+                order[0].update(genre='Dance', camelot='2A')
+                order[1].update(genre='Dance', camelot='7B')
+                exits, entry = (track['cueCandidates'][0] for track in order)
+                exits['loopBridgeBeats'] = 8
+                entry['loopBridgeBeats'] = 8 if loops else None
+                entry['entry']['bassDb'] += bass_gap
+                for window in (exits['exit'], entry['entry']):
+                    window['highDb'] = window['rmsDb'] - (8 if bright else 24)
+                snapshot = {'analysis':report, 'mixStyle':'phrase', 'secondsPerTrack':60, 'entryCadence':[60, 30],
+                            'executionPlan':{'orderIds':[], 'targetBpm':155},
+                            'aiReview':{'decision':'propose', 'secondsBetweenEntries':60, 'selections':[], 'transitions':[]}}
+                stems = {'scoreAdjustment':0, 'vocalOverlapFraction':stem_overlap,'lowEndOverlap':0}
+                with patch.object(cp, 'cue_pair', return_value=stems):
+                    result = cp.complete_background_queue(snapshot, order, [], 'Measured fit fixture.', 0)
+                recipe = result['executionPlan']['transitions'][0]
+                self.assertEqual(recipe['fadeBeats'], expected)
+                self.assertFalse(recipe['tonalOverlap'])
+                self.assertEqual('four-bar single-lead blend' in recipe['reason'], expected == 16)
+
+    def test_loop_bridge_rejects_a_level_or_bass_jump_at_the_exit(self):
+        rows=[{'seconds':.5*i,'duration':.5,'rmsDb':-15,'lowDb':-19,
+               'highDb':-26,'crestDb':8} for i in range(16)]
+        cue={'exitSeconds':0,'endSeconds':8,'exitBeat':128,'endBeat':144}
+        self.assertEqual(cp.loop_bridge_beats(rows,cue),8)
+        for row in rows[1:]:
+            row['lowDb']=-30
+        self.assertIsNone(cp.loop_bridge_beats(rows,cue))
 
     def test_compatible_keys_do_not_override_unknown_lead_guard_or_rewrite_ai_response(self):
         _,report,response=fixture();response['transitions'][0]['technique']='bass-swap'

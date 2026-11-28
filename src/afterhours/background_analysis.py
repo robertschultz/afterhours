@@ -16,15 +16,28 @@ from afterhours.dj_bridge import BridgeError, OSCReplyTimeout, as_bool
 from afterhours.vdj_catalog import identity, require_selection, dispatch_exact_load, ExactRestoreCleanupUnconfirmed
 from afterhours.audio_analysis import AudioAnalysisTimeout, scan_track, restore_effect, PLUGIN, SPARE_SCAN_TIMEOUT
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
-from afterhours.native_analysis import NativeAnalysisDatabaseUpdating, NativeAnalysisUnsettled, track_analysis
+from afterhours.native_analysis import NativeAnalysisDatabaseUpdating, NativeAnalysisUnsettled, finite, track_analysis
 from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
 class SpareStreamRejected(BridgeError):pass
+class SpareLoadIdentityChanged(BridgeError):pass
 class SpareDeckUnavailable(BridgeError):pass
 
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
+
+
+def preparation_seconds(state, revision, track_id):
+    cadence = state.get('entryCadence')
+    if cadence:
+        pending = state.get('queuedUpdate') or {}
+        staged = pending.get('tracks') if pending.get('id') == revision else None
+        order = staged or state.get('order', [])
+        for index, track in enumerate(order):
+            if track['id'] == track_id:
+                return cadence[index % len(cadence)]
+    return state['secondsPerTrack']
 
 
 def four_deck_tools(path=None):
@@ -117,25 +130,113 @@ def merge_cleanup_pending(*sources):
     if retained_loops:result['loops']=retained_loops
     return result
 
+class CleanupReadbacks:
+    """Retry one lost reply during spare cleanup without replaying a write."""
+    def __init__(self, client):
+        self.client = client
+        self.retry_available = True
+
+    def query(self, script, kind=None):
+        try:
+            return self.client.query(script, kind)
+        except OSCReplyTimeout:
+            if not self.retry_available:
+                raise
+            self.retry_available = False
+            return self.client.query(script, kind)
+
+    def send(self, script):
+        return self.client.send(script)
+
+
+def restore_empty_spare_controls(client, descriptor):
+    deck = descriptor['deck']
+    baseline = descriptor['baseline']
+    descriptor['restoreRequested'] = True
+    cue = 'on' if baseline['pfl'] else 'off'
+    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
+
+
+def recover_unloaded_spare(client, descriptor, check, verify_deck_c=False):
+    """Verify an owned spare unload and restore its baseline at most once."""
+    row = cleanup_descriptor(descriptor)
+    if (row['deck'] not in (3, 4) or row['loadPending'] or not row['selectionId']
+            or not row['unloadRequested']):
+        raise BridgeError('The spare cleanup stage could not be verified.')
+
+    # Check the time and authority before every interaction. The owning OSC
+    # client also limits the duration of an individual query.
+    class Readback:
+        def query(self, script, kind=None):
+            check()
+            return client.query(script, kind)
+
+        def send(self, script):
+            check()
+            return client.send(script)
+
+    proof = Readback()
+    if verify_deck_c:
+        guard_isolation(proof, 3)  # C remains quarantined for its original owner.
+    deck = row['deck']
+    baseline = row['baseline']
+
+    def controls():
+        guard_deck(proof, deck)
+        if (as_bool(proof.query(f'deck {deck} play','bool'))
+                or as_bool(proof.query(f'deck {deck} loaded','bool'))
+                or as_bool(proof.query(f'deck {deck} deck_has_error','bool'))
+                or proof.query(f'deck {deck} get_effect_name 1','text') != (baseline['effect'] or PLUGIN)
+                or as_bool(proof.query(f'deck {deck} effect_active 1','bool'))):
+            raise BridgeError('The unloaded spare or effect state was not confirmed.')
+        return float(proof.query(f'deck {deck} volume')), as_bool(proof.query(f'deck {deck} pfl','bool'))
+
+    def matches_baseline(controls):
+        volume, pfl = controls
+        return abs(volume - baseline['volume']) < .00001 and pfl == baseline['pfl']
+
+    observed = controls()
+    if matches_baseline(observed):
+        return
+    if row['restoreRequested']:
+        raise BridgeError('The previous spare baseline restoration has not been confirmed.')
+    # An owned unload may toggle auto headphone cue. Confirm the deck is
+    # empty and still muted before restoring both saved controls.
+    if observed[0] != 0.0:
+        raise BridgeError('The isolated spare controls changed.')
+    # The flag is set before dispatch. Any later uncertainty leaves the
+    # descriptor quarantined and this live path cannot send the write again.
+    check()
+    restore_empty_spare_controls(proof, descriptor)
+    if not matches_baseline(controls()):
+        raise BridgeError('The spare baseline could not be verified.')
+
+
 def cleanup_analysis_deck(client, descriptor):
     """Recover only the retained exact spare-deck ownership; never start audio."""
+    client=CleanupReadbacks(client)
     row=cleanup_descriptor(descriptor);deck=row['deck'];baseline=row['baseline']
     expected_effect=baseline['effect'] or PLUGIN
     def effect_is_restored():
         return (client.query(f'deck {deck} get_effect_name 1','text')==expected_effect and
                 not as_bool(client.query(f'deck {deck} effect_active 1','bool')))
     def isolated_identity():
-        # A failed owned Load can apply the host's automatic headphone cue
-        # even though the deck never loaded audio. Recover only that empty,
-        # muted, stopped deck while its original effect is still intact.
+        # VirtualDJ may enable headphone cue when an owned Load settles.
+        # Accept it only with decisive native evidence and the original effect.
         if row['loadPending'] and row['selectionId'] and not baseline['pfl']:
             guard_deck(client,deck)
             if (as_bool(client.query(f'deck {deck} pfl','bool')) and
                     not as_bool(client.query(f'deck {deck} play','bool')) and
-                    float(client.query(f'deck {deck} volume'))==0 and
-                    not as_bool(client.query(f'deck {deck} loaded','bool')) and
-                    as_bool(client.query(f'deck {deck} deck_has_error','bool')) and effect_is_restored()):
-                client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : deck {deck} pfl off')
+                    float(client.query(f'deck {deck} volume'))==0):
+                loaded = as_bool(client.query(f'deck {deck} loaded','bool'))
+                exact = (loaded and
+                         identity(str(client.query(f'deck {deck} get_filepath','text')))==row['selectionId'])
+                failed = not loaded and as_bool(client.query(f'deck {deck} deck_has_error','bool'))
+                if (exact or failed) and effect_is_restored():
+                    idle = 'nothing' if loaded else f'deck {deck} pfl off'
+                    occupied = f'deck {deck} pfl off' if loaded else 'nothing'
+                    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? {occupied} : {idle}')
         guard_isolation(client,deck)
         loaded=as_bool(client.query(f'deck {deck} loaded','bool'))
         if loaded and (not row['selectionId'] or identity(str(client.query(f'deck {deck} get_filepath','text')))!=row['selectionId']):
@@ -192,10 +293,7 @@ def cleanup_analysis_deck(client, descriptor):
         raise BridgeError(f'Analysis deck {deck} still reports a load error after unload; ownership was retained.')
     if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
         return
-    descriptor['restoreRequested']=True
-    cue = 'on' if baseline['pfl'] else 'off'
-    client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
-                f'deck {deck} volume {baseline["volume"]*100:.6f}% & deck {deck} pfl {cue}')
+    restore_empty_spare_controls(client, descriptor)
     guard_deck(client,deck)
     if (as_bool(client.query(f'deck {deck} play','bool')) or as_bool(client.query(f'deck {deck} loaded','bool')) or
             not effect_is_restored() or abs(float(client.query(f'deck {deck} volume'))-baseline['volume'])>=.00001 or
@@ -207,7 +305,7 @@ def allowed(script, mutation, deck=3):
     # unscoped audio command. Catalog navigation is shared but carries no audio action.
     if deck not in (1,2,3,4) or re.search(rf'deck\s+(?!{deck}\b)\S+',script):return False
     if script.startswith(f'deck {deck} '):
-        verbs=('get_', 'loaded','play','deck_has_error','effect_active','volume','pfl','pitch') if not mutation else (
+        verbs=('get_', 'loaded','play','deck_has_error','effect_active','volume','pfl','pitch','is_fluid') if not mutation else (
             'master_tempo on','goto_first_beat','goto ','set_bpm ','effect_select 1 ',
             'effect_active 1 ','effect_button 1 ')
         return script[7:].startswith(verbs) and '&' not in script
@@ -219,6 +317,9 @@ class MailboxClient:
     def query(self,script,kind=None):return self.job.request('query',script,kind)
     def send(self,script):return self.job.request('send',script,None)
 
+    def seek_cue(self, script, selection):
+        return self.job.request('cue-seek', script, selection)
+
 class BackgroundAnalysis:
     def __init__(self,session,revision,tracks,cache=None,deck=3):
         if type(deck) is not int or deck not in (1,2,3,4):raise ValueError("Preparation needs a spare deck.")
@@ -228,7 +329,10 @@ class BackgroundAnalysis:
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.catalog_miss=None
         self.analysis_miss=None
+        self.measured_fit_miss=None
         self.osc_reply_timeout=False
+        self.osc_timeout_track_id=None
+        self.cleanup_reply_timeout=False
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
         self.owner_id=uuid.uuid4().hex;self.requested_load=None;self.cleanup_state={}
@@ -240,11 +344,18 @@ class BackgroundAnalysis:
         # Foreground deck preparation owns catalog navigation during a handoff.
         # Re-select afterwards; never load whichever row it left selected.
         self.browser_epoch+=1
-    def clock(self):
+    def clock(self, *, suspended=None):
         with self.clock_lock:
-            now=time.monotonic()
-            if not self.suspended:self.active_time+=now-self.last_clock
-            self.last_clock=now;return self.active_time
+            now = time.monotonic()
+            if not self.suspended:
+                self.active_time += now - self.last_clock
+            self.last_clock = now
+            if suspended is not None:
+                self.suspended = suspended
+            return self.active_time
+
+    def set_suspended(self, suspended):
+        self.clock(suspended=suspended)
     def check(self):
         if self.cancelled.is_set():raise AnalysisCancelled()
         if time.monotonic()-self.started>900:raise BridgeError('Background preparation exceeded its time limit; the active set was kept.')
@@ -253,7 +364,9 @@ class BackgroundAnalysis:
         if self.cancelled.wait(seconds):raise AnalysisCancelled()
     def request(self,kind,script,argument):
         self.check()
-        if kind not in ('load','isolate-loaded') and not allowed(script,kind=='send',self.deck):
+        if kind == 'cue-seek' and script != f'deck {self.deck} goto_first_beat' and not script.startswith(f'deck {self.deck} goto '):
+            raise BridgeError('Cue analysis attempted an unsupported seek.')
+        if kind not in ('load','isolate-loaded') and not allowed(script,kind in ('send','cue-seek'),self.deck):
             raise BridgeError('Analysis attempted an unsupported engine operation.')
         response=queue.Queue(maxsize=1);self.pending.put((kind,script,argument,response))
         while True:
@@ -299,7 +412,7 @@ class BackgroundAnalysis:
             return
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
     def step(self,client,seconds_available):
-        self.clock();self.suspended=seconds_available<12
+        self.set_suspended(seconds_available < 12)
         if self.suspended or self.done:return
         if not self.tracks:
             self.done=True;self.status='complete';self.message='Reusing already verified recordings.';return
@@ -314,7 +427,9 @@ class BackgroundAnalysis:
             except queue.Empty:break
             try:
                 self.check()
-                if kind in ('send','load'):
+                if kind in ('send','load','cue-seek'):
+                    if kind == 'cue-seek' and (not self.owned or not self.loaded or arg != self.loaded):
+                        raise BridgeError('The recording changed during cue analysis.')
                     guard_isolation(client,self.deck)
                     if self.loaded and identity(str(client.query(f'deck {self.deck} get_filepath','text')))!=self.loaded:
                         raise BridgeError('Analysis recording changed outside the background worker.')
@@ -395,7 +510,7 @@ class BackgroundAnalysis:
                 self.request('isolate-loaded','',sid)
                 return
         if sid is not None:
-            raise BridgeError('VirtualDJ loaded a different recording identity on the muted analysis deck. '
+            raise SpareLoadIdentityChanged('VirtualDJ loaded a different recording identity on the muted analysis deck. '
                               'No repeat load or handoff was sent.')
         raise BridgeError('Background stream load was not confirmed; no repeat load was sent.')
 
@@ -416,9 +531,22 @@ class BackgroundAnalysis:
             self.message = message
             return evidence
 
+    def refresh_cue_evidence(self, client, track):
+        """Repeat the duration read once while the original spare load is still isolated."""
+        sid = track['engine']['selection_id']
+        self.check()
+        guard_isolation(client, self.deck)
+        duration_ms = finite(client.query(f'deck {self.deck} get_time total absolute'), 1, 86_400_000)
+        if identity(str(client.query(f'deck {self.deck} get_filepath', 'text'))) != sid:
+            raise SpareLoadIdentityChanged('The isolated recording changed before its cue evidence could be refreshed.')
+        if duration_ms is None:
+            raise NativeAnalysisUnsettled('VirtualDJ did not confirm the isolated recording duration.')
+        refreshed = {**track, 'nativeDuration':duration_ms / 1000, 'duration':duration_ms / 1000}
+        return refreshed, self.read_evidence(refreshed)
+
     def run(self):
         from afterhours.vdj_session import DJSession, RecordingLookupIncomplete, RecordingUnavailable
-        from afterhours.cue_planner import LimitedAudio
+        from afterhours.cue_planner import AudioEvidenceChanged, LimitedAudio, UnstableTimedGrid
         helper=DJSession(threading.Lock(),crate=getattr(self.session,'crate',None),
                          recordings=getattr(self.session,'recordings',None),
                          availability=self.session.availability);s=self.session.snapshot()
@@ -433,33 +561,67 @@ class BackgroundAnalysis:
                 self.check();self.status='analyzing';self.message='Analyzing upcoming track · '+track['title']
                 cached=self.cache.get(track['id'])
                 timed = bool(s.get('entryCadence'))
-                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==s['secondsPerTrack']
+                display_waveform = not (timed or s.get('rollingQueue'))
+                seconds = preparation_seconds(s, self.revision, track['id'])
+                if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==seconds
                         and bool(cached.get('timedPreparation')) == timed):
                     try:
                         from afterhours import cue_planner
                         cue_planner.measured_rows(cached);self.result.append(cached);continue
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
+                if miss := self.session.automatic_refill_tempo_miss(self.revision, checked):
+                    self.measured_fit_miss = {key:checked[key] for key in
+                        ('id','bpm','key','camelot','engineChecked','duration') if key in checked}
+                    raise BridgeError(miss)
                 evidence=self.read_evidence(checked)
-                waveform_ready = timed or bool(evidence.get('energyMap')) and verified_waveform(
+                waveform_ready = not display_waveform or bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])
                 if not evidence.get('energyMap') or not waveform_ready:
-                    # Timed sets need verified audio features and replayed
-                    # cues, but can skip the separate display waveform pass.
+                    # Rolling playback still needs verified features and
+                    # replayed cues. Build display waveforms off air.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
-                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
+                    def can_replace_stalled():
+                        live = self.session.snapshot()
+                        pending = live.get('queuedUpdate') or {}
+                        return (pending.get('id') == self.revision
+                                and bool(self.session.replaceable_rolling_pick(live, pending, track['id'])))
+
+                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,
+                               timeout=SPARE_SCAN_TIMEOUT, deck=self.deck,isolated=True,
+                               can_replace_stalled=can_replace_stalled if timed else None)
                     evidence=self.read_evidence(checked)
-                    if not timed:
+                    if display_waveform:
                         self.message='Preparing waveform · '+track['title']
                         scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
                 timed_option = {'timed': True} if timed else {}
-                evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],s['secondsPerTrack'],
-                                                              deck=self.deck,isolated=True,**timed_option)
-                evidence['preparationSeconds']=s['secondsPerTrack']
+                staged = s.get('queuedUpdate') or {}
+                batch = staged.get('rollingTrackIds') or []
+                if (timed and staged.get('id') == self.revision and len(batch) == 2
+                        and track['id'] == batch[1]):
+                    prior_seconds = preparation_seconds(s, self.revision, batch[0])
+                    if prior_seconds < seconds:
+                        timed_option['alternate_seconds'] = prior_seconds
+                try:
+                    cues = helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
+                                               deck=self.deck,isolated=True,**timed_option)
+                except AudioEvidenceChanged as exc:
+                    if (display_waveform or exc.recording_id != track['id'] or not self.owned
+                            or self.loaded != track['engine']['selection_id']):
+                        raise
+                    self.message = 'Rechecking the decoded duration · ' + track['title']
+                    checked, evidence = self.refresh_cue_evidence(client, checked)
+                    cues = helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
+                                               deck=self.deck,isolated=True,**timed_option)
+                evidence['cueCandidates'] = cues
+                evidence['preparationSeconds']=seconds
                 if timed:evidence['timedPreparation']=True
                 self.result.append(evidence);self.cache[track['id']]=copy.deepcopy(evidence)
                 self.session.availability.verified(track['id'])
+                if (timed or s.get('rollingQueue')) and evidence['cueCandidates']:
+                    from afterhours.verified_cues import VerifiedCues
+                    VerifiedCues().write(evidence)
             self.status='complete';self.message='Upcoming recordings analyzed; validating their handoffs.'
         except AnalysisCancelled:
             self.status='cancelled';self.message='Background preparation paused; verified measurements were kept.'
@@ -470,11 +632,14 @@ class BackgroundAnalysis:
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         except Exception as exc:
             self.osc_reply_timeout=isinstance(exc,OSCReplyTimeout)
+            if self.osc_reply_timeout:
+                self.osc_timeout_track_id=track['id']
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
-            exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+            changed_evidence = isinstance(exc, AudioEvidenceChanged) and exc.recording_id == track['id']
+            exact_analysis_failed = ((changed_evidence or isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout,UnstableTimedGrid)))
                                      and self.owned and self.loaded==track['engine']['selection_id'])
-            if isinstance(exc,SpareStreamRejected) or exact_analysis_failed:
+            if isinstance(exc,(SpareStreamRejected,SpareLoadIdentityChanged)) or exact_analysis_failed:
                 self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True
@@ -487,6 +652,10 @@ class BackgroundAnalysis:
         descriptor=self.cleanup_descriptors()[0]
         try:
             cleanup_analysis_deck(client,descriptor)
+        except OSCReplyTimeout:
+            self.cleanup_reply_timeout = True
+            descriptor['error'] = 'VirtualDJ did not confirm the spare cleanup.'
+            raise OSCReplyTimeout(descriptor['error']) from None
         except (BridgeError,OSError,ValueError) as exc:
             descriptor['error']=str(exc)[:300]
             raise

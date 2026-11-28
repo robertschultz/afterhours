@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import Mock
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_mixing import CONTROLS, LEAD_CONTROLS, TransitionMixer, transition_recipe
+from afterhours.vdj_mixing import CONTROLS, LEAD_CONTROLS, TransitionMixer, measured_bridge_loop, measured_recipe, transition_recipe
 
 
 def track(genre='Drum & Bass',key='2A'):
@@ -46,7 +46,7 @@ class MixerTests(unittest.TestCase):
         self.assertFalse(transition_recipe(track(),track(key='3B'))['tonalOverlap'])
         self.assertEqual(transition_recipe(track(),track(),'quick')['technique'],'crossfade')
 
-    def mixer(self, stems=True):
+    def mixer(self, stems=True, *, lead_control='auto'):
         values={deck:{**dict.fromkeys(CONTROLS[:3]+LEAD_CONTROLS,.5),'level':.8,'play':False,'stems':stems} for deck in (1,2)}
         sent=[]
         def query(client,script,kind=None):
@@ -61,7 +61,7 @@ class MixerTests(unittest.TestCase):
                 for part in script.split(' & '):
                     head,amount=part.rsplit(' ',1);_,deck,key=head.split(maxsplit=2)
                     values[int(deck)][key]=float(amount.rstrip('%'))/100
-        m=TransitionMixer(query,send);m.preflight(None)
+        m=TransitionMixer(query,send,lead_control=lead_control);m.preflight(None)
         return m,values,sent
 
     def test_explicit_opening_restores_paused_channels_and_preserves_master_and_usable_level(self):
@@ -102,6 +102,63 @@ class MixerTests(unittest.TestCase):
         self.assertTrue(any('afterhours_in_low' in s for s in sent))
         count=len(sent);m.tick(None,25)
         self.assertEqual(len(sent),count)
+
+    def test_measured_bright_pair_arms_silent_treble_cut_and_restores_it(self):
+        mixer, values, sent=self.mixer()
+        bright={'rmsDb':-12,'highDb':-25}
+        plan={'transitions':[transition_recipe(track(),track())],
+              'selections':[{'replayVerified':True,'exit':bright},{'replayVerified':True,'entry':bright}]}
+        recipe=measured_recipe(plan,0)
+        self.assertNotIn('incomingHighEq',plan['transitions'][0])
+        mixer.arm(None,1,2,recipe)
+        self.assertEqual(values[2]['eq_high_freq'],.32)
+        self.assertEqual(values[1]['eq_high_freq'],.5)
+        mixer.begin(None)
+        self.assertTrue(any("afterhours_in_high' 0.320000 0.500000 48bt" in script for script in sent))
+
+    def test_louder_measured_entrance_is_attenuated_and_ramps_to_the_same_baseline(self):
+        mixer, values, sent = self.mixer()
+        pair = {**transition_recipe(track(), track()), 'fadeBeats':16, 'entryLevel':.75}
+        plan = {'transitions':[pair], 'selections':[
+            {'replayVerified':True,'exit':{'rmsDb':-19}},
+            {'replayVerified':True,'entry':{'rmsDb':-10}},
+        ]}
+        recipe = measured_recipe(plan, 0)
+        self.assertEqual(recipe['entryLevel'], .6)
+        self.assertEqual(recipe['entryRampBeats'], 12)
+        self.assertIn('9.0 dB louder', recipe['reason'])
+        self.assertNotIn('entryRampBeats', pair)
+        mixer.arm(None, 1, 2, recipe)
+        self.assertAlmostEqual(values[2]['level'], .48)
+        self.assertEqual(values[2]['eq_low_freq'], 0)
+        mixer.begin(None)
+        self.assertTrue(any("afterhours_in_level' 0.480000 0.800000 12bt" in cmd for cmd in sent))
+
+    def test_quieter_entrance_stays_attenuated_and_unverified_windows_preserve_prior_mix(self):
+        pair = {**transition_recipe(track(), track()), 'fadeBeats':8}
+        plan = {'transitions':[pair], 'selections':[
+            {'replayVerified':True,'exit':{'rmsDb':-12}},
+            {'replayVerified':True,'entry':{'rmsDb':-18}},
+        ]}
+        recipe = measured_recipe(plan, 0)
+        self.assertGreater(recipe['entryLevel'], pair['entryLevel'])
+        self.assertLess(recipe['entryLevel'], 1)
+        self.assertNotIn('entryRampBeats', recipe)
+        plan['selections'][1]['replayVerified'] = False
+        self.assertEqual(measured_recipe(plan, 0), pair)
+
+    def test_measured_bridge_is_bound_to_the_verified_exit_and_room_for_a_wrap(self):
+        from afterhours.cue_planner import execution_window
+        outgoing={'id':'cue','entryBeat':64,'entrySeconds':32,'exitBeat':128,'exitSeconds':64,
+                  'loopBridgeBeats':8,'replayVerified':True}
+        window=execution_window(outgoing,120,16)
+        recipe={'genreFamily':'house'}
+        self.assertEqual(measured_bridge_loop(recipe,window),8)
+        self.assertIsNone(measured_bridge_loop(recipe,{**window,'mixAtBeat':132}))
+        self.assertIsNone(measured_bridge_loop(recipe,{**window,'fadeBeats':8}))
+        self.assertIsNone(measured_bridge_loop({'genreFamily':'short'},window))
+        outgoing['replayVerified']=False
+        self.assertIsNone(measured_bridge_loop(recipe,execution_window(outgoing,120,16)))
 
     def test_late_step_stops_without_bursting_missed_mutations(self):
         m,v,sent=self.mixer();m.arm(None,1,2,transition_recipe(track(),track()));m.begin(None)
@@ -215,6 +272,47 @@ class MixerTests(unittest.TestCase):
         v[1]['stem Instru']=0;m.tick(None,16.4)
         self.assertEqual(sum('afterhours_in_vocal' in script for script in sent),1)
         self.assertEqual(sum('afterhours_in_instru' in script for script in sent),1)
+
+    def test_late_stems_only_upgrade_the_silent_incoming_deck_once(self):
+        mixer, values, sent = self.mixer(stems=False)
+        recipe = transition_recipe(track(),track())
+        mixer.arm(None,1,2,recipe)
+        sent.clear()
+        values[1].update(stems=True,play=True)
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(sent,[])
+        values[2]['stems'] = True
+        self.assertTrue(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(recipe['leadControl'],'stems')
+        self.assertEqual(values[2]['eq_mid_freq'],.5)
+        self.assertEqual([values[2][name] for name in LEAD_CONTROLS],[0,0])
+        self.assertTrue(all('deck 1' not in command and 'play' not in command for command in sent))
+        values[2]['stems'] = False
+        self.assertTrue(mixer.fallback_from_unready_stems(None))
+        values[2]['stems'] = True
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(recipe['leadControl'],'frequency-eq')
+
+    def test_late_stems_cannot_change_an_incoming_channel_that_started(self):
+        mixer, values, sent = self.mixer(stems=False)
+        mixer.arm(None,1,2,transition_recipe(track(),track()))
+        sent.clear()
+        values[1].update(stems=True,play=True)
+        values[2].update(stems=True,play=True)
+        with self.assertRaisesRegex(BridgeError,'no longer silent'):
+            mixer.upgrade_to_ready_stems(None)
+        self.assertEqual(sent,[])
+
+    def test_requested_frequency_eq_keeps_ready_stems_neutral(self):
+        mixer, values, _ = self.mixer(lead_control='frequency-eq')
+        recipe = transition_recipe(track(), track())
+        mixer.arm(None, 1, 2, recipe)
+        self.assertEqual(recipe['requestedLeadControl'], 'frequency-eq')
+        self.assertEqual(recipe['leadControl'], 'frequency-eq')
+        self.assertEqual(values[2]['eq_mid_freq'], 0)
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        for deck in (1, 2):
+            self.assertTrue(all(values[deck][key] == .5 for key in LEAD_CONTROLS))
 
     def test_unavailable_stems_use_explicit_eq_guard_without_stem_mutation(self):
         m,v,sent=self.mixer(stems=False);recipe=transition_recipe(track(),track());m.arm(None,1,2,recipe);m.begin(None)

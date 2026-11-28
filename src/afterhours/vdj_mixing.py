@@ -8,6 +8,7 @@ from afterhours import deck_rotation
 import math
 import re
 import time
+from copy import deepcopy
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity
 
@@ -19,6 +20,56 @@ LEAD_POLICY = 'single-lead-v1'
 
 class MixerControlChanged(BridgeError):
     """An operator changed the owned mixer before a blend was dispatched."""
+
+
+def window_pair_evidence(outgoing, incoming):
+    """Frequency-band and dynamics evidence from two verified cue windows."""
+    if not (outgoing.get('replayVerified') and incoming.get('replayVerified')):
+        return {}
+    exit_window, entry = outgoing.get('exit') or {}, incoming.get('entry') or {}
+    result = {}
+    for field in ('rmsDb', 'bassDb', 'highDb', 'levelVariationDb'):
+        a, b = exit_window.get(field), entry.get(field)
+        if all(type(v) in (float, int) and math.isfinite(v) for v in (a, b)):
+            result[field] = round(b - a, 2)
+    if 'rmsDb' in result and 'highDb' in result:
+        result['sharedBrightHighs'] = min(exit_window['highDb'] - exit_window['rmsDb'],
+                                          entry['highDb'] - entry['rmsDb']) >= -16
+    return result
+
+
+def measured_recipe(plan, index):
+    recipe = deepcopy(plan['transitions'][index])
+    cues = plan.get('selections') or []
+    if len(cues) > index + 1:
+        evidence = window_pair_evidence(cues[index], cues[index + 1])
+        level_gap = evidence.get('rmsDb', 0)
+        if level_gap >= 4:
+            # Ease the louder record into the overlap without changing its
+            # solo level or allowing two basslines or leads to play together.
+            initial = recipe['entryLevel']
+            recipe['entryLevel'] = min(initial, max(.6, initial * 10 ** (-min(level_gap, 9) / 60)))
+            recipe['entryRampBeats'] = recipe['fadeBeats'] * 3 // 4
+            recipe['reason'] += f' Incoming cue measures {level_gap:.1f} dB louder; easing its channel in more slowly.'
+        elif level_gap <= -4:
+            # Keep a quieter entrance present without boosting past baseline.
+            recipe['entryLevel'] = min(.9, recipe['entryLevel'] + .10)
+            recipe['reason'] += f' Incoming cue measures {-level_gap:.1f} dB quieter; introducing it closer to its normal level.'
+        if evidence.get('sharedBrightHighs'):
+            recipe['incomingHighEq'] = .32
+            recipe['reason'] += ' Both phrase windows have strong highs; easing in the incoming percussion.'
+    return recipe
+
+
+def measured_bridge_loop(recipe, window):
+    if recipe.get('genreFamily') not in ('house', 'techno', 'dnb'):
+        return None
+    beats = window.get('verifiedLoopBeats')
+    if (beats in (4, 8)
+            and window['fadeBeats'] >= 2 * beats
+            and math.isclose(window['mixAtBeat'], window['verifiedLoopExitBeat'], abs_tol=.15)):
+        return beats
+    return None
 
 
 def transition_recipe(outgoing, incoming, style='phrase', seconds=None, bpm=None, *, quick_blend_seconds=None):
@@ -95,7 +146,7 @@ def loop_cleanup_descriptor(value):
 
 
 class NativeHandoff:
-    """One explicitly addressed start and one owned native crossfade.
+    """One explicitly addressed start and an owned native crossfade.
 
     The pair is one step of the set's deck rotation: A/B alternating, or
     A, B, C, D in order on a four-deck layout. Odd decks sit on the left of
@@ -112,13 +163,17 @@ class NativeHandoff:
         self.ramps = {}
         self.dispatched = False
         self.loop = None
+        self.blend_intro = None
 
-    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *, loop_recording=None):
+    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *,
+                 loop_recording=None, loop_beats=None, rhythm_intro=False):
         if self.dispatched:
             raise BridgeError('This transition was already dispatched. No repeat was sent.')
         if (decks not in (deck_rotation.TWO,deck_rotation.FOUR) or not deck_rotation.pair(outgoing,incoming,decks)
                 or type(beats) is not int or not 1 <= beats <= 256):
             raise BridgeError('Invalid addressed transition.')
+        if loop_beats is not None and (loop_recording is None or loop_beats not in (4, 8) or 2 * loop_beats > beats):
+            raise BridgeError('The loop does not fit the verified overlap.')
         start=value(self.q(client,'crossfader'))
         end=deck_rotation.crossfader_end(incoming)
         if abs(start-(1-end))>.02:
@@ -137,7 +192,7 @@ class NativeHandoff:
         if not as_bool(self.q(client,f'deck {outgoing} masterdeck','bool')):
             raise BridgeError('The outgoing sync reference was not confirmed. Playback was not started.')
         if loop_recording is not None:
-            self.engage_loop(client, outgoing, loop_recording, 8 if beats >= 16 else 4)
+            self.engage_loop(client, outgoing, loop_recording, loop_beats or (8 if beats >= 16 else 4))
         self.dispatched=True
         self.send(client,f'deck {incoming} play_sync')
         for attempt in range(4):
@@ -153,7 +208,27 @@ class NativeHandoff:
             raise MixerControlChanged('The playing pair changed after start. No crossfade was sent.')
         clock = incoming if self.loop else outgoing
         self.ramps['crossfade']=clock
+        if rhythm_intro and beats >= 16:
+            intro_beats = beats // 4
+            blend = start + (end-start)*.17
+            self.blend_intro = (intro_beats, blend, end, beats)
+            self.crossfade(client, clock, start, blend, intro_beats-1)
+        else:
+            self.crossfade(client, clock, start, end, beats)
+
+    def crossfade(self, client, clock, start, end, beats):
         self.send(client,f"deck {clock} repeat_start_fade 'afterhours_crossfade' {start:.6f} {end:.6f} {beats}bt & crossfader")
+
+    def finish_intro(self, client, progress, crossfader, *, pair_playing):
+        if self.blend_intro is None:
+            return
+        intro_beats, blend, end, total = self.blend_intro
+        if progress < intro_beats:
+            return
+        if not pair_playing or abs(crossfader-blend) > .035 or progress > intro_beats+2:
+            raise MixerControlChanged('The rhythm introduction was not confirmed. No further fade was sent.')
+        self.blend_intro = None
+        self.crossfade(client, self.ramps['crossfade'], crossfader, end, max(1, round(total-progress)))
 
     def engage_loop(self, client, deck, recording, beats):
         prefix = f'deck {deck} '
@@ -192,16 +267,54 @@ class NativeHandoff:
         self.loop = None
         return 'released'
 
+    def finish_outro(self, client, deck, bpm, recording, observe, beats=8):
+        """Fade the confirmed playing deck gently before the set ends."""
+        prefix = f'deck {deck} '
+        if self.ramps or not as_bool(self.q(client,prefix+'play','bool')):
+            raise MixerControlChanged('The final deck changed before its outro.')
+        def verify_recording():
+            if identity(str(self.q(client,prefix+'get_filepath','text'))) != recording:
+                raise MixerControlChanged('The final recording changed during the outro.')
+        verify_recording()
+        level = value(self.q(client,prefix+'level'))
+        if level>.015:
+            self.ramps['outro']=deck
+            self.send(client,f"{prefix}repeat_start_fade 'afterhours_outro' {level:.6f} 0.000000 {beats}bt & {prefix}level")
+            deadline=time.monotonic()+beats*60/bpm+3
+            while time.monotonic()<deadline:
+                self.sleep(.12)
+                verify_recording()
+                observe(client,clock_only=True)
+                if (not as_bool(self.q(client,prefix+'play','bool'))
+                        or value(self.q(client,prefix+'level'))<=.015):
+                    break
+            else:
+                raise BridgeError('The final fade did not settle. The playing deck was left for manual control.')
+        if as_bool(self.q(client,prefix+'play','bool')):
+            self.send(client,prefix+'pause')
+            self.sleep(.12)
+            if as_bool(self.q(client,prefix+'play','bool')):
+                raise BridgeError('The final deck did not confirm pause.')
+        self.cancel_ramps(client)
+        verify_recording()
+        if level>.015:
+            self.send(client,f'{prefix}level {level*100:.6f}%')
+
     def cancel_ramps(self, client):
         if self.ramps:
             # Bypass a cancelled worker's send guard, exactly as owned EQ ramps.
-            client.send(f"deck {self.ramps['crossfade']} repeat_stop 'afterhours_crossfade'")
+            client.send(' & '.join(f"deck {deck} repeat_stop 'afterhours_{name}'" for name,deck in sorted(self.ramps.items())))
             self.ramps.clear()
+        self.blend_intro = None
+
+
+LEAD_CONTROL_CHOICES = ('auto', 'frequency-eq')
 
 
 class TransitionMixer:
-    def __init__(self, query, send):
+    def __init__(self, query, send, *, lead_control='auto'):
         self.q, self.send = query, send
+        self.lead_control = lead_control
         self.baselines = {}
         self.ramps = {}
         self.done = set()
@@ -209,6 +322,7 @@ class TransitionMixer:
         self.incoming = None
         self.outgoing = None
         self.lead_mode = None
+        self.stems_upgrade_pending = False
         self.armed = None
         self.resume_controls = {}
 
@@ -333,20 +447,46 @@ class TransitionMixer:
         incoming_controls=self.read(client,incoming)
         if any(abs(incoming_controls[k]-.5)>.025 for k in LEAD_CONTROLS):
             raise BridgeError('Incoming vocal/instrument controls changed; restore them before preparing a mix.')
-        ready={d:self.stems_ready(client,d) for d in (outgoing,incoming)}
-        self.lead_mode='stems' if all(ready.values()) else 'frequency-eq'
-        # Record the actual control path in the reusable session evidence.
+        try_stems = self.lead_control == 'auto'
+        readiness = [self.stems_ready(client, deck) for deck in (outgoing, incoming)] if try_stems else []
+        stems_ready = try_stems and all(readiness)
+        self.lead_mode = 'stems' if stems_ready else 'frequency-eq'
+        self.stems_upgrade_pending = try_stems and not stems_ready
+        note = 'High-quality stems not ready; midrange EQ reduces overlap but cannot isolate vocals.'
+        if stems_ready:
+            note = 'Native vocal and instrument handoff; phrase boundaries remain unverified.'
+        elif not try_stems:
+            note = 'Frequency EQ selected for this set.'
         recipe.update(leadPolicy=LEAD_POLICY,tonalOverlap=False,leadControl=self.lead_mode,
-                      leadControlNote=('Native vocal and instrument handoff; phrase boundaries remain unverified.'
-                                       if self.lead_mode=='stems' else
-                                       'High-quality stems not ready; midrange EQ reduces overlap but cannot isolate vocals.'))
+                      requestedLeadControl=self.lead_control,leadControlNote=note)
         settings={'eq_low_freq':0, 'eq_mid_freq':.5 if self.lead_mode=='stems' else 0,
-                  'eq_high_freq':.5, 'level':self.baselines[incoming]['level']*recipe['entryLevel']}
+                  'eq_high_freq':recipe.get('incomingHighEq', .5), 'level':self.baselines[incoming]['level']*recipe['entryLevel']}
         if self.lead_mode=='stems':settings.update(dict.fromkeys(LEAD_CONTROLS,0))
         actual=self.set_controls(client,incoming,settings)
         self.armed={outgoing:controls,incoming:actual}
         self.resume_controls.pop(outgoing,None)
         return actual
+
+    def upgrade_to_ready_stems(self, client):
+        """Change only the silent incoming channel after both cue positions are ready."""
+        if not self.stems_upgrade_pending:
+            return False
+        try:
+            if not all(self.stems_ready(client,deck) for deck in (self.outgoing,self.incoming)):
+                return False
+        except BridgeError:
+            return False  # Optional readbacks never authorize a stem change.
+        if (as_bool(self.q(client,f'deck {self.incoming} play','bool'))
+                or abs(value(self.q(client,'crossfader'))-deck_rotation.crossfader_end(self.outgoing))>.02):
+            raise MixerControlChanged('The incoming channel is no longer silent. No transition was started.')
+        self.validate_armed(client,check_stems=False)
+        self.armed[self.incoming]=self.set_controls(client,self.incoming,
+            {'eq_mid_freq':.5, **dict.fromkeys(LEAD_CONTROLS,0)})
+        self.stems_upgrade_pending = False
+        self.lead_mode = 'stems'
+        self.recipe.update(leadControl=self.lead_mode,
+            leadControlNote='Native vocal and instrument stems became ready before the handoff.')
+        return True
 
     def fallback_from_unready_stems(self, client):
         if self.lead_mode!='stems' or all(self.stems_ready(client,d) for d in (self.outgoing,self.incoming)):
@@ -385,7 +525,11 @@ class TransitionMixer:
     def begin(self, client):
         level=self.baselines[self.incoming]['level']
         beats=self.recipe['fadeBeats']
-        self.ramp(client,'in_level',self.incoming,'level',level*self.recipe['entryLevel'],level,beats//2)
+        level_beats = self.recipe.get('entryRampBeats', beats//2)
+        self.ramp(client,'in_level',self.incoming,'level',level*self.recipe['entryLevel'],level,level_beats)
+        initial_high = self.armed[self.incoming]['eq_high_freq']
+        if initial_high < .5:
+            self.ramp(client,'in_high',self.incoming,'eq_high_freq',initial_high,.5,beats*3//4)
 
     def tick(self, client, beats):
         # Never compress missed steps into an uncontrolled burst.

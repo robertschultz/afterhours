@@ -30,6 +30,21 @@ class Routes(unittest.TestCase):
             self.assertLessEqual(abs(r['toBpm']/t['bpm']-1),.08)
             if i:self.assertEqual(r['fromBpm'],route[i-1]['toBpm'])
         self.assertEqual(validate_order([t['id'] for t in pool],pool,8,300),pool)
+    def test_timed_routes_reserve_solo_ramp_space_before_each_entry(self):
+        pool = tracks([126.5, 123.125, 127.5])
+        cues = [{'entryBeat': 80, 'exitBeat': 212}] * 3
+        transitions = [{'fadeBeats': 8}] * 2
+        full = schedule(pool, cues, transitions)
+        timed = schedule(pool, cues, transitions, entry_cadence=[30, 60])
+        self.assertEqual(full[0]['durationBeats'], 108)
+        self.assertLess(timed[0]['durationBeats'], full[0]['durationBeats'])
+        self.assertGreater(timed[1]['durationBeats'], timed[0]['durationBeats'])
+        for row, seconds in zip(timed, (30, 60)):
+            needed = row['startOffsetBeats'] + row['durationBeats'] + row['settleBeats'] + 4
+            self.assertLessEqual(needed, seconds * (row['fromBpm'] - 4) / 60)
+        protected = schedule(pool, cues, transitions, frozen=full[:1], entry_cadence=[30, 60])
+        self.assertEqual(protected[0], full[0])
+
     def test_direct_120_to_150_and_impossible_short_request_are_held(self):
         with self.assertRaises(TempoRouteError):estimate(tracks([120,150]),300)
         with self.assertRaises(TempoFitError):validate_order(['0','1'],tracks([120,150]))
@@ -123,8 +138,24 @@ class NativeRamp(unittest.TestCase):
         self.assertTrue(self.ramp.done)
         self.setup_ramp()
         self.tick(4,125)
+        self.tick(38.1,125.85)
+        self.assertFalse(self.ramp.done)
         with self.assertRaisesRegex(BridgeError, 'endpoint'):
-            self.tick(38.1,125.85)
+            self.tick(44,125.85)
+
+    def test_a_verified_later_handoff_can_accommodate_a_slow_native_ramp(self):
+        self.setup_ramp()
+        self.tick(4,125,handoff_beat=44)
+        self.tick(42,125.82,handoff_beat=52)
+        self.tick(46,125.96,handoff_beat=52)
+        self.assertTrue(self.ramp.done)
+        self.assertEqual(len(self.sent),2)  # One ramp and one stop; no pitch jump.
+
+    def test_a_ramp_cannot_use_the_handoff_beat_for_settling(self):
+        self.setup_ramp()
+        self.tick(4,125,handoff_beat=44)
+        with self.assertRaisesRegex(BridgeError,'endpoint'):
+            self.tick(43,125.85,handoff_beat=44)
 
     def test_missed_window_bad_range_and_linked_pitch_send_no_ramp(self):
         for field,value in [('pitch_lock',True),('deck 1 get_filepath','swapped'),('deck 1 pitch_range',.001)]:

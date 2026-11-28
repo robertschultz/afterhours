@@ -1,11 +1,14 @@
 """Deterministic placement and runway for the engine's exact queue."""
 
 import math
+import re
 
 from afterhours import session_curation
-from afterhours.dj_discovery import credit, normalized
+from afterhours.dj_discovery import credit, normalized, style_for
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
+from afterhours.stem_profiles import cue_pair
+from afterhours.track_metadata import clean_text, continuous_mix_cut
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, validate_order
 
@@ -24,26 +27,52 @@ def transition_cost(outgoing, incoming, cues):
     for field, weight in (('rmsDb', .12), ('bassDb', .08)):
         if finite(exit_window.get(field)) and finite(entry_window.get(field)):
             cost += abs(exit_window[field] - entry_window[field]) * weight
+    stem_fit = cue_pair(outgoing['id'],incoming['id'],cues.get(outgoing['id'],{}),cues.get(incoming['id'],{}))
+    if stem_fit:
+        cost += stem_fit['scoreAdjustment']
     return cost
 
 
-def quick_opening(session, query, found):
-    """Use an exact live match and a feasible next slot before audio analysis."""
+def quick_opening(session, query, found, *, allow_spoken_spelling=False):
+    """Use a live opener and a feasible next slot before audio analysis."""
     wanted=normalized(query)
     title,artist=named_recording(query)
     title,artist=normalized(title),normalized(artist)
     blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
     candidates=[row for row in session.get('candidates',[])
-                if row['id'] in found and row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
-    for first in candidates:
+                if row['id'] not in blocked and clean_text(row.get('title'))
+                and finite(row.get('bpm')) and row['bpm']>0]
+    live=[row for row in candidates if row['id'] in found]
+    if allow_spoken_spelling and not title and len(wanted.split()) >= 2:
+        # Accept a repeated-letter spelling from speech only after the native
+        # search settles and supplies one unambiguous artist credit.
+        names=set().union(*(credit(row.get('artist')) for row in live))
+        folded=re.sub(r'([a-z])\1+', r'\1', wanted)
+        variants={name for name in names if re.sub(r'([a-z])\1+', r'\1', name)==folded}
+        if len(variants)==1 and not any(normalized(row.get('title'))==wanted for row in live):
+            possible=next(iter(variants))
+            if abs(len(possible)-len(wanted))==1 and set(possible.split()) & set(wanted.split()):
+                wanted=possible
+    for first in live:
         first_title=normalized(first.get('title'))
         first_artists=credit(first.get('artist'))
         qualified=bool(title and first_title==title and artist in first_artists)
         if wanted!=first_title and wanted not in first_artists and not qualified:
             continue
-        followups=sorted((row for row in candidates if row['id']!=first['id']
-                          and (not qualified or normalized(row.get('title'))!=first_title)),
-                         key=lambda row: abs(first['bpm']-row['bpm']))
+        first_style = style_for(first.get('genre'))
+        provider = (first.get('catalog') or {}).get('provider')
+        def same_artist(row):
+            return bool(first_artists & credit(row.get('artist')))
+        # A cached followup is only a preparation candidate. It must be
+        # looked up again by exact identity before it can become audible.
+        followups = sorted((row for row in candidates if row['id'] != first['id']
+                            and (row['id'] in found or (provider and same_artist(row)
+                                and (row.get('catalog') or {}).get('provider') == provider))
+                            and (not qualified or normalized(row.get('title')) != first_title)
+                            and not continuous_mix_cut(row)),
+                           key=lambda row: (row['id'] not in found, not same_artist(row),
+                               bool(first_style and first_style != style_for(row.get('genre'))),
+                               abs(first['bpm'] - row['bpm'])))
         for second in followups:
             pair=[first['id'],second['id']]
             try:

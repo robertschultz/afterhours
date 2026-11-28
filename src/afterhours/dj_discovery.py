@@ -5,7 +5,7 @@ import threading
 import time
 import unicodedata
 from collections import Counter
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -13,7 +13,10 @@ from afterhours.paths import data_root
 
 DANCE = 'https://itunes.apple.com/us/rss/topsongs/limit=50/genre=17/json'
 LISTENBRAINZ = 'https://api.listenbrainz.org/1/'
+MUSICBRAINZ = 'https://musicbrainz.org/ws/2/artist'
+MUSICBRAINZ_RECORDINGS = 'https://musicbrainz.org/ws/2/recording'
 HOUSE_STYLES = ('house', 'deep house', 'tech house')
+SET_ARTIST_PREFERENCE_LIMIT = 6
 MAX_AGE = 3 * 86400
 FEED_ERRORS = (OSError, URLError, ValueError, KeyError, TypeError, AttributeError)
 
@@ -26,12 +29,21 @@ def credit(value):
     return frozenset(normalized(name) for name in re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(value or ''), flags=re.I) if normalized(name))
 
 
+def artist_appearances(tracks):
+    return Counter(artist for track in tracks for artist in credit(track.get('artist')))
+
+
+def heavily_played_credits(tracks):
+    return {artist for artist, count in artist_appearances(tracks).items()
+            if count >= SET_ARTIST_PREFERENCE_LIMIT}
+
+
 def identity(title, artist):
     return normalized(title), tuple(sorted(credit(artist)))
 
 
 def read_json(url):
-    request = Request(url, headers={'User-Agent': 'Afterhours/1.0 DJ chart discovery', 'Accept': 'application/json'})
+    request = Request(url, headers={'User-Agent': 'Afterhours/1.0 (https://github.com/robertschultz/afterhours)', 'Accept': 'application/json'})
     with urlopen(request, timeout=7) as response:
         content = response.read(1_000_001)
     if len(content) > 1_000_000:
@@ -68,15 +80,117 @@ def listenbrainz_style(style, now, fetch):
     return {'source': 'ListenBrainz genre-tagged popularity', 'observedAt': now, 'style': style, 'rows': rows}
 
 
+def similar_artists(artist, fetch):
+    escaped = artist.replace('\\', '\\\\').replace('"', '\\"')
+    search = urlencode({'query': f'artist:"{escaped}"', 'fmt': 'json', 'limit': 6})
+    rows = fetch(MUSICBRAINZ + '?' + search).get('artists', [])
+    # A fuzzy resolver could quietly associate the set with a different artist.
+    exact = {row.get('id') for row in rows if normalized(row.get('name')) == normalized(artist)}
+    if len(exact) != 1:
+        return ()
+    mbid = exact.pop()
+    if not re.fullmatch(r'[a-f0-9-]{36}', str(mbid)):
+        return ()
+    options = {'mode': 'easy', 'max_similar_artists': 8, 'max_recordings_per_artist': 2,
+               'pop_begin': 55, 'pop_end': 100}
+    radio = fetch(LISTENBRAINZ + 'lb-radio/artist/' + mbid + '?' + urlencode(options))
+    artists = {}
+    for group in radio.values():
+        if not isinstance(group, list):
+            continue
+        for row in group:
+            name = row.get('similar_artist_name')
+            key = normalized(name)
+            if key and key != normalized(artist) and isinstance(name, str):
+                artists.setdefault(key, name.strip())
+    return tuple(artists.values())[:8]
+
+
+def recording_house_tags(title, artist, duration, fetch):
+    def quoted(value):
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    query = f'recording:{quoted(title)} AND artist:{quoted(artist)}'
+    recordings = fetch(MUSICBRAINZ_RECORDINGS + '?' + urlencode({'query':query, 'fmt':'json', 'limit':12}))
+    expected_title, expected_credits = identity(title, artist)
+    exact = {}
+    for row in recordings.get('recordings', []):
+        if not isinstance(row, dict) or normalized(row.get('title')) != expected_title:
+            continue
+        credits = {normalized(person.get('name') or (person.get('artist') or {}).get('name'))
+                   for person in row.get('artist-credit', []) if isinstance(person, dict)}
+        length = row.get('length')
+        if (credits != set(expected_credits) or not re.fullmatch(r'[a-f0-9-]{36}', str(row.get('id')))
+                or duration is not None and (type(length) is not int or abs(length/1000-duration)>2)):
+            continue
+        exact[row['id']] = row
+    if len(exact) != 1:
+        return ()
+    tags = next(iter(exact.values())).get('tags') or []
+    return tuple(sorted({normalized(tag['name']) for tag in tags
+                         if isinstance(tag, dict) and type(tag.get('count')) is int and tag['count'] > 0
+                         and normalized(tag.get('name')) in HOUSE_STYLES}))
+
+
+def recording_lookup_key(track):
+    title, artist = track.get('title'), track.get('artist')
+    if (not isinstance(title, str) or not isinstance(artist, str) or not title.isprintable()
+            or not artist.isprintable() or len(title)>160 or len(artist)>120):
+        return None
+    key = identity(title, artist)
+    if not all(key):
+        return None
+    duration = track.get('duration')
+    return (*key, round(duration) if type(duration) in (int, float) and 0 < duration <= 86400 else None)
+
+
 def style_for(request):
     text = normalized(request)
-    for style in ('tech house', 'deep house', 'house'):
-        if re.search(r'\b'+style+r'\b', text):
+    if re.search(r'\b(?:gospel|christian|ccm|worship)\b', text):
+        return 'gospel'
+    for style, aliases in (
+        ('tech house', 'tech house'), ('deep house', 'deep house'), ('house', 'house'),
+        ('hip hop', 'hip hop|hiphop|rap'), ('r&b', 'r b|rhythm and blues|rnb'),
+        ('rock', 'rock'), ('jazz', 'jazz'),
+        ('disco', 'disco'), ('funk', 'funk'), ('soul', 'soul'), ('reggae', 'reggae|dancehall'),
+        ('country', 'country'), ('latin', 'latin|reggaeton|salsa|bachata'), ('pop', 'pop'),
+        ('techno', 'techno'), ('drum and bass', 'drum and bass|drum bass|dnb'),
+        ('indie dance', 'indie dance'), ('electronic', 'electronic|electronica|idm'),
+        ('alternative', 'alternative'),
+    ):
+        if re.search(r'\b(?:'+aliases+r')\b', text):
             return style
-    return ''
+    return 'dance' if text == 'dance' else ''
 
 
-def set_slot(request):
+def faith_set_style(order, direction=''):
+    if not order:
+        return False
+    return (style_for(direction) or style_for(order[0].get('genre'))) == 'gospel'
+
+
+def fits_faith_set(track, opening):
+    genre = normalized(track.get('genre'))
+    return (style_for(genre) == 'gospel'
+            or (genre in ('', 'unknown', 'unclassified')
+                and bool(credit(track.get('artist')) & credit(opening.get('artist')))))
+
+
+class SetStyleMismatch(ValueError):
+    """The proposed tail would leave the active musical direction."""
+
+
+def require_faith_set(order, *, direction='', existing=(), opening=None):
+    if not order or not faith_set_style([opening] if opening else order, direction):
+        return
+    anchor = opening or order[0]
+    if any(track['id'] != anchor['id'] and track['id'] not in existing
+           and not fits_faith_set(track, anchor) for track in order):
+        raise SetStyleMismatch('Choose a Christian contemporary or gospel successor for this set. '
+                               'An unrelated genre needs a new musical direction.')
+
+
+def set_slot(request, *, plan=None, at=None):
     text=normalized(request)
     for name, pattern, target in (
         ('closing',r'\b(closing set|last track|wind down|after hours|afterhours set)\b',.40),
@@ -86,6 +200,9 @@ def set_slot(request):
     ):
         if re.search(pattern,text):
             return {'name':name,'targetEnergy':target}
+    if plan and at is not None and plan['startAt'] <= at <= plan['endAt']:
+        from afterhours.set_plan import planned_energy
+        return {'name':'planned energy curve','targetEnergy':planned_energy(plan,at)/5}
     return None
 
 
@@ -95,6 +212,90 @@ class Discovery:
         self.stop = threading.Event()
         self.worker = None
         self.feeds = {}
+        self.artist_lock = threading.Lock()
+        self.artist_cache = {}
+        self.artist_pending = {}
+        self.recording_pending = {}
+        self.recording_cache = {}
+        self.artist_worker = None
+        self.last_artist_lookup = -1.0
+
+    def neighbors(self, artist):
+        """Schedule public artist metadata without blocking the playback worker."""
+        name = re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(artist or ''), maxsplit=1, flags=re.I)[0].strip()
+        key = normalized(name)
+        if len(key) < 2 or len(name) > 120 or self.stop.is_set():
+            return ()
+        with self.artist_lock:
+            cached = self.artist_cache.get(key)
+            if cached and self.clock() < cached[0]:
+                return cached[1]
+            if key not in self.artist_pending and len(self.artist_pending) < 6:
+                self.artist_pending[key] = name
+            if self.artist_worker is None:
+                self.artist_worker = threading.Thread(target=self.read_artist_queue, name='afterhours-related-artists', daemon=True)
+                self.artist_worker.start()
+        return ()
+
+    def read_artist_queue(self):
+        while True:
+            with self.artist_lock:
+                if self.stop.is_set() or not (self.artist_pending or self.recording_pending):
+                    self.artist_pending.clear()
+                    self.recording_pending.clear()
+                    self.artist_worker = None
+                    return
+                artist_lookup = bool(self.artist_pending)
+                pending = self.artist_pending if artist_lookup else self.recording_pending
+                cache = self.artist_cache if artist_lookup else self.recording_cache
+                key = next(iter(pending))
+                search = pending[key]
+            if self.stop.wait(max(0, 1.1 - (time.monotonic() - self.last_artist_lookup))):
+                continue
+            lookup = similar_artists if artist_lookup else recording_house_tags
+            arguments = (search,) if artist_lookup else search
+            try:
+                self.last_artist_lookup = time.monotonic()
+                rows = lookup(*arguments, self.fetch)
+            except HTTPError as exc:
+                rows = ()
+                if artist_lookup and exc.code == 503 and not self.stop.wait(2):
+                    try:
+                        self.last_artist_lookup = time.monotonic()
+                        rows = lookup(*arguments, self.fetch)
+                    except FEED_ERRORS:
+                        pass
+            except FEED_ERRORS:
+                rows = ()
+            with self.artist_lock:
+                pending.pop(key, None)
+                cache[key] = (self.clock() + (21600 if rows else 600), rows)
+                if len(cache) > 128:
+                    cache.pop(next(iter(cache)))
+
+    def request_house_tag_checks(self, tracks):
+        with self.artist_lock:
+            if self.stop.is_set():
+                return
+            for track in tracks:
+                if len(self.recording_pending) >= 4:
+                    break
+                key = recording_lookup_key(track)
+                if key and key not in self.recording_pending:
+                    cached = self.recording_cache.get(key)
+                    if not cached or self.clock() >= cached[0]:
+                        self.recording_pending[key] = (track['title'], track['artist'], key[-1])
+            if self.recording_pending and self.artist_worker is None:
+                self.artist_worker = threading.Thread(target=self.read_artist_queue,
+                                                      name='afterhours-public-music-metadata', daemon=True)
+                self.artist_worker.start()
+
+    def has_recording_house_tag(self, track):
+        key = recording_lookup_key(track)
+        with self.artist_lock:
+            cached = self.recording_cache.get(key)
+            return bool(cached and self.clock() < cached[0] and cached[1])
+
 
     def refresh(self):
         now = self.clock()
@@ -156,14 +357,25 @@ class Discovery:
             if hit:
                 result['danceChart'] = {'rank': hit['rank'], 'source': dance['source'],
                                         'observedAt': dance['observedAt']}
-        preferred = style_for(track.get('genre')) or 'house'
-        feed = self.fresh(preferred)
+        preferred = style_for(track.get('genre'))
+        feed = self.fresh(preferred) if preferred in HOUSE_STYLES else None
         if feed:
             hit = next((row for row in feed['rows'] if identity(row['title'], row['artist']) == key), None)
             if hit:
                 result['genrePopularity'] = {'percentile': hit['percentile'], 'source': feed['source'],
                                              'style': preferred, 'observedAt': feed['observedAt']}
         return result
+
+    def house_recordings(self):
+        """Exact recording and release-tag evidence already in the public feeds."""
+        return {identity(row['title'], row['artist']) for style in HOUSE_STYLES
+                if (feed := self.fresh(style)) for row in feed['rows']
+                if isinstance(row, dict) and isinstance(row.get('title'), str) and isinstance(row.get('artist'), str)}
+
+    def cached_neighbors(self, artist):
+        with self.artist_lock:
+            cached = self.artist_cache.get(normalized(artist))
+            return cached[1] if cached and self.clock() < cached[0] else ()
 
     def hints(self, style, planned, *, searched=()):
         feed = self.fresh(style)
@@ -173,7 +385,10 @@ class Discovery:
         used = set()
         results = []
         # Give the DJ a mix of familiar and less familiar directions.
-        rows = sorted(feed['rows'], key=lambda row: -row['percentile'])
+        if style == 'dance':
+            rows = sorted(feed['rows'], key=lambda row: row['rank'])
+        else:
+            rows = sorted(feed['rows'], key=lambda row: -row['percentile'])
         current = [row for row in rows if row.get('releaseYear', 0) >= time.gmtime(self.clock()).tm_year-1]
         for row in current[:2] + rows[:len(rows)//2:2] + rows[len(rows)//2::2] + rows:
             artist = credit(row['artist'])
@@ -241,7 +456,10 @@ def rank_candidates(tracks, requested_style, anchors, recent, preferred, discove
         score += .8 if related_credit else 0
         energy=track.get('energy')
         if set_slot and type(energy) in (int,float) and 0<=energy<=1:
-            score += 1.5*(1-abs(energy-set_slot['targetEnergy']))
+            distance=abs(energy-set_slot['targetEnergy'])
+            score += 1.5*(1-distance)
+            facts[track_id]['setEnergyFit']={'target':round(set_slot['targetEnergy'],2),
+                                             'catalogEnergy':round(energy,2),'gap':round(distance,2)}
         score -= 3.5 * edges.get('recentArtistAppearances', 0)
         chart = evidence.get('danceChart')
         if chart:

@@ -35,6 +35,27 @@ class DiscoveryTests(unittest.TestCase):
                     with self.assertRaisesRegex(BridgeError,'folder changed'):job.step(None)
                     self.assertEqual(s.folder['id'],'old')
 
+    def test_exact_live_artist_opens_after_two_feasible_recordings(self):
+        session = DJSession(threading.Lock())
+        now = [0.0]
+        artist = 'Fleetwood Mac'
+        job = CatalogSearch(session, [artist], '', '', 40, 300,
+                            clock=lambda: now[0], opening_query='fleetwood mac')
+        rows = [{'id': tid, 'artist': artist, 'metadata': {
+            'id': tid, 'artist': artist, 'title': title, 'bpm': bpm,
+        }} for tid, title, bpm in [('a', 'Dreams', 120), ('b', 'You Make Loving Fun', 121)]]
+        with patch('afterhours.vdj_discovery.folder_state', return_value={'id': 'folder'}), \
+             patch('afterhours.vdj_discovery.selection', side_effect=rows), patch.object(session, 'send'):
+            job.step(None)
+            now[0] = 2
+            job.step(None)
+            job.step(None)
+            self.assertFalse(job.done)
+            job.step(None)
+        self.assertTrue(job.done)
+        self.assertEqual(session.snapshot()['catalogSearch']['foundIds'], ['a', 'b'])
+        self.assertEqual(job.examined, 2)
+
     def test_public_search_progress_retains_names_tempo_and_actual_read_count(self):
         s=DJSession(threading.Lock());now=[0.0]
         job=CatalogSearch(s,['John Summit','Dom Dolla'],'John Summit; Dom Dolla','Tech House',124,128,clock=lambda:now[0])
@@ -66,11 +87,99 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(all(v.args[1].startswith(('search ','browser_')) for v in send.call_args_list))
             self.assertIn('Reference two',s.positions['2']['query'])
 
+    def test_rolling_seed_rejects_title_hits_and_matches_chart_recording(self):
+        rows = [
+            ('untitled', None, 'Justice'),
+            ('title-hit', 'Poetic Justice (feat. Drake)', 'Kendrick Lamar'),
+            ('similar-credit', 'Neverender', 'Justice Crew'),
+            ('other-recording', 'D.A.N.C.E.', 'Justice'),
+            ('exact-recording', 'Neverender', 'Justice & Tame Impala'),
+        ]
+        selections = [
+            {'id': identifier, 'artist': artist, 'metadata': {
+                'id': identifier, 'title': title, 'artist': artist, 'bpm': 124}}
+            for identifier, title, artist in rows
+        ]
+        for title, expected in (('', {'other-recording', 'exact-recording'}),
+                                ('Neverender', {'exact-recording'})):
+            with self.subTest(seed=title):
+                session = DJSession(threading.Lock())
+                now = [0.0]
+                job = CatalogSearch(session, ['Justice'], '', '', 115, 135, clock=lambda: now[0])
+                job.set_rolling_seed('Justice', title)
+                with patch('afterhours.vdj_discovery.folder_state', return_value={'id': 'folder'}), \
+                        patch('afterhours.vdj_discovery.selection', side_effect=selections), \
+                        patch.object(session, 'send'):
+                    job.step(None)
+                    now[0] = 2
+                    job.step(None)
+                    for _ in selections:
+                        job.step(None)
+                self.assertEqual(job.seen, expected)
+                self.assertEqual({track['id'] for track in session.snapshot()['candidates']}, expected)
+
     def test_empty_search_has_a_short_deadline_and_partial_finds_survive(self):
         s=DJSession(threading.Lock());now=[0.0];job=CatalogSearch(s,['Missing'],'','',100,130,clock=lambda:now[0])
         with patch('afterhours.vdj_discovery.folder_state',return_value={'id':'folder'}),patch.object(s,'send'):
             job.step(None);now[0]=26;job.step(None)
         self.assertTrue(job.done);self.assertIn('Keeping',s.snapshot()['catalogSearch']['message'])
+
+    def test_timed_search_archives_matches_without_using_their_full_quota(self):
+        session = DJSession(threading.Lock())
+        self.addCleanup(session.crate.close)
+        now = [0]
+        job = CatalogSearch(session, ['House'], '', '', 110, 140, clock=lambda:now[0])
+        job.rolling = job.reuse_matches = True
+        job.target = job.quota = 2
+        job.set_rolling_seed('', '', eligible=lambda row:row['genre'] == 'House' and row['id'] != 'played')
+        rows = [('played','House'), ('other','Dub'), ('new1','House'), ('new2','House')]
+        selections = [{'id':identifier, 'artist':'DJ', 'metadata':{
+            'id':identifier,'title':identifier,'artist':'DJ','genre':genre,'bpm':125}} for identifier, genre in rows]
+        with patch('afterhours.vdj_discovery.folder_state', return_value={'id':'folder'}), \
+             patch('afterhours.vdj_discovery.selection', side_effect=selections), patch.object(session, 'send'):
+            job.step(None)
+            now[0] = 2
+            job.step(None)
+            for _ in selections[:-1]:
+                job.step(None)
+                self.assertFalse(job.done)
+            job.step(None)
+        self.assertTrue(job.done)
+        self.assertEqual(job.seen, {identifier for identifier, _ in rows})
+        catalog = session.snapshot()['catalogSearch']
+        self.assertEqual((catalog['matched'], catalog['rollingProspects']), (4,2))
+
+    def test_rolling_search_confirms_empty_rows_without_scrolling_and_accepts_late_results(self):
+        late = {'id':'late','artist':'Fixture','metadata':{'id':'late','title':'Late result',
+                                                         'artist':'Fixture','bpm':125}}
+        for recovered in (False, True):
+            with self.subTest(recovered=recovered):
+                session = DJSession(threading.Lock())
+                self.addCleanup(session.crate.close)
+                now = [0]
+                client = Mock()
+                client.query.return_value = 0
+                job = CatalogSearch(session, ['Reference'], '', '', 110, 140, clock=lambda:now[0])
+                job.rolling = True
+                job.reuse_matches = True
+                job.target = 1
+                with patch('afterhours.vdj_discovery.folder_state',return_value={'id':'folder'}), \
+                     patch('afterhours.vdj_discovery.selection',side_effect=[None,late if recovered else None]) as selection, \
+                     patch.object(session, 'send') as send:
+                    job.step(client)
+                    now[0] = 1.5
+                    job.step(client)
+                    job.step(client)
+                    self.assertFalse(job.done)
+                    now[0] = 2
+                    job.step(client)
+                    self.assertEqual(selection.call_count, 1)
+                    now[0] = 3
+                    job.step(client)
+                self.assertTrue(job.done)
+                self.assertEqual(job.seen, {'late'} if recovered else set())
+                self.assertEqual(client.query.call_count, 1 if recovered else 2)
+                self.assertFalse(any('scroll +1' in call.args[-1] for call in send.call_args_list))
 
     def test_playback_search_shares_worker_and_yields_before_transition(self):
         s=DJSession(threading.Lock());s.update(active=True,phase='playing',order=[{'id':'a'}])
@@ -129,6 +238,20 @@ class QueueRevisionTests(unittest.TestCase):
         self.assertEqual(plan['selections'][:2], original['selections'][:2])
         self.assertIsNone(s.availability.blocked('2'))
         self.assertIn('tempo or key', s.state['events'][-1]['text'])
+        send.assert_not_called()
+
+    def test_untimed_rolling_set_recovers_after_the_paused_recording_is_reanalyzed(self):
+        from afterhours.vdj_session import TrackMetadataChanged
+
+        s, original = self.prepared()
+        s.update(index=1, rollingQueue={'status':'preparing'})
+        s.state['setlist']['sourceById']['2'] = 'planner'
+        change = TrackMetadataChanged({**s.state['order'][2], 'bpm':131})
+        with patch('afterhours.cue_planner.verify_receipts'), patch.object(s, 'send') as send:
+            order, plan = s.substitute_rejected_preload(2, metadata_changed=change)
+        self.assertEqual([track['id'] for track in order], ['0','1','3'])
+        self.assertEqual(plan['selections'][:2], original['selections'][:2])
+        self.assertIsNone(s.availability.blocked('2'))
         send.assert_not_called()
 
     def test_rejected_preload_keeps_operator_queue_intact(self):

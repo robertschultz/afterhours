@@ -1,0 +1,352 @@
+"""Regression tests for the offline mix-quality benchmark."""
+
+import json
+from pathlib import Path
+import runpy
+from tempfile import TemporaryDirectory
+import unittest
+
+
+SCORER = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts' / 'evaluate-set-quality.py'))
+
+
+class SetQualityBenchmarkTests(unittest.TestCase):
+    def test_lead_time_does_not_double_count_overlaps_or_missing_energy(self):
+        plan = {
+            'schemaVersion': 1, 'targetSeconds': 3600, 'setId': 'a', 'briefId': 'house',
+            'catalogSnapshotId': 'fixed', 'cadenceSeconds': [60, 30],
+            'allowedGenres': ['house'],
+            'energyCurve': [{'startSeconds': 0, 'target': .5}, {'startSeconds': 60, 'target': .75}],
+            'tracks': [
+                {'recordingId': 'one', 'artist': 'Artist', 'genre': 'HOUSE', 'energy': .25,
+                 'entrySeconds': 0, 'audibleEndSeconds': 64, 'cueSeconds': 30},
+                {'recordingId': 'two', 'artist': 'Artist', 'genre': 'dance',
+                 'entrySeconds': 60, 'audibleEndSeconds': 90, 'cueSeconds': 0},
+                {'recordingId': 'one', 'artist': 'Artist', 'genre': None, 'energy': .75,
+                 'entrySeconds': 100, 'audibleEndSeconds': 3600, 'cueSeconds': 30},
+            ],
+        }
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'plan.json'
+            path.write_text(json.dumps(plan))
+            score = SCORER['read_plan'](path)
+        self.assertEqual(score['timelineGapSeconds'], 10)
+        self.assertEqual(score['leadSecondsByGenre'], {'house': 60, 'dance': 30})
+        self.assertEqual(score['outOfBriefGenreLeadSeconds'], 30)
+        self.assertEqual(score['unclassifiedLeadSeconds'], 3500)
+        self.assertEqual(score['energyKnownLeadSeconds'], 3560)
+        self.assertEqual(score['energyAndGenreByPhase'][0]['energyMeanAbsoluteError'], .25)
+        self.assertEqual(score['energyAndGenreByPhase'][1]['energyMeanAbsoluteError'], 0)
+        self.assertEqual(score['extraPlaysByRecording'], {'one': 1})
+        self.assertEqual(score['extraPlaysByArtistCredit'], {'artist': 2})
+        self.assertEqual(score['trackDwell'][0]['audibleSeconds'], 64)
+        self.assertEqual(score['plannedOverlapsSeconds'], [4, 0])
+        self.assertEqual(score['timingByTarget']['30']['within5Seconds'], 0)
+        self.assertEqual(score['timingByTarget']['60']['within5Seconds'], 1)
+        self.assertIsNone(score['listeningVerdict'])
+
+    def test_truncated_receipts_cannot_claim_complete_cadence(self):
+        with TemporaryDirectory() as folder:
+            prefix = Path(folder) / 'interrupted'
+            summary = {
+                'test': {'event': 'Interrupted', 'seconds': 100}, 'confirmedHandoffs': 2,
+                'syncObserved': 2, 'handoffsWithMixerSamples': 2,
+                'loopWrappedAndReleased': 1, 'stemHandoffs': 0, 'cadenceSeconds': [60, 30],
+            }
+            Path(f'{prefix}-owner.json').write_text(json.dumps({'at': 1000}))
+            Path(f'{prefix}-summary.json').write_text(json.dumps(summary))
+            Path(f'{prefix}-receipts.json').write_text(json.dumps([{'verified': True, 'at': 1060}]))
+            score = SCORER['read_trial'](prefix)
+        self.assertFalse(score['completeHour'])
+        self.assertIsNone(score['timingByTarget'])
+        self.assertIsNone(score['clippedSamplesThroughCaptureStop'])
+        self.assertIsNone(score['listeningVerdict'])
+
+    def test_observed_run_classifies_timing_and_quiet_without_claiming_an_hour(self):
+        with TemporaryDirectory() as folder:
+            prefix = Path(folder) / 'run'
+            Path(f'{prefix}-owner.json').write_text(json.dumps({'id':'run','at':1000}))
+            def log(name, rows):
+                Path(f'{prefix}-{name}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            log('hour', [
+                {'event':'Typed timed opening requested','entryCadence':[30,60]},
+                {'event':'Endurance window','startedAt':1000},
+                {'event':'Endurance heartbeat','at':'1970-01-01T00:19:25+00:00','index':2,'phase':'playing'},
+            ])
+            handoffs = [
+                {'kind':'native-handoff','verified':True,'synced':True,'at':1045,'blendSeconds':4,
+                 'schedulerReadback':{'scheduledFromBeat':64,'guardedFromBeat':72,
+                                      'cadenceTargetBeat':60,'mixAtBeat':80,'scheduledBpm':120},
+                 'entryIntervalSeconds':40,'targetIntervalSeconds':30,'deckReadyRelativeToTargetSeconds':5},
+                {'kind':'native-handoff','verified':True,'synced':True,'at':1109,'blendSeconds':8,
+                 'entryIntervalSeconds':60,'targetIntervalSeconds':60,'deckReadyRelativeToTargetSeconds':-2},
+            ]
+            log('handoffs', handoffs)
+            master = [
+                {'event':'master-monitor-started','owner':'run','afterStartSeconds':.2},
+                {'event':'quiet-window','at':1041}, {'event':'quiet-window','at':1097},
+                {'event':'master-heartbeat','capturedAudioSeconds':105,'sequenceDiscontinuities':0,
+                 'clippedSamples':0,'longestBelowMinus65Seconds':.2},
+            ]
+            log('master', master)
+            score = SCORER['read_observed_run'](prefix)
+            self.assertFalse(score['completeHour'])
+            self.assertEqual(score['verifiedHandoffs'], 2)
+            self.assertEqual(score['timingByTarget']['30']['missesOutside2Seconds']['readyAfterTarget'], 1)
+            self.assertEqual(score['timingByTarget']['30']['worstAbsoluteErrorSeconds'], 10)
+            self.assertEqual(score['timingByTarget']['60']['within2Seconds'], 1)
+            self.assertEqual(score['lateEntriesOutside5Seconds'], [{
+                'outgoing':None, 'incoming':None, 'targetSeconds':30, 'secondsLate':10,
+                'secondsLateBeforeDeckReady':5, 'secondsLateAfterDeckReady':5, 'timingBasis':None,
+                'schedulerReadback':{'secondsTargetAlreadyPassed':2,'secondsPastTargetAfterGuards':6,
+                                     'secondsBeyondGuardAndTargetToChosenBar':4},
+            }])
+            self.assertEqual(score['openEntryInterval'], {'trackIndex':2,'elapsedSeconds':65,
+                                                         'targetSeconds':30,'pastTargetSeconds':35})
+            self.assertEqual(score['quietWindowsDuringBlend'], 1)
+            self.assertEqual(score['quietWindowsOutsideBlend'], 1)
+            self.assertIsNone(score['measuredQuietSecondsDuringBlend'])
+            master.insert(-1, {'event':'quiet-window','at':1044.02,'windowSeconds':.05})
+            log('master', master)
+            score = SCORER['read_observed_run'](prefix)
+            self.assertEqual(score['quietWindowsDuringBlend'], 2)
+            self.assertEqual(score['quietWindowsOutsideBlend'], 1)
+            self.assertEqual(score['quietWindowsWithDuration'], 1)
+            self.assertAlmostEqual(score['measuredQuietSecondsDuringBlend'], .03)
+            self.assertIsNone(score['listeningVerdict'])
+            self.assertEqual(score['verifiedSoloQuietByRecording'], [])
+            handoffs[0].update(outgoingRecordingId='exact:a', incomingRecordingId='exact:b')
+            handoffs[1].update(outgoingRecordingId='exact:b', incomingRecordingId='exact:c',
+                               outgoing='Second recording')
+            log('handoffs', handoffs)
+            master[2:2] = [
+                {'event':'quiet-window','at':1095,'windowSeconds':.05,'consecutive':1},
+                {'event':'quiet-window','at':1095.053,'windowSeconds':.05,'consecutive':2},
+                {'event':'quiet-window','at':1096.9,'windowSeconds':.05,'consecutive':1},
+            ]
+            master.insert(-1, {'event':'quiet-window','at':1115,'windowSeconds':.05})
+            log('master', master)
+            self.assertEqual(SCORER['read_observed_run'](prefix)['verifiedSoloQuietByRecording'], [{
+                'recordingId':'exact:b', 'title':'Second recording', 'firstQuietAtSetSeconds':94.95,
+                'windowCount':3, 'measuredQuietSeconds':.15, 'longestConsecutiveQuietSeconds':.1,
+            }])
+            self.assertEqual(SCORER['read_observed_run'](prefix)['earlyEntriesOutside5Seconds'], [])
+            handoffs[1].update(entryIntervalSeconds=48, deckReadyRelativeToTargetSeconds=-18,
+                               timingBasis='cadence-recovery-measured-exit')
+            log('handoffs', handoffs)
+            self.assertEqual(SCORER['read_observed_run'](prefix)['earlyEntriesOutside5Seconds'], [{
+                'outgoing':'Second recording', 'incoming':None, 'targetSeconds':60, 'secondsEarly':12,
+                'deckReadyRelativeToTargetSeconds':-18, 'timingBasis':'cadence-recovery-measured-exit',
+            }])
+            master[0]['owner'] = 'different-run'
+            log('master', master)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                SCORER['read_observed_run'](prefix)
+
+    def test_queue_runway_excludes_blends_gaps_and_reports_real_uncommitted_time(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'runway.jsonl'
+            owner = {'id':'run', 'at':1000}
+            rows = [dict(owner='run', startedAt=1000, at=1000+second,
+                         committedSuccessors=committed, stagedSuccessors=staged,
+                         phase=phase, index=index) for second,committed,staged,phase,index in (
+                            (10,0,0,'playing',0), (12,0,1,'playing',0),
+                            (14,1,0,'playing',0), (16,1,0,'playing',0),
+                            (18,1,0,'mixing',0), (20,0,0,'playing',1),
+                            (40,0,0,'playing',1), (42,0,0,'playing',1), (50,0,0,'playing',1),
+                         )]
+            path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            self.assertEqual(SCORER['observed_queue_runway'](path, owner, 1045), {
+                'firstPlayingSampleSeconds':10, 'lastPlayingSampleSeconds':42, 'playingSamples':7,
+                'measuredPlayingSeconds':8, 'minimumCommittedSuccessors':0, 'medianCommittedSuccessors':0,
+                'secondsWithoutCommittedSuccessor':6, 'secondsWithoutCommittedOrStagedSuccessor':4,
+                'committedSuccessorCoverage':.25, 'longestWithoutCommittedSuccessorSeconds':4,
+                'longestWithoutCommittedOrStagedSuccessorSeconds':2,
+            })
+
+    def test_endurance_observation_is_separate_from_verified_cleanup_stop(self):
+        with TemporaryDirectory() as folder:
+            prefix = Path(folder) / 'run'
+            Path(f'{prefix}-owner.json').write_text(json.dumps({'id':'run','at':1000}))
+            logs = {
+                'hour': [
+                    {'event':'Typed timed opening requested','entryCadence':[30,60]},
+                    {'event':'Endurance window','startedAt':1000},
+                    {'event':'Up Next overlay changed','at':'1970-01-01T00:16:41+00:00',
+                     'visible':True,'state':'committed','label':'Track B'},
+                    {'event':'Endurance reached','at':'1970-01-01T01:16:40+00:00',
+                     'tracks':2,'missingNextSamples':0},
+                    {'event':'Stop verified','at':'1970-01-01T01:16:48+00:00','nativePhase':'stopped'},
+                ],
+                'handoffs': [
+                    {'kind':'native-handoff','verified':True,'synced':True,'at':1035,'blendSeconds':4,
+                     'entryIntervalSeconds':30,'targetIntervalSeconds':30},
+                    {'kind':'queue','phase':'stopped','seconds':3608},
+                ],
+                'master': [{'event':'master-monitor-started','owner':'run'}],
+            }
+            for kind, rows in logs.items():
+                Path(f'{prefix}-{kind}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            score = SCORER['read_observed_run'](prefix)
+            self.assertTrue(score['completeHour'])
+            self.assertTrue(score['stopVerified'])
+            self.assertIsNone(score['transportPauseVerified'])
+            self.assertEqual(score['observedSeconds'], 3600)
+            self.assertEqual(score['upNextOverlay']['missingWhilePlayingSamples'], 0)
+            logs['hour'][-1].update(event='Stop transport verified', cleanupPending=True)
+            Path(f'{prefix}-hour.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in logs['hour']))
+            score = SCORER['read_observed_run'](prefix)
+            self.assertTrue(score['transportPauseVerified'])
+            self.assertFalse(score['stopVerified'])
+
+    def test_observed_overlay_distinguishes_staged_committed_and_legacy_track_names(self):
+        def change(second, visible, label, state=None):
+            return {'event':'Up Next overlay changed', 'at':f'1970-01-01T00:00:{second:02}+00:00',
+                    'visible':visible, 'label':label, 'state':state}
+        rows = [change(4, True, 'Finding a track'), change(7, True, 'One', 'staged'),
+                change(10, True, 'One', 'committed'), change(14, True, 'Two'),
+                change(18, False, ''), {'event':'Endurance reached', 'at':'1970-01-01T00:00:20+00:00',
+                                        'missingNextSamples':1}]
+        score = SCORER['observed_up_next'](rows, 1)
+        self.assertEqual(score['firstSampleAfterStartSeconds'], 3)
+        self.assertEqual(score['missingWhilePlayingSamples'], 1)
+        self.assertEqual(score['sampledSecondsByState'], {'searching':3, 'staged':3, 'committed':4,
+                                                         'named-unverified':4, 'hidden':2})
+
+    def test_overlay_commitment_can_be_confirmed_after_an_initially_unobserved_handoff(self):
+        def event(second, name, **fields):
+            return {'event':name, 'at':f'1970-01-01T00:00:{second:02}+00:00', **fields}
+
+        rows = [
+            event(3, 'Endurance window', trackUpNextSettlement=True),
+            event(4, 'Up Next overlay changed', visible=True, label='Finding a track', state='searching'),
+            event(5, 'Rolling handoff', index=1, expectedCurrentRecordingId='one', expectedNextRecordingId=None),
+            event(6, 'Up Next committed after handoff', index=1, currentRecordingId='one',
+                  expectedNextRecordingId='two', nextRecordingId='stale'),
+            event(8, 'Up Next committed after handoff', index=1, currentRecordingId='one',
+                  expectedNextRecordingId='two', nextRecordingId='two'),
+            event(9, 'Rolling handoff', index=2, expectedCurrentRecordingId='two', expectedNextRecordingId=None),
+            event(10, 'Endurance reached'),
+        ]
+        score = SCORER['observed_up_next'](rows, 1)
+        self.assertEqual(score['handoffSamples'], {'unobserved':2})
+        self.assertEqual(score['afterHandoffCommitment'],
+                         {'observed':1, 'unobserved':1,
+                          'medianSecondsFromHandoffSample':3, 'maxSecondsFromHandoffSample':3})
+
+    def test_overlay_score_reports_wrong_artist_at_a_sampled_handoff(self):
+        overlay = {'event':'Up Next overlay changed','at':'1970-01-01T00:00:03+00:00',
+                   'visible':True,'label':'One · Correct Artist','state':'committed'}
+        verified = {'event':'Rolling handoff','at':'1970-01-01T00:00:04+00:00',
+                    'next':'One','expectedNextLabel':'One · Correct Artist'}
+        mismatch = {**verified,'at':'1970-01-01T00:00:06+00:00',
+                    'expectedNextLabel':'One · Other Artist'}
+        legacy = {'event':'Rolling handoff','at':'1970-01-01T00:00:08+00:00','next':'One'}
+        score = SCORER['observed_up_next']([overlay, verified, mismatch, legacy], 1)
+        self.assertEqual(score['handoffSamples'],
+                         {'fullLabelMatches':1,'fullLabelMismatches':1,'titleMatches':1})
+
+    def test_observed_variety_requires_a_contiguous_exact_recording_sequence(self):
+        def handoff(outgoing, incoming, artist, incoming_artist):
+            return {'verified':True, 'outgoingRecordingId':outgoing, 'incomingRecordingId':incoming,
+                    'outgoingArtist':artist, 'incomingArtist':incoming_artist}
+        rows = [handoff('one', 'two', 'A', 'A'), handoff('two', 'one', 'A', 'a'),
+                handoff('one', 'three', 'A', None)]
+        score = SCORER['observed_curatorial_variety'](rows)
+        self.assertEqual((score['recordingsPlayed'], score['distinctRecordings']), (4, 3))
+        self.assertEqual(score['extraPlaysByRecording'], {'one':1})
+        self.assertEqual((score['knownArtistCredits'], score['distinctArtistCredits']), (3, 1))
+        self.assertEqual(score['extraPlaysByArtistCredit'], {'a':2})
+        self.assertEqual(score['consecutiveRepeatedCreditPairs'], 2)
+        rows[1]['outgoingRecordingId'] = 'different'
+        self.assertIsNone(SCORER['observed_curatorial_variety'](rows))
+        self.assertIsNone(SCORER['observed_curatorial_variety']([{'verified': True}]))
+
+    def test_artist_concentration_counts_collaborations_and_breaks_on_missing_credits(self):
+        result = SCORER['artist_concentration']([
+            'Resident & Guest', 'Resident feat. Resident', 'Guest, Resident', None, 'Resident', 'Guest',
+        ])
+        self.assertEqual(result, {
+            'tracksWithKnownArtists':5,
+            'distinctCreditedArtists':2,
+            'mostAppearancesByOneArtist':4,
+            'mostPlayedArtists':['resident'],
+            'longestConsecutiveAppearances':3,
+            'adjacentPairsSharingAnArtist':2,
+        })
+
+    def test_observed_genre_timing_totals_verified_intervals_and_keeps_unknowns(self):
+        rows = [
+            {'verified':True, 'outgoingGenre':'House', 'incomingGenre':'Tech House'},
+            {'verified':True, 'outgoingGenre':' Tech House ', 'incomingGenre':None},
+            {'verified':True, 'outgoingGenre':None, 'incomingGenre':'House'},
+            {'verified':False, 'outgoingGenre':'House', 'incomingGenre':'Dance'},
+        ]
+        score = SCORER['observed_genre_timing'](rows, [29.5, 61, 30, 70])
+        self.assertEqual(score['verifiedIntervals'], 3)
+        self.assertEqual(score['entryIntervalSecondsByOutgoingGenre'], {'house':29.5, 'tech house':61})
+        self.assertEqual(score['unclassifiedEntryIntervalSeconds'], 30)
+        self.assertEqual(score['handoffsWithBothGenres'], 1)
+        self.assertEqual(score['genreHandoffs'], [{'fromGenre':'house', 'toGenre':'tech house', 'count':1}])
+
+    def test_stem_and_bass_exchange_requires_ordered_native_values(self):
+        def sample(outgoing, incoming, mode='stems'):
+            return {'leadControl':mode,
+                    'outgoing':dict.fromkeys(('eq_low_freq', 'stem Vocal', 'stem Instru'), outgoing),
+                    'incoming':dict.fromkeys(('eq_low_freq', 'stem Vocal', 'stem Instru'), incoming)}
+
+        opening, end = sample(.5, 0), sample(0, .5)
+        rows = [
+            {'verified':True, 'controlReadback':[opening, sample(.01, .02), end]},
+            {'verified':True, 'controlReadback':[opening, sample(.1, .2), end]},
+            {'verified':True, 'controlReadback':[end, opening]},
+            {'verified':True, 'controlReadback':[sample(.5, 0, 'frequency-eq'), sample(0, .5, 'frequency-eq')]},
+            {'verified':True, 'leadControl':['stems']},
+            {'verified':False, 'controlReadback':[opening, end]},
+        ]
+        result = SCORER['observed_mix_techniques'](rows)
+        self.assertEqual(result['bassEqReadback'],
+                         {'withReadback':4, 'verifiedExchange':2, 'withSampledOverlap':1})
+        for key in ('vocalStemReadback', 'instrumentStemReadback'):
+            self.assertEqual(result[key], {'withReadback':3, 'verifiedExchange':1, 'withSampledOverlap':1})
+
+    def test_observed_mix_techniques_use_verified_deck_and_mixer_readbacks(self):
+        out, incoming = 'Clearing outgoing bass and lead', 'Bringing in incoming bass'
+        rows = [
+            {'verified':True, 'maxPhaseGapBeats':.12, 'overlapSamples':8,
+             'eqOrder':[out, incoming], 'leadControl':['stems', 'stems'],
+             'loopBeats':4, 'loopWraps':2, 'loopRelease':'released'},
+            {'verified':True, 'overlapSamples':0, 'eqOrder':[incoming, out], 'leadControl':['frequency-eq'],
+             'loopBeats':4, 'loopWraps':1, 'loopRelease':'unconfirmed'},
+            {'verified':True},
+            {'verified':False, 'maxPhaseGapBeats':.45, 'overlapSamples':99, 'leadControl':['frequency-eq']},
+        ]
+        result = SCORER['observed_mix_techniques'](rows)
+        self.assertEqual((result['withPhaseReadback'], result['worstObservedPhaseGapBeats']), (1, .12))
+        self.assertEqual((result['withOverlapReadback'], result['withMeasuredSignalOnBothDecksDuringCrossfade']), (2, 1))
+        self.assertEqual((result['withBothBassSwapStages'], result['withOrderedBassSwapPhases']), (2, 1))
+        self.assertEqual(result['leadControlHandoffs'], {'frequency-eq':1, 'stems':1})
+        self.assertEqual((result['loopHandoffs'], result['loopWrappedAndReleased']), (2, 1))
+
+    def test_judge_reports_abstention_and_order_swap_on_held_out_pairs(self):
+        human = [{'reviewerId': 'one', 'choice': 'a'}, {'reviewerId': 'two', 'choice': 'a'}]
+        base = {'briefId': 'house', 'dimension': 'transition-sound', 'humanLabels': human,
+                'split': 'held-out', 'judgeChoice': 'a', 'swappedJudgeChoice': 'b'}
+        packet = {'schemaVersion': 1, 'judgeVersion': 'v1', 'comparisons': [
+            {**base, 'comparisonId': 'match'},
+            {**base, 'comparisonId': 'swap-biased', 'swappedJudgeChoice': 'a'},
+            {**base, 'comparisonId': 'abstained', 'judgeChoice': None, 'swappedJudgeChoice': None},
+            {**base, 'comparisonId': 'during-training', 'split': 'development'},
+            {**base, 'comparisonId': 'human-disagreement',
+             'humanLabels': [human[0], {'reviewerId': 'two', 'choice': 'b'}]},
+        ]}
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'judgments.json'
+            path.write_text(json.dumps(packet))
+            score = SCORER['read_judgments'](path)['overall']
+        self.assertEqual(score['comparisonCount'], 4)
+        self.assertEqual(score['nonTiedHumanConsensus'], 3)
+        self.assertEqual(score['judgeAbstentionsOnConsensus'], 1)
+        self.assertEqual(score['agreementOverAllConsensus'], .667)
+        self.assertEqual(score['reviewedOrderSwaps'], 3)
+        self.assertEqual(score['inconsistentOrderSwaps'], 1)

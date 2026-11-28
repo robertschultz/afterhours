@@ -4,9 +4,9 @@ import re
 import threading
 import unittest
 from contextlib import nullcontext
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_session import DJSession, Cancelled, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
+from afterhours.vdj_session import DJSession, Cancelled, CueReplayMismatch, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
 from test_vdj_catalog import CatalogPeer
 from afterhours.vdj_catalog import load_selected
 from afterhours.vdj_catalog import identity
@@ -18,6 +18,113 @@ def tracks():
 
 
 class SessionTests(unittest.TestCase):
+    def test_fractional_native_cue_shift_rejects_the_paused_incoming_recording(self):
+        session = DJSession(threading.Lock())
+        candidate = {'id':'offshore','title':'Offshore','bpm':127.88,'camelot':'8A',
+                     'engine':{'selection_id':identity('track')}}
+        cue = {'entryBeat':0.0, 'entrySeconds':8.29, 'recordingDuration':417.816}
+        client = Mock()
+        with patch.object(session, 'analyze_deck', return_value=candidate), \
+                patch.object(session, 'sleep'), patch.object(session, 'send') as send, \
+                patch.object(session, 'q', side_effect=[-14.51896095, 8289]), \
+                patch.object(session, 'match_tempo') as tempo:
+            with self.assertRaises(CueReplayMismatch) as raised:
+                session.prepare_deck(client, candidate, 2, 122, cue)
+        self.assertEqual(raised.exception.expected, {'beat':0.0, 'seconds':8.29})
+        self.assertEqual(raised.exception.observed, {'beat':-14.51896095, 'seconds':8.289})
+        self.assertTrue(all('play' not in args[1] for args, _ in send.call_args_list))
+        tempo.assert_not_called()
+
+    def test_timed_cue_mismatch_refits_only_an_unpinned_planner_selection(self):
+        for source, pinned in [('planner',False),('planner',True),('operator',False)]:
+            with self.subTest(source=source, pinned=pinned):
+                session=DJSession(threading.Lock())
+                a,b,c=tracks()
+                session.update(order=[a,b,c],index=0,active=True,phase='playing',
+                    entryCadence=[60,30],rollingQueue={'status':'ready'},setPins=['b'] if pinned else [],
+                    setlist={'sourceById':{'a':'operator','b':source,'c':'planner'},
+                             'allowReorder':True,'lockedIds':[]})
+                session.state['copilot']['mode']='leading'
+                error=CueReplayMismatch(b,{'entryBeat':0.0,'entrySeconds':8.29},-14.51896,8.289)
+                with patch('afterhours.cue_planner.complete_background_queue',
+                           return_value={'analysis':{},'executionPlan':{'transitions':[]}}) as fit, \
+                        patch('afterhours.cue_planner.verify_receipts'), \
+                        patch.object(session.availability,'record') as blocked:
+                    if source=='operator' or pinned:
+                        with self.assertRaises(CueReplayMismatch):
+                            session.substitute_rejected_preload(1,cue_mismatch=error)
+                        fit.assert_not_called()
+                        self.assertEqual(session.state['order'],[a,b,c])
+                    else:
+                        retained,plan=session.substitute_rejected_preload(1,cue_mismatch=error)
+                        self.assertEqual(retained,[a,c])
+                        self.assertTrue(plan['applied'])
+                        self.assertEqual(fit.call_args.args[4],1)
+                        self.assertTrue(session.state['active'])
+                        self.assertEqual(session.state['events'][-1]['kind'],'queue-skipped')
+                        self.assertEqual(session.state['events'][-1]['observedCue']['beat'],-14.51896)
+                    blocked.assert_not_called()
+
+    def test_preload_repair_rechecks_only_an_independent_automatic_append(self):
+        a, b, c = tracks()
+        d, e = {**c, 'id':'d'}, {**c, 'id':'e'}
+        for separate_revision in ({}, {'hostedRefill':True}, {'cueChoices':[{'trackId':'d'}]}):
+            with self.subTest(separate_revision=separate_revision):
+                session = DJSession(threading.Lock())
+                queued = {'id':'old', 'tracks':[a,b,c,d,e], 'status':'ready',
+                          'prepared':{'stale':True}, 'partialTracks':[a,b,c,d],
+                          'rollingTrackId':'d', 'rollingTrackIds':['d','e'],
+                          'sourceById':{'d':'planner','e':'planner'}, **separate_revision}
+                session.update(order=[a,b,c], index=0, active=True, phase='playing',
+                               entryCadence=[30,60], rollingQueue={'status':'preparing'},
+                               queuedUpdate=queued, setlist={'sourceById':{'b':'planner','c':'planner'},
+                                                             'allowReorder':True,'lockedIds':[]})
+                session.state['copilot']['mode'] = 'leading'
+                mismatch = CueReplayMismatch(b, {'entryBeat':0.0,'entrySeconds':8.29}, -14.52, 8.289)
+                fit = {'analysis':{},'executionPlan':{'transitions':[]}}
+                with (patch('afterhours.cue_planner.complete_background_queue', return_value=fit),
+                      patch('afterhours.cue_planner.verify_receipts')):
+                    retained, _ = session.substitute_rejected_preload(1, cue_mismatch=mismatch)
+                self.assertEqual(retained, [a,c])
+                result = session.state['queuedUpdate']
+                if separate_revision:
+                    self.assertIsNone(result)
+                    continue
+                self.assertNotEqual(result['id'], 'old')
+                self.assertEqual(result['tracks'], [a,c,d,e])
+                self.assertEqual(result['protectedIds'], ['a','c'])
+                self.assertEqual(result['rollingTrackIds'], ['d','e'])
+                self.assertEqual(result['status'], 'needs-analysis')
+                self.assertIsNone(result['prepared'])
+                self.assertNotIn('partialTracks', result)
+                analysis = session.state['backgroundAnalysis']
+                self.assertEqual((analysis['revision'], analysis['status']), (result['id'], 'queued'))
+
+    def test_suspect_playing_transport_is_confirmed_without_dispatching_controls(self):
+        session = DJSession(threading.Lock())
+        client = Mock()
+        paused = {'deck': 2, 'loaded': True, 'id': 'expected', 'playing': False}
+        playing = {**paused, 'playing': True, 'beatPosition': 133}
+        fresh = {'decks': [{}, playing]}
+        for suspect in (BridgeError('OSC read timed out'), {'decks': [{}, paused]},
+                        {'decks': [{}, {'deck': 2, 'unavailable': True}]}):
+            with self.subTest(suspect=suspect), patch.object(session, 'telemetry', side_effect=[suspect, fresh]) as telemetry:
+                self.assertIs(session.read_playing_transport(client, 2, 'expected'), fresh)
+                self.assertEqual(telemetry.call_args_list, [call(client, clock_only=False), call(client, clock_only=True)])
+        client.send.assert_not_called()
+
+    def test_confirmed_transport_change_or_failed_read_stops_scheduling(self):
+        session = DJSession(threading.Lock())
+        client = Mock()
+        paused = {'deck': 2, 'loaded': True, 'id': 'expected', 'playing': False}
+        for row, reason in ((paused, 'Deck B is paused'),
+                            ({**paused, 'id': 'replacement', 'playing': True}, 'Deck B no longer holds the expected recording'),
+                            ({'deck': 2, 'unavailable': True}, 'Deck B transport could not be verified')):
+            with self.subTest(row=row), patch.object(session, 'telemetry', side_effect=[{'decks': [{}, paused]}, {'decks': [{}, row]}]):
+                with self.assertRaisesRegex(BridgeError, reason):
+                    session.read_playing_transport(client, 2, 'expected')
+        client.send.assert_not_called()
+
     def test_unexpected_worker_failure_logs_code_locations_without_request_data(self):
         s = DJSession(threading.Lock(), client_factory=lambda *args, **kwargs: nullcontext(None))
         invoked = []
@@ -85,7 +192,7 @@ class SessionTests(unittest.TestCase):
             elif 'top' in script:state['row']=0
         def settle(seconds):
             if state['pending']:state.update(row=min(1,state['row']+1),pending=False)
-        with patch('afterhours.vdj_session.folder_state',return_value={'id':'folder'}),patch('afterhours.vdj_session.selection',side_effect=lambda c:{'id':rows[state['row']]}),patch.object(s,'q',return_value=2),patch.object(s,'send',side_effect=send),patch.object(s,'sleep',side_effect=settle),patch.object(s,'wait_observed'),patch.object(s,'service_telemetry'):
+        with patch('afterhours.vdj_session.folder_state',return_value={'id':'folder'}),patch('afterhours.vdj_session.selected_recording_id',side_effect=lambda c:rows[state['row']]),patch.object(s,'q',return_value=2),patch.object(s,'send',side_effect=send),patch.object(s,'sleep',side_effect=settle),patch.object(s,'wait_observed'),patch.object(s,'service_telemetry'):
             s.select(None,track)
         self.assertEqual(s.positions['record']['position'],1)
 
@@ -104,6 +211,20 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(s.worker.is_alive());self.assertFalse(s.snapshot()['active'])
         self.assertEqual(commands,['deck 1 pause & deck 2 pause'])
         self.assertEqual(s.snapshot()['phase'],'stopped')
+
+    def test_stop_confirms_paused_program_even_when_spare_cleanup_fails(self):
+        for resumed in (False, True):
+            with self.subTest(resumed=resumed):
+                client = Mock()
+                client.query.side_effect = [False, False, resumed] + ([] if resumed else [False])
+                session = DJSession(threading.Lock(), client_factory=lambda *args, **kwargs: nullcontext(client))
+                session.update(telemetry={'decks':[{'deck':1,'playing':True},{'deck':2,'playing':True}]})
+                with patch.object(session, 'retry_paused_cleanup', side_effect=BridgeError('Spare identity changed')):
+                    session.confirm_native_stop()
+                client.send.assert_called_once_with('deck 1 pause & deck 2 pause')
+                current = session.snapshot()
+                self.assertEqual(current['telemetry']['decks'][0]['playing'], resumed)
+                self.assertIn('unconfirmed' if resumed else 'Both decks are paused', current['message'])
 
     def test_takeover_from_paused_ready_set_changes_mode_without_audio_command(self):
         s=DJSession(threading.Lock());s.update(phase='ready',active=False,executionPlan={'applied':True})
@@ -393,25 +514,47 @@ class SessionTests(unittest.TestCase):
         self.assertLess(s.final_preparation_runway(track,0,{'position':330,'controls':{}}),16)
         self.assertEqual(s.final_preparation_runway(track,0,{'position':100,'controls':{'durationMs':98000}}),0)
         self.assertEqual(s.final_preparation_runway({'id':'previous'},0,{'position':100,'controls':{}}),0)
+        s.update(rollingQueue={'status':'held'}, queuedUpdate=None)
+        self.assertGreater(s.final_preparation_runway(track,0,{'position':100,'controls':{}}),200)
+        s.update(rollingQueue=None)
+        self.assertEqual(s.final_preparation_runway(track,0,{'position':100,'controls':{}}),0)
 
     def test_measured_set_keeps_playing_until_the_staged_handoff_is_verified(self):
         self.simulate_run(30,8,128,background=True,late_background=True)
 
+    def test_late_staged_handoff_can_start_inside_the_verified_outro(self):
+        self.simulate_run(30,8,128,background=True,late_background='outro-bar')
+
+    def test_measured_set_promotes_late_stems_before_the_handoff(self):
+        result = self.simulate_run(30,8,128,control='stems-upgrade')
+        self.assertEqual(result['transitions'][0]['recipe']['leadControl'], 'stems')
+        self.assertEqual(sum('stems became ready before' in event['text'] for event in result['events']), 1)
+
     def test_measured_set_crossfades_on_time_when_stems_drop_before_play(self):
         self.simulate_run(30,8,128,control='stems-drop')
 
-    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False,late_background=False):
+    def test_late_preload_rejection_keeps_playing_until_a_new_successor_is_ready(self):
+        self.simulate_run(30, 8, 128, background=True, late_background='rejected-only')
+
+    def test_delayed_mixer_read_retimes_without_starting_the_incoming_deck_twice(self):
+        self.simulate_run(30,8,128,late_mixer=True)
+
+    def simulate_run(self,seconds,blend,mix_at,revise=False,bpms=None,background=False,control=None,selected_spare=None,four=False,quick_insert=False,late_background=False,late_mixer=False):
         """Deterministic peer simulation; this does not play or assess music."""
         s=DJSession(threading.Lock());pool=[{'id':str(i),'title':str(i),'bpm':155,'genre':'Drum & Bass','camelot':'2A'} for i in range(4)]
+        for track in pool:
+            track['engine']={'selection_id':identity(track['id'])}
         s.update(candidates=pool);s.plan([t['id'] for t in pool],seconds=seconds)
         from test_cue_planner import fixture
         from afterhours import ai_mix, cue_planner
         _,report,response=fixture(seconds=seconds)
-        if control == 'hold-go' or late_background:
+        if control == 'hold-go' or late_background or late_mixer:
             extended=report['tracks'][1 if late_background else 0]
             later=copy.deepcopy(extended['cueCandidates'][0])
             later.update(id='verified-later',entryBeat=128,exitBeat=192,endBeat=224,
                          entrySeconds=128*60/155,exitSeconds=192*60/155,endSeconds=224*60/155)
+            if late_mixer:
+                later.update(exitBeat=144,endBeat=176,exitSeconds=144*60/155,endSeconds=176*60/155)
             extended['cueCandidates'].append(later)
             report['fingerprint']=cue_planner.fingerprint(report['tracks'])
         if bpms:
@@ -431,8 +574,10 @@ class SessionTests(unittest.TestCase):
             review=ai_mix.validate_plan(response,report,seconds);plan=cue_planner.compile_plan(review,report,pool[:2],seconds);plan['applied']=True
             s.update(order=pool[:2],analysis=report,aiReview=review,executionPlan=plan)
         if quick_insert:s.plan(['0','1'],seconds=seconds,excerpt_bars=0,mix_style='quick')
+        reject_late_preload = late_background == 'rejected-only'
+        refilled_after_rejection = []
         now=[0.0];cross=[0.0];fade=[None];sent=[];reads=[];ramps={};revised=[False];steered=[];loads=[]
-        insertions=[]
+        insertions=[]; delayed_readbacks=[]
         master=[selected_spare or 1];sync_sources=[]
         from afterhours import deck_rotation
         numbers=deck_rotation.FOUR if four else deck_rotation.TWO
@@ -463,8 +608,9 @@ class SessionTests(unittest.TestCase):
             for d in decks:
                 if d['playing']:d['beatPosition']+=seconds*d['bpm']/60
             if fade[0]:
-                start,incoming,tempo,actual_blend=fade[0];fraction=min(1,(now[0]-start)/(actual_blend*60/tempo))
-                cross[0]=fraction if incoming==2 else 1-fraction
+                start,a,b,tempo,actual_blend=fade[0]
+                fraction=min(1,(now[0]-start)/(actual_blend*60/tempo))
+                cross[0]=a+(b-a)*fraction
             for start,deck,key,a,b,duration in ramps.values():
                 fraction=min(1,(now[0]-start)/duration)
                 controls[deck][key]=a+(b-a)*fraction
@@ -501,12 +647,24 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(staged['queuedUpdate']['protectedIds'],['0','1','2'])
                 insertions.append('3')
             if background and not revised[0] and s.state['phase']=='playing':
-                revised[0]=True;ids=['0','1','2','3']
+                revised[0]=True;ids=['0','1','2'] if reject_late_preload else ['0','1','2','3']
                 s.revise_queue(ids,mix_transitions=[{'fromId':a,'toId':b,'technique':'short-handoff',
                     'blendBeats':blend,'reason':'Synthetic new selections.'} for a,b in zip(ids,ids[1:])])
                 self.assertEqual(s.state['queuedUpdate']['status'],'needs-analysis')
+            if (reject_late_preload and not refilled_after_rejection
+                    and s.state['phase'] == 'playing' and s.state['index'] == 1
+                    and [row['id'] for row in s.state['order']] == ['0', '1']
+                    and any(event['kind'] == 'queue-skipped' for event in s.state['events'])):
+                self.assertTrue(decks[1]['playing'])
+                self.assertGreater(decks[1]['beatPosition'], mix_at)
+                s.revise_queue(['0','1','3'], source='planner')
+                refilled_after_rejection.append(True)
             return t
         def prepare(c,track,deck,target,cue=None,checked=None):
+            if reject_late_preload and track['id'] == '2':
+                from afterhours.vdj_session import TrackMetadataChanged
+                decks[deck-1].update(id='2', playing=False)
+                raise TrackMetadataChanged({**track, 'bpm':track['bpm']+1})
             if quick_insert and track['id']=='3' and checked is None:
                 from afterhours.vdj_session import TrackMetadataChanged
                 raise TrackMetadataChanged({**track,'camelot':'1A'})
@@ -522,7 +680,9 @@ class SessionTests(unittest.TestCase):
             elif script.startswith('mix_now'):
                 # Reproduce the native failure: a global mix selected C/D.
                 incoming=selected_spare or (2 if cross[0]<.5 else 1)
-                decks[incoming-1]['playing']=True;fade[0]=(now[0],incoming,decks[incoming-1]['bpm'],int(script.split()[1][:-2]))
+                decks[incoming-1]['playing']=True
+                end=float(incoming==2)
+                fade[0]=(now[0],1-end,end,decks[incoming-1]['bpm'],int(script.split()[1][:-2]))
             elif script.endswith(' masterdeck on'):
                 master[0]=int(script.split()[1])
             elif script.endswith(' play_sync'):
@@ -533,7 +693,7 @@ class SessionTests(unittest.TestCase):
                 n=int(script.split()[1]);self.assertFalse(decks[n-1]['playing']);decks[n-1].update(id='')
             elif "repeat_start_fade 'afterhours_crossfade'" in script:
                 clock_deck,a,b,beats=re.fullmatch(r"deck (\d) repeat_start_fade 'afterhours_crossfade' ([\d.]+) ([\d.]+) (\d+)bt & crossfader",script).groups()
-                fade[0]=(now[0],2 if float(b)==1 else 1,decks[int(clock_deck)-1]['bpm'],int(beats))
+                fade[0]=(now[0],float(a),float(b),decks[int(clock_deck)-1]['bpm'],int(beats))
             elif 'repeat_start_fade' in script:
                 clock_deck,name,a,b,beats,deck,key=re.fullmatch(r"(?:deck (\d) )?repeat_start_fade '([^']+)' ([\d.]+) ([\d.]+) (\d+)bt & deck (\d) ([\w ]+)",script).groups()
                 self.assertEqual(clock_deck,deck)
@@ -556,21 +716,36 @@ class SessionTests(unittest.TestCase):
             if key=='masterdeck':return master[0]==deck
             if key.startswith('cross_assign'):return key==("cross_assign 'left'" if deck%2 else "cross_assign 'right'")
             if key.startswith('has_stems'):
+                if control=='stems-upgrade' and s.state['index']==0 and deck==2:
+                    return decks[0]['beatPosition'] >= mix_at-24
                 return not (control=='stems-drop' and s.state['index']==0 and deck==2
                             and decks[0]['beatPosition']>=mix_at-9)
-            if key=='get_beatpos':return decks[deck-1]['beatPosition']
+            if key=='get_beatpos':
+                if (late_mixer and not delayed_readbacks and deck==1 and s.state['index']==0
+                        and decks[0]['playing'] and decks[0]['beatPosition']>=mix_at):
+                    self.assertFalse(decks[1]['playing'])
+                    delayed_readbacks.append(True)
+                    sleep(2*60/155)
+                return decks[deck-1]['beatPosition']
             if key=='get_bpm absolute':return pool[int(decks[deck-1]['id'])]['bpm']
             if key=='get_filepath':return decks[deck-1]['id']
             if key=='pitch_range':return .08
             if key=='pitch':return .5+(decks[deck-1]['bpm']/pool[int(decks[deck-1]['id'])]['bpm']-1)/.16
             return decks[deck-1]['playing'] if key=='play' else controls[deck][key]
+        preparation_suspensions = []
         class MeasuredJob:
             def __init__(self,session,revision,tracks,cache):
-                self.revision=revision;self.cache={};self.done=False;self.error=None;self.result=copy.deepcopy(full_report['tracks'][2:])
+                self.revision=revision;self.cache={};self.done=False;self.error=None
+                self.result=copy.deepcopy(full_report['tracks'][2:])
+                if reject_late_preload:
+                    self.result = [row for row in self.result if row['id'] in {track['id'] for track in tracks}]
             def step(self,c,slack):
+                threshold=193 if late_background=='outro-bar' else mix_at+4
                 self.done=(s.state['index']==1 and slack>=16
-                           and (not late_background or decks[1]['beatPosition']>mix_at+4))
+                           and (not late_background or decks[1]['beatPosition']>threshold))
             def close(self,c):pass
+            def set_suspended(self, suspended):
+                preparation_suspensions.append(suspended)
             def snapshot(self):return {'status':'analyzing','message':'Synthetic preparation','completed':0,'total':2}
         from afterhours.background_analysis import BackgroundAnalysis
         def launch(fn,phase):
@@ -583,8 +758,20 @@ class SessionTests(unittest.TestCase):
                 agent.message('take back over' if control=='paused-handback' else 'go ahead and beat match into the next track',message_id='handback')
                 self.assertEqual(s.state['copilot']['command']['status'],'confirmed')
                 provider.assert_not_called()
+            elif reject_late_preload:
+                with patch('afterhours.rolling_queue.RollingQueue.tick'), \
+                        patch('afterhours.vdj_session.measured_bridge_loop', return_value=None):
+                    s.start(rolling_queue=True)
             else:s.start(resume=control=='resume')
         result=s.snapshot();self.assertEqual(result['phase'],'completed')
+        if reject_late_preload:
+            self.assertEqual(refilled_after_rejection, [True])
+            self.assertEqual([(row['from'], row['to']) for row in result['transitions']], [('0','1'), ('1','3')])
+            self.assertEqual(result['transitions'][1]['timing']['basis'], 'measured-continuation-exit')
+            self.assertFalse(any(deck['playing'] for deck in decks))
+            return result
+        outro = next(i for i,(command,_,_) in enumerate(sent) if "'afterhours_outro'" in command and 'repeat_start' in command)
+        self.assertTrue(any(command.endswith(' pause') for command,_,_ in sent[outro+1:]))
         if quick_insert:
             self.assertEqual(insertions,['2','3'])
             self.assertEqual(loads,[('0',1),('1',2),('2',1),('3',2)])
@@ -601,15 +788,38 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(result['transitions']),3)
         blends=[16]*3 if control=='skip' else [blend]*3
         fades=[command for command,_,_ in sent if "repeat_start_fade 'afterhours_crossfade'" in command]
-        self.assertEqual(len(fades),3)
-        self.assertEqual([int(command.split('bt')[0].rsplit(' ',1)[1]) for command in fades],blends)
+        fade_commands=iter(fades)
+        for beats in blends:
+            if beats>=16:
+                intro=next(fade_commands).split()
+                self.assertEqual(intro[6], f'{beats//4-1}bt')
+                self.assertAlmostEqual(abs(float(intro[5])-float(intro[4])), .17)
+                main=next(fade_commands).split()
+                self.assertEqual(main[1],intro[1])
+                self.assertEqual(main[6], f'{beats-beats//4}bt')
+            else:
+                self.assertEqual(next(fade_commands).split()[6], f'{beats}bt')
+        self.assertIsNone(next(fade_commands,None))
         self.assertEqual(sync_sources,[(2,1),(3,2),(4,3)] if four else [(2,1),(1,2),(2,1)])
         self.assertFalse(any(command.startswith('mix_now') for command,_,_ in sent))
         if selected_spare:
             self.assertTrue(all(d['beatPosition']==0 and not d['playing'] for d in decks[2:]))
             self.assertFalse(any('deck 3 ' in command or 'deck 4 ' in command for command,_,_ in sent))
         windows=([128,192,128] if late_background else [192,128,128] if control=='hold-go' else [mix_at]*3)
-        self.assertEqual([t['timing']['mixAtBeat'] for t in result['transitions']],windows)
+        actual=[t['timing']['mixAtBeat'] for t in result['transitions']]
+        if late_mixer:
+            self.assertTrue(delayed_readbacks)
+            self.assertGreater(actual[0],mix_at)
+            self.assertLessEqual(actual[0],mix_at+32)
+            self.assertEqual(actual[1:],windows[1:])
+        elif late_background=='outro-bar':
+            self.assertEqual([actual[0],actual[2]], [128,128])
+            self.assertGreater(actual[1],192)
+            self.assertLessEqual(result['transitions'][1]['timing']['endBeat'],224)
+        else:
+            self.assertEqual(actual,windows)
+        if background:
+            self.assertIn(True, preparation_suspensions)
         if late_background:
             self.assertEqual(result['transitions'][1]['timing']['basis'],'measured-continuation-exit')
         self.assertTrue(all(t['completedAt']-t['at']>=t['timing']['fadeBeats']*60/(t.get('tempoPlan',{}).get('toBpm',155))-.1 for t in result['transitions']))
@@ -629,7 +839,7 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(len([x for x in sent if "repeat_start_fade 'afterhours_tempo'" in x[0]]),3)
             self.assertAlmostEqual(result['telemetry']['decks'][1]['bpm'],bpms[-1],delta=.15)
         if background:self.assertEqual([t['id'] for t in result['order']],['0','1','2','3'])
-        if seconds==30 and not bpms and not control and not late_background:
+        if seconds==30 and not bpms and not control and not late_background and not late_mixer:
             for a,b in zip(result['transitions'],result['transitions'][1:]):
                 self.assertAlmostEqual(b['at']-a['at'],64*60/155,delta=.3)
         self.assertTrue(all(t['timing']['basis'] in ('measured-audio-candidate','operator-steered-measured-exit',
@@ -639,12 +849,13 @@ class SessionTests(unittest.TestCase):
             # Each record is loaded once, on the next deck round; each blend
             # fades to the incoming deck's side and stays inside its pair.
             self.assertEqual(loads,[('0',1),('1',2),('2',3),('3',4)])
-            self.assertEqual([command.split()[-4] for command in fades],['1.000000','0.000000','1.000000'])
-            self.assertEqual([command.split()[1] for command in fades],['1','2','3'])
+            main_fades=[command.split() for command in fades if command.split()[-4] in ('0.000000','1.000000')]
+            self.assertEqual([command[-4] for command in main_fades],['1.000000','0.000000','1.000000'])
+            self.assertEqual([command[1] for command in main_fades],['1','2','3'])
             pauses=[command for command,_,_ in sent if command.endswith(' pause')]
             self.assertEqual(pauses,['deck 1 pause','deck 2 pause','deck 3 pause','deck 4 pause'])
-            for (a,b),first,last in zip(((1,2),(2,3),(3,4)),fades,fades[1:]+[None]):
-                begin=next(i for i,(command,_,_) in enumerate(sent) if command==first)
+            for a,b in ((1,2),(2,3),(3,4)):
+                begin=next(i for i,(command,_,_) in enumerate(sent) if command==f'deck {b} play_sync')
                 end=next((i for i,(command,_,_) in enumerate(sent) if command==f'deck {a} pause'),len(sent))
                 inside=[command for command,_,_ in sent[begin:end]]
                 outside=[n for n in (1,2,3,4) if n not in (a,b)]
@@ -671,6 +882,7 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(controls[deck]['stem Vocal'],.5)
             self.assertEqual(controls[deck]['stem Instru'],.5)
         self.assertTrue(all(t['mixerSamples'] for t in result['transitions']))
+        return result
 
     def test_prepare_refines_small_tempo_change_and_matches_after_seek(self):
         s=DJSession(threading.Lock());source={'id':'a','title':'Fixture','bpm':162.5,'camelot':'2A','engine':{'selection_id':'fixture'}}
@@ -680,6 +892,8 @@ class SessionTests(unittest.TestCase):
             s.prepare_deck(None,source,1,155)
         self.assertEqual(sent[-2:],["deck 1 goto +64",'MATCH'])
         self.assertEqual(s.snapshot()['order'][0]['bpm'],163)
+        loaded = next(row for row in s.snapshot()['events'] if row['kind'] == 'loaded')
+        self.assertEqual((loaded['trackId'], loaded['deck']), ('a', 1))
         self.assertFalse(any(' play' in c for c in sent))
 
     def test_large_tempo_or_key_change_still_requires_replanning(self):
@@ -739,6 +953,33 @@ class SessionTests(unittest.TestCase):
         with patch.object(s,'q',side_effect=query),patch.object(s,'sleep'),patch.object(s,'send',side_effect=lambda c,v:sent.append(v)):
             with self.assertRaisesRegex(BridgeError,'Incoming deck changed'):s.match_tempo(None,track,2,127)
         self.assertEqual(len(sent),1)
+
+    def test_measured_cue_can_shortcut_only_matching_paused_metadata(self):
+        track={'id':'exact','title':'Fixture','bpm':128,'camelot':'12A','engineChecked':True,
+               'engine':{'selection_id':identity('fixture')}}
+        cue={'trackId':'exact','replayVerified':True,'recordingDuration':264.509}
+        for fixture, expected_reads in [('matched',2),('changed-key',4),
+                                        ('changed-duration',4),('other-recording-cue',4),('drifting-grid',5)]:
+            with self.subTest(fixture=fixture):
+                session=DJSession(threading.Lock())
+                actual_cue={**cue,'trackId':'other' if fixture=='other-recording-cue' else 'exact'}
+                native={'deck 2 loaded':True,'deck 2 play':False,'deck 2 get_filepath':'fixture',
+                        'deck 2 get_bpm absolute':128,'deck 2 get_firstbeat':0,
+                        'deck 2 get_key':'Am' if fixture=='changed-key' else 'C#m',
+                        'deck 2 get_time total absolute':268509 if fixture=='changed-duration' else 264509}
+                anchors=iter([0, 5, 5, 5, 5])
+                def read(_, command, kind=None):
+                    if fixture=='drifting-grid' and command=='deck 2 get_firstbeat':
+                        return next(anchors)
+                    return native[command]
+                with patch.object(session,'q',side_effect=read) as query, \
+                        patch.object(session,'send') as send, patch.object(session,'sleep'), \
+                        patch.object(session,'wait_observed'):
+                    prepared=session.analyze_deck(None,track,2,measured_cue=actual_cue)
+                self.assertEqual(prepared['nativeDuration'],native['deck 2 get_time total absolute']/1000)
+                self.assertEqual(sum(c.args[1]=='deck 2 get_bpm absolute' for c in query.call_args_list),expected_reads)
+                self.assertEqual([c.args[1] for c in send.call_args_list],
+                                 ['deck 2 master_tempo on','deck 2 goto_first_beat'])
 
     def test_half_time_analysis_changes_grid_without_starting_or_pitching_audio(self):
         s=DJSession(threading.Lock());path='fixture-track';source={'id':'a','title':'Fixture','bpm':165,'camelot':'11A','engine':{'selection_id':identity(path)}}
@@ -884,6 +1125,32 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(s.program()['current'],'b')
             self.assertEqual(s.program()['transitionInSeconds'],70)
 
+    def test_four_deck_program_follows_the_dominant_side_through_each_handoff(self):
+        session = DJSession(threading.Lock())
+        order = [{'id': letter, 'title': letter.upper()} for letter in 'abcde']
+        next_by_id = {track['id']: following for track, following in zip(order, order[1:])}
+        decks = [{'deck': number, 'id': row['id'], 'playing': False, 'bpm': 118 + number,
+                  'beatPosition': 20 + number, 'position': 10 + number}
+                 for number, row in enumerate(order[:4], 1)]
+        for outgoing, incoming in ((2, 3), (3, 4), (4, 1)):
+            for row in decks:
+                row['playing'] = row['deck'] in (outgoing, incoming)
+            if incoming == 1:
+                decks[0]['id'] = 'e'
+            session.update(order=order, active=True, phase='mixing', index=outgoing - 1)
+            for dominant in (outgoing, incoming):
+                with self.subTest(outgoing=outgoing, incoming=incoming, dominant=dominant):
+                    row = decks[dominant - 1]
+                    session.update(telemetry={'decks': decks, 'crossfader': .25 if dominant % 2 else .75,
+                                              'sampledAt': 100})
+                    with patch('afterhours.vdj_session.time.time', return_value=101):
+                        program = session.program()
+                    self.assertEqual(program['current'], row['id'])
+                    self.assertTrue(program['playing'])
+                    self.assertEqual(program['clock']['beatPosition'], row['beatPosition'])
+                    self.assertEqual(program['positionSeconds'], row['position'])
+                    self.assertEqual(program['nextTrack'], next_by_id.get(row['id']))
+
     def test_completed_program_does_not_switch_tracks_when_only_crossfader_moves(self):
         s=DJSession(threading.Lock())
         decks=[{'id':'a','playing':False,'loaded':True},{'id':'b','playing':False,'loaded':True}]
@@ -924,6 +1191,46 @@ class SessionTests(unittest.TestCase):
                         session.load(client,track,2)
                 self.assertIs(type(result.exception),expected)
                 load.assert_called_once()
+
+    def test_late_program_load_uses_only_readbacks_if_a_verified_exit_remains(self):
+        for outgoing_beat, recovers in ((95, True), (140, False)):
+            with self.subTest(outgoing_beat=outgoing_beat):
+                session = DJSession(threading.Lock())
+                outgoing = {'id':'a', 'engine':{'selection_id':identity('outgoing')}}
+                incoming = {'id':'b', 'engine':{'selection_id':identity('incoming')}}
+                cue = {'id':'source-cue', 'trackId':'a', 'entryBeat':64, 'entrySeconds':32,
+                       'exitBeat':150, 'exitSeconds':75, 'endBeat':182, 'endSeconds':91,
+                       'maxBlendBeats':32, 'replayVerified':True}
+                session.folder = {'id':'catalog'}
+                session.active_deck = 1
+                session.update(active=True, phase='playing', index=0, order=[outgoing, incoming],
+                               entryCadence=[30,60], analysis={'tracks':[{'id':'a', 'cueCandidates':[cue]}]},
+                               executionPlan={'applied':True, 'selections':[cue], 'transitions':[{'fadeBeats':8}]})
+                clock = [0.0]
+
+                def observe(client, seconds):
+                    clock[0] += seconds
+
+                def reading(script, kind=None):
+                    return {'deck 1 play':True, 'deck 1 get_filepath':'outgoing',
+                            'deck 1 get_beatpos':outgoing_beat, 'deck 1 get_bpm':120,
+                            'deck 2 deck_has_error':False, 'deck 2 loaded':clock[0]>=14,
+                            'deck 2 get_filepath':'incoming', 'deck 2 play':False}[script]
+
+                client = Mock()
+                client.query.side_effect = reading
+                with patch.object(session, 'locate_for_load', return_value=None), \
+                        patch.object(session, 'wait_observed', side_effect=observe), \
+                        patch('afterhours.vdj_session.time.monotonic', side_effect=lambda:clock[0]), \
+                        patch('afterhours.vdj_session.load_selected', return_value={'sent':True}) as load:
+                    if recovers:
+                        session.load(client, incoming, 2)
+                    else:
+                        with self.assertRaisesRegex(BridgeError, 'load remains unconfirmed'):
+                            session.load(client, incoming, 2)
+                self.assertEqual(clock[0], 14 if recovers else 12)
+                load.assert_called_once()
+                client.send.assert_not_called()
 
     def test_nonfinite_engine_measurements_are_not_live_values(self):
         for value in (float('nan'),float('inf'),True,'',-1):

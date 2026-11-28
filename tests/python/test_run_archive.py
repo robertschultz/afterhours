@@ -201,6 +201,52 @@ class ArchiveTests(unittest.TestCase):
                 self.assertEqual((root/(second+'.json')).read_bytes(),second_bytes);n.assert_not_called()
             finally:release.set()
 
+    def test_recent_openings_survive_restart_and_exclude_unplayed_queue_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            clock, archive, session, peer = self.make(root)
+            first, second, unplayed = [row['id'] for row in records()[:3]]
+            for opener in (first, second):
+                emit(session, clock, a_id=opener)
+                clock.advance(2)
+                emit(session, clock, a_id=opener, a=False, phase='stopped', active=False)
+                self.finish(archive)
+                clock.advance(1)
+            self.assertEqual(archive.recent_opening_ids(), {first, second})
+            archive.close()
+            recovered = RunArchive(root)
+            self.addCleanup(recovered.close)
+            self.assertEqual(recovered.recent_opening_ids(), {first, second})
+            self.assertNotIn(unplayed, recovered.recent_opening_ids())
+            peer.assert_not_called()
+
+    def test_archive_keeps_pair_evidence_for_synchronized_handoffs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clock, archive, session, _ = self.make(root)
+            outgoing, incoming, unplayed = [row['id'] for row in records()[:3]]
+            saved = []
+            for synced in (True, False):
+                emit(session, clock)
+                clock.advance(1)
+                emit(session, clock, b=True, phase='mixing', cross=.5)
+                receipt = {'verified':True, 'syncObserved':synced, 'from':outgoing, 'to':incoming,
+                           'completedAt':clock.now}
+                archive.transition(receipt)
+                archive.transition({**receipt, 'to':unplayed})
+                clock.advance(1)
+                emit(session, clock, a=False, phase='stopped', active=False)
+                saved.append(self.finish(archive)['id'])
+                clock.advance(1)
+            archive.close()
+            recovered = RunArchive(root)
+            self.addCleanup(recovered.close)
+            first, second = [recovered.get(run_id)['landed'] for run_id in saved]
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first[0]['fromRecordingId'], outgoing)
+            self.assertEqual(first[0]['track']['id'], incoming)
+            self.assertNotIn('fromRecordingId', second[0])
+
     def test_stale_finalized_journal_cannot_regress_latest_but_incomplete_pointer_commit_recovers(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);c,a,s,n=self.make(root)

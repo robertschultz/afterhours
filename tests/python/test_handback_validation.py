@@ -283,7 +283,7 @@ class HandbackTimingValidation(unittest.TestCase):
                  mixerBaselines=copy.deepcopy(controls))
         s.state['copilot']['mode'] = 'off'
 
-        def telemetry(client):
+        def telemetry(client, *, clock_only=False):
             reading = dict(sampledAt=now[0], crossfader=0,
                            decks=copy.deepcopy(decks))
             s.update(telemetry=reading)

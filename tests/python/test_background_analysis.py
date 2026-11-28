@@ -1,9 +1,11 @@
 """Mailbox scheduling and deck isolation with simulated native replies only."""
 import queue,threading,time,unittest
 from unittest.mock import Mock,patch
+from afterhours import cue_planner, tempo_planner
 from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
 from afterhours.native_analysis import NativeAnalysisDatabaseUpdating
+from afterhours.preparation_pool import PreparationPool
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession
 
@@ -23,6 +25,66 @@ class Peer:
         if s=='deck 3 effect_active 1 off':self.values['deck 3 effect_active 1']=False
 
 class BackgroundTests(unittest.TestCase):
+    def test_spare_rechecks_exact_duration_after_cue_evidence_changes(self):
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered):
+                sid = identity('test')
+                track = {'id':'virtualdj:'+sid, 'title':'Replacement', 'bpm':125,
+                         'nativeDuration':100.075, 'engine':{'selection_id':sid}}
+                session = DJSession(threading.Lock())
+                session.update(entryCadence=[30,60], secondsPerTrack=30)
+                job = BackgroundAnalysis(session, 'revision', [track])
+                peer = Peer()
+                peer.values.update({'deck 3 volume':0, 'deck 3 get_time total absolute':100000})
+                job.owned = True
+                job.loaded = sid
+                stale = {'duration':100.075, 'energyMap':{'reportDigest':'stale'}}
+                fresh = {'duration':100, 'energyMap':{'reportDigest':'fresh'}}
+                misses = cue_planner.AudioEvidenceChanged(track['id'])
+                cues = [{'id':'verified-cue', 'replayVerified':True}]
+                with patch.object(DJSession,'analyze_deck',return_value=track), \
+                     patch.object(job,'request',side_effect=lambda operation, script, arg: peer.query(script,arg)), \
+                     patch.object(job,'read_evidence',side_effect=[stale,fresh]) as evidence, \
+                     patch.object(DJSession,'measure_cues',side_effect=[misses,cues if recovered else misses]), \
+                     patch('afterhours.verified_cues.VerifiedCues.write'):
+                    job.run()
+                self.assertEqual(evidence.call_args.args[0]['nativeDuration'], 100)
+                self.assertEqual(peer.queries.count('deck 3 get_time total absolute'), 1)
+                self.assertEqual(peer.commands, [])
+                if recovered:
+                    self.assertEqual(job.result[0]['cueCandidates'], cues)
+                    self.assertIsNone(job.analysis_miss)
+                else:
+                    self.assertEqual(job.analysis_miss, track['id'])
+                    self.assertEqual(job.result, [])
+
+    def test_changed_receipt_replaces_only_an_unpinned_automatic_tail(self):
+        for owner, pinned, expected in (('candidate', False, 'candidate'),
+                                       ('candidate', True, None), ('playing', False, None)):
+            with self.subTest(owner=owner, pinned=pinned):
+                playing = {'id':'playing', 'title':'Playing', 'bpm':125}
+                cued = {**playing, 'id':'cued', 'title':'Cued'}
+                candidate = {**playing, 'id':'candidate', 'title':'Candidate'}
+                session = DJSession(threading.Lock())
+                session.update(candidates=[playing,cued,candidate])
+                session.plan(['playing','cued'])
+                session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                               entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+                session.revise_queue(['playing','cued','candidate'], source='planner')
+                queued = session.state['queuedUpdate']
+                queued.update(status='analyzing', rollingTrackId='candidate')
+                if pinned:
+                    session.state['setPins'] = ['candidate']
+                job = PreparationPool(session, queued['id'], [])
+                job.done = True
+                session.background_job = job
+                with patch.object(session, 'fit_background_tracks',
+                                  side_effect=cue_planner.AudioEvidenceChanged(owner)):
+                    session.service_background(Mock(), 25)
+                result = session.snapshot()
+                self.assertEqual(result['queuedUpdate'].get('analysisMissId'), expected)
+                self.assertEqual(result['order'], [playing,cued])
+
     def job(self):return BackgroundAnalysis(DJSession(threading.Lock()),'revision',[{'id':'test','title':'Test'}])
 
     def test_database_write_retries_reads_without_using_the_native_mailbox(self):
@@ -52,6 +114,33 @@ class BackgroundTests(unittest.TestCase):
         for values in ({'get_decks':2,'deck 3 get_deck':1},{'deck 3 loaded':True},{'deck 3 play':True},{'deck 3 effect_active 1':True}):
             peer=Peer();peer.values.update(values);job=self.job();job.start(peer)
             self.assertTrue(job.done);self.assertTrue(job.error);self.assertEqual(peer.commands,[])
+    def test_cue_seek_is_guarded_by_the_native_worker_against_the_exact_owned_recording(self):
+        exact = identity('test')
+        for field, value in ((None,None), ('deck 3 play',True),
+                             ('deck 3 get_filepath','other'), ('deck 3 pfl',True)):
+            with self.subTest(field=field):
+                job = self.job()
+                job.thread = Mock()
+                job.owned = True
+                job.loaded = exact
+                peer = Peer()
+                peer.values['deck 3 volume'] = 0
+                if field:
+                    peer.values[field] = value
+                reply = queue.Queue()
+                job.pending.put(('cue-seek','deck 3 goto 20%',exact,reply))
+                job.step(peer,24)
+                result = reply.get_nowait()
+                if field:
+                    self.assertIsInstance(result, BridgeError)
+                    self.assertEqual(peer.commands, [])
+                else:
+                    self.assertIsNone(result)
+                    self.assertEqual(peer.commands, ['deck 3 goto 20%'])
+                    self.assertEqual(peer.queries.count('deck 3 get_filepath'), 1)
+                with self.assertRaises(BridgeError):
+                    MailboxClient(job).seek_cue('deck 4 goto 20%', exact)
+
     def test_acquire_and_cleanup_touch_only_isolated_deck(self):
         peer=Peer();job=self.job();job.acquire(peer);self.assertTrue(job.owned);guard_isolation(peer)
         job.loaded=identity('test');peer.values['deck 3 loaded']=True
@@ -221,11 +310,97 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(job.result[0]['energyMap']['reportDigest'],'fresh')
 
     def test_timed_refill_still_verifies_audio_and_cues_without_display_waveform(self):
+        self.verify_refill_audio_without_display_waveform(timed=True)
+
+    def test_incompatible_native_tempo_exits_before_scanning_the_automatic_pick(self):
+        planned = {'id':'playing', 'title':'Playing', 'bpm':125, 'camelot':'8A'}
+        cued = {**planned, 'id':'cued', 'title':'Cued'}
+        candidate = {'id':'virtualdj:'+'a'*64, 'title':'Next', 'bpm':125,
+                     'camelot':'8A', 'engine':{'selection_id':'a'*64}}
+        session = DJSession(threading.Lock())
+        session.update(candidates=[planned, cued, candidate])
+        session.plan([planned['id'], cued['id']])
+        session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                       entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125,
+                           'tempoSchedule':tempo_planner.estimate([planned, cued])})
+        session.revise_queue([planned['id'], cued['id'], candidate['id']], source='planner')
+        pending = session.state['queuedUpdate']
+        pending['rollingTrackId'] = candidate['id']
+        native = {**candidate, 'engineChecked':True, 'bpm':107}
+        self.assertIsNone(session.automatic_refill_tempo_miss(pending['id'], {**native, 'bpm':125}))
+        session.state['setPins'] = [candidate['id']]
+        self.assertIsNone(session.automatic_refill_tempo_miss(pending['id'], native))
+        session.state['setPins'] = []
+        job = BackgroundAnalysis(session,pending['id'],[candidate])
+        with patch.object(DJSession,'analyze_deck',return_value=native), \
+             patch.object(job, 'read_evidence') as evidence, \
+             patch('afterhours.background_analysis.scan_track') as scan:
+            job.run()
+        self.assertEqual(job.measured_fit_miss['id'], candidate['id'])
+        self.assertEqual(job.measured_fit_miss['bpm'], 107)
+        self.assertIn('107 BPM', job.error)
+        evidence.assert_not_called()
+        scan.assert_not_called()
+        self.assertEqual(session.snapshot()['index'], 0)
+        pool = PreparationPool(session, pending['id'], [candidate])
+        pool.remember_failure(job)
+        session.background_job = pool
+        session.service_background(Mock(), 25)
+        state = session.snapshot()
+        self.assertEqual(state['queuedUpdate']['measuredFitMissId'], candidate['id'])
+        measured = next(track for track in state['candidates'] if track['id'] == candidate['id'])
+        self.assertEqual(measured['bpm'], 107)
+        self.assertTrue(measured['engineChecked'])
+        self.assertEqual(state['order'], [planned, cued])
+
+    def test_unstable_timed_grid_identifies_the_owned_automatic_pick_for_replacement(self):
+        from afterhours.cue_planner import UnstableTimedGrid
+        track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
+        session = DJSession(threading.Lock())
+        self.addCleanup(session.crate.close)
+        session.update(entryCadence=[30,60], rollingQueue={'status':'ready'})
+        job = BackgroundAnalysis(session,'revision',[track])
+        evidence = {'duration':180,'energyMap':{'reportDigest':'verified'}}
+        job.owned = True
+        job.loaded = track['engine']['selection_id']
+        with patch.object(DJSession,'analyze_deck',return_value=track), \
+             patch.object(DJSession,'automatic_refill_tempo_miss',return_value=None), \
+             patch.object(job,'read_evidence',return_value=evidence), \
+             patch.object(DJSession,'measure_cues',side_effect=UnstableTimedGrid('Native grid could not hold tempo.')):
+            job.run()
+        self.assertEqual(job.analysis_miss, track['id'])
+        self.assertEqual(job.status,'blocked')
+        self.assertEqual(job.error,'Native grid could not hold tempo.')
+
+    def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
+        self.verify_refill_audio_without_display_waveform(timed=False)
+
+    def test_second_timed_refill_pick_can_prepare_for_a_shorter_slot(self):
+        first = {'id':'virtualdj:'+'a'*64, 'title':'First', 'bpm':125}
+        second = {'id':'virtualdj:'+'b'*64, 'title':'Second', 'bpm':125,
+                  'engine':{'selection_id':'b'*64}}
+        evidence = {'duration':180, 'energyMap':{'reportDigest':'fresh'}}
+        session = DJSession(threading.Lock())
+        session.update(secondsPerTrack=60, entryCadence=[30,60], order=[],
+                       queuedUpdate={'id':'revision','tracks':[first,second],
+                                     'rollingTrackIds':[first['id'],second['id']]})
+        job = BackgroundAnalysis(session, 'revision', [second])
+        with patch.object(DJSession,'analyze_deck',return_value=second), \
+             patch.object(DJSession,'automatic_refill_tempo_miss',return_value=None), \
+             patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
+             patch.object(job,'read_evidence',return_value=evidence), \
+             patch('afterhours.verified_cues.VerifiedCues.write'):
+            job.run()
+        self.assertEqual(cues.call_args.args[4], 60)
+        self.assertEqual(cues.call_args.kwargs['alternate_seconds'], 30)
+
+    def verify_refill_audio_without_display_waveform(self,timed):
         track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
         cold = {'duration':10,'points':[{'label':'realEnd','seconds':9.8}]}
         verified = {**cold,'energyMap':{'reportDigest':'fresh'}}
         session = DJSession(threading.Lock())
-        session.update(entryCadence=[60,30])
+        session.update(secondsPerTrack=60, **({'entryCadence':[30,60],'order':[track]}
+                       if timed else {'rollingQueue':{'status':'ready'}}))
         job = BackgroundAnalysis(session,'revision',[track])
         with patch.object(DJSession,'analyze_deck',return_value=track), \
              patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
@@ -236,7 +411,9 @@ class BackgroundTests(unittest.TestCase):
         features.assert_called_once()
         waveform.assert_not_called()
         self.assertEqual(cues.call_args.args[2]['energyMap'],verified['energyMap'])
-        self.assertTrue(cues.call_args.kwargs['timed'])
-        self.assertTrue(job.result[0]['timedPreparation'])
+        self.assertEqual(cues.call_args.args[4],30 if timed else 60)
+        self.assertEqual(job.result[0]['preparationSeconds'],30 if timed else 60)
+        self.assertEqual(bool(cues.call_args.kwargs.get('timed')),timed)
+        self.assertEqual(bool(job.result[0].get('timedPreparation')),timed)
 
 if __name__=='__main__':unittest.main()

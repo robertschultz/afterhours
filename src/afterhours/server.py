@@ -397,7 +397,8 @@ class Handler(RuntimeStaticHandler):
                         result=DJ_AGENT.fresh()
                     else:raise ValueError('Unknown conversation action.')
                 elif action=='start':
-                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'),client_lease=data.get('clientLease') is True)
+                    result=LIVE_VOICE.create(data.get('sdp'),data.get('requestId'),data.get('performer','nova'),data.get('approveRequest') is True,data.get('maxSeconds',120),voice=data.get('voice'),client_lease=data.get('clientLease') is True,
+                                             **({'presentation':data['presentation']} if 'presentation' in data else {}))
                 elif action=='end':result=LIVE_VOICE.end(data.get('sessionId'),transport_closed=data.get('transportClosed') is True)
                 elif action=='heartbeat':result=LIVE_VOICE.heartbeat(data.get('sessionId'))
                 elif action=='usage':result=LIVE_VOICE.receipt(data.get('sessionId'),data.get('seconds'),data.get('finalized') is True)
@@ -434,11 +435,14 @@ class Handler(RuntimeStaticHandler):
                     result = DJ_SESSION.discover(data.get('query'), data.get('artist',''),data.get('genre',''),data.get('bpmMin',40),data.get('bpmMax',300))
                 elif action == 'plan':
                     result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'),
+                                             clear_direction=True,
                                              **({'queue_window':data['queueWindow']} if 'queueWindow' in data else {}))
                 elif action == 'start':
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}
                     if 'entryCadence' in data:
                         options['entry_cadence'] = data['entryCadence']
+                    if 'mixLeadControl' in data:
+                        options['lead_control'] = data['mixLeadControl']
                     if data.get('loopHandoffs') is True:
                         options['loop_handoffs'] = True
                     if data.get('prepareWhilePlaying') is True:
@@ -473,6 +477,9 @@ class Handler(RuntimeStaticHandler):
                         data.get('previewSeconds'),data.get('evidence'),data.get('observedAt'))
                 elif action == 'prepare-waveforms':
                     result = DJ_SESSION.prepare_waveforms()
+                elif action == 'prepare-stem-windows':
+                    from afterhours.stem_probe import prepare
+                    result = prepare(DJ_SESSION,data.get('ids'))
                 elif action == 'ai-review':
                     result = DJ_SESSION.review_mix(data.get('approveRequest') is True)
                 elif action == 'apply-plan':

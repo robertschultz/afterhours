@@ -1,11 +1,11 @@
 """Bounded catalog relocation without native calls or alternate recordings."""
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from afterhours.background_analysis import BackgroundAnalysis
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_catalog import identity
+from afterhours.vdj_catalog import identity, selected_recording_id
 from afterhours.vdj_session import DJSession,RecordingLookupIncomplete,RecordingUnavailable
 
 
@@ -33,7 +33,7 @@ class Browser:
     def selected(self, client):
         self.reads+=1
         rows=self.results.get(self.query,[])
-        return {'id':rows[self.row]} if rows else None
+        return rows[self.row] if rows else None
 
     def count(self, client, script, kind=None):
         if script!='file_count':raise AssertionError(script)
@@ -49,7 +49,7 @@ class RecordingLookupTests(unittest.TestCase):
 
     def run_lookup(self,session,browser,method='select'):
         with patch('afterhours.vdj_session.folder_state',side_effect=lambda c:browser.folder.copy()), \
-             patch('afterhours.vdj_session.selection',side_effect=browser.selected), \
+             patch('afterhours.vdj_session.selected_recording_id',side_effect=browser.selected), \
              patch.object(session,'send',side_effect=browser.send), \
              patch.object(session,'q',side_effect=browser.count), \
              patch.object(session,'sleep',side_effect=browser.wait), \
@@ -60,6 +60,12 @@ class RecordingLookupTests(unittest.TestCase):
              patch('afterhours.vdj_session.load_selected',return_value={'verified':True}) as load:
             getattr(session,method)(None,TRACK,*([2] if method=='load' else []))
             return load
+
+    def test_relocation_reads_identity_without_catalog_metadata(self):
+        client = Mock()
+        client.query.return_value = 'opaque-locator'
+        self.assertEqual(selected_recording_id(client), identity('opaque-locator'))
+        client.query.assert_called_once_with('get_browsed_filepath', 'text')
 
     def test_provider_capped_artist_results_use_exact_title_before_long_walk(self):
         wrong_version=identity('another-house-dawgs-mix')

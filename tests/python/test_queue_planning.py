@@ -1,13 +1,15 @@
 """Fresh starts, insertion and planning deadlines against disposable sessions."""
 
+import copy
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from afterhours import dj_agent, dj_discovery, queue_planning
+from afterhours import ai_mix, cue_planner, dj_agent, dj_discovery, queue_planning, tempo_planner
 from afterhours.agent_loop import Lookups
-from afterhours.rolling_queue import RollingQueue
+from afterhours.rolling_queue import RollingQueue, automatic_style_filter, fits_style
 from afterhours.vdj_session import DJSession
+from test_cue_planner import fixture
 from test_dj_agent import decision, settled
 
 
@@ -63,6 +65,122 @@ class QueuePlanningTests(unittest.TestCase):
             queue_planning.placement(self.session.snapshot(),'far')
         self.assertIsNone(self.session.snapshot()['queuedUpdate'])
 
+    def test_rolling_avoids_repeating_the_same_song_in_a_different_mix(self):
+        rows = [
+            {**track('a'), 'title': 'Can’t Stop It (Aviators Remix)', 'artist': 'Cabin Crew'},
+            track('b'),
+            {**track('alternate'), 'title': 'Can’t Stop It (Club Mix)', 'artist': 'Cabin Crew'},
+            track('new'),
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a', 'b'], mix_style='quick')
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'})
+        RollingQueue().tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'], 'new')
+
+    def test_rolling_avoids_repeating_the_same_song_with_a_different_feature_credit(self):
+        for suffix in ('feat. Sam Smith','with Sam Smith'):
+            with self.subTest(suffix=suffix):
+                rows = [
+                    {**track('a'), 'title':'Latch', 'artist':'Disclosure, Sam Smith'},
+                    track('b'),
+                    {**track('alternate'), 'title':f'Latch ({suffix})', 'artist':'Disclosure'},
+                    track('new'),
+                ]
+                self.session.update(candidates=rows,active=False)
+                self.session.plan(['a','b'],mix_style='quick')
+                self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+                RollingQueue().tick(self.session,25)
+                self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
+
+    def test_rolling_avoids_a_catalog_title_variant_with_a_missing_article(self):
+        rows = [
+            {**track('a'), 'title':'Take Me to the King (feat. Kirk Franklin)', 'artist':'Tamela Mann'},
+            track('b'),
+            {**track('alternate'), 'title':'Take Me to King', 'artist':'Tamela Mann'},
+            track('new'),
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'],mix_style='quick')
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+        RollingQueue().tick(self.session,25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
+
+    def test_house_refill_distinguishes_missing_genres_from_other_catalog_labels(self):
+        for genre in ('Dub', 'Easy Listening', 'Alternative', 'Spoken Word'):
+            with self.subTest(genre=genre):
+                self.assertFalse(fits_style({'genre': genre}, 'house'))
+        for genre in ('House', 'Dub Techno', 'Dance', 'Electronic', '', None, 'Unclassified'):
+            with self.subTest(genre=genre):
+                self.assertTrue(fits_style({'genre': genre}, 'house'))
+
+    def test_rolling_genre_follows_the_requested_direction(self):
+        rows = [
+            {**track('a'), 'genre':'Classic Rock'},
+            {**track('b'), 'genre':'Classic Rock'},
+            {**track('house', '2A', 127), 'genre':'House'},
+            {**track('alternative'), 'genre':'Alternative'},
+            {**track('rock'), 'genre':'Rock'},
+        ]
+        self.session.update(candidates=rows)
+        self.session.plan(['a', 'b'], mix_style='quick')
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'})
+        roller = RollingQueue()
+        roller.tick(self.session, 25)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['tracks'][-1]['id'], 'rock')
+
+        self.session.update(queuedUpdate=None, agentDirection='Switch to house')
+        roller.tick(self.session, 25)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['tracks'][-1]['id'], 'house')
+
+    def test_house_filter_uses_tagged_artists_exact_public_recordings_and_cached_neighbors(self):
+        discovery = dj_discovery.Discovery(clock=lambda:100)
+        discovery.feeds['deep house'] = {'observedAt':99, 'rows':[
+            {'title':'Exact cut', 'artist':'Catalog Guest'},
+        ]}
+        discovery.artist_cache['resident'] = (200, ('Related Artist',))
+        opening = {**track('a'), 'artist':'Resident', 'genre':'House'}
+        unrelated = {**track('b'), 'title':'One broad cut', 'artist':'Drift', 'genre':'Dance'}
+        tagged = {**track('c'), 'artist':'Other House Artist', 'genre':'Tech House'}
+        accepts = automatic_style_filter('house', [opening, unrelated], [tagged], discovery)
+        for row in (tagged, {**unrelated, 'artist':'Resident'}, {**unrelated, 'artist':'Other House Artist'},
+                    {**unrelated, 'artist':'Related Artist'},
+                    {**unrelated, 'artist':'Catalog Guest', 'title':'Exact cut'}):
+            self.assertTrue(accepts(row), row)
+        self.assertFalse(accepts(unrelated))
+        self.assertFalse(accepts({**unrelated, 'artist':'Catalog Guest', 'title':'Exact cut (Remix)'}))
+        discovery.recording_cache[dj_discovery.recording_lookup_key(unrelated)] = (200, ('house',))
+        self.assertTrue(accepts(unrelated))
+        self.assertFalse(accepts({**unrelated, 'title':'One broad cut (Edit)'}))
+
+    @patch('afterhours.rolling_queue.DISCOVERY.neighbors', return_value=())
+    def test_named_artist_refill_rejects_electronic_cache_but_can_broaden_to_related_music(self, _):
+        seeds = [
+            {**track('opener', '7A', 118), 'artist': 'Avery Stone & The Chorus', 'genre': 'Christian'},
+            {**track('current', '6B', 120), 'artist': 'Avery Stone', 'genre': 'Christian'},
+        ]
+        other = {**track('other', '6B', 120), 'artist': 'Unrelated Producer', 'genre': 'Electronic'}
+        unrelated_soul = {**track('soul', '6B', 120), 'artist': 'Unrelated Singer', 'genre': 'R&B/Soul'}
+        related = {**track('related', '6B', 120), 'artist': 'Another Singer', 'genre': 'Christian R&B/Soul'}
+        self.session.update(candidates=seeds + [other, unrelated_soul])
+        self.session.plan([row['id'] for row in seeds])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            agentDirection='Play Avery Stone',
+                            executionPlan={'id':'plan','applied':True,'targetBpm':120})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.search = Mock(return_value=False)
+        roller.tick(self.session, 25)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+        self.assertEqual(roller.search.call_args.args[3], 'gospel')
+
+        self.session.update(candidates=seeds + [other, unrelated_soul, related])
+        roller.tick(self.session, 25)
+        staged = self.session.snapshot()['queuedUpdate']
+        self.assertEqual([row['id'] for row in staged['tracks']], ['opener', 'current', 'related'])
+
     def test_rolling_quick_set_appends_as_each_track_starts(self):
         self.session.plan(['a','b'],mix_style='quick')
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
@@ -105,13 +223,82 @@ class QueuePlanningTests(unittest.TestCase):
         ]}
         order = [{**track('a'), 'artist': 'Opening Artist', 'genre': 'House'}]
         with patch('afterhours.rolling_queue.DISCOVERY', discovery):
-            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'House')):
+            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'house')):
                 with self.subTest(direction=direction):
                     roller = RollingQueue()
                     roller.searched.add('opening artist')
                     session = Mock()
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(session.discover_more.call_args.args, (expected,))
+
+    def test_low_runway_searches_the_style_and_artist_before_one_exact_release(self):
+        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'Deep House'}]
+        state = {'active':True, 'index':0, 'agentDirection':'Deep house'}
+        hints = [{'artist':'Related Artist', 'title':'Exact Release'}]
+        with patch('afterhours.rolling_queue.research_hints', return_value=hints), \
+             patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+            discovery.hints.return_value = []
+            discovery.neighbors.return_value = []
+            urgent, session = RollingQueue(), Mock()
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('deep house',))
+            seed = session.catalog_job.set_rolling_seed
+            seed.assert_called_once_with('', '', eligible=unittest.mock.ANY)
+            eligible = seed.call_args.kwargs['eligible']
+            self.assertFalse(eligible(order[0]))
+            self.assertFalse(eligible({**track('b'), 'title':order[0]['title'], 'genre':'Deep House'}))
+            self.assertFalse(eligible({**track('b'), 'genre':'Dub'}))
+            self.assertTrue(eligible({**track('b'), 'genre':'Deep House'}))
+            self.assertTrue(eligible({**track('c'), 'title':'Latch', 'artist':'Disclosure', 'genre':'Deep House'}))
+            self.assertFalse(eligible({**track('d'), 'title':'Latch (Extended Mix)',
+                                       'artist':'Disclosure & Sam Smith', 'genre':'Deep House'}))
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('Opening Artist',))
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
+            regular = RollingQueue()
+            self.assertTrue(regular.search(session, state, order, 'deep house', True, lookahead=True))
+            self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
+
+    def test_low_runway_expands_an_inferred_style_without_overriding_explicit_direction(self):
+        for style, direction, next_terms in (
+            ('house', '', ['house','deep house','tech house']),
+            ('deep house', '', ['deep house','house','tech house']),
+            ('tech house', '', ['tech house','house','deep house']),
+            ('house', 'House only', ['house','Related Artist','Opening Artist']),
+            ('deep house', 'Deep house', ['deep house','Related Artist','Opening Artist']),
+            ('gospel', 'Christian music', ['gospel','Contemporary Christian','Christian pop']),
+        ):
+            with self.subTest(style=style, direction=direction):
+                roller, session = RollingQueue(), Mock()
+                order = [{**track('a'), 'artist':'Opening Artist', 'genre':style}]
+                state = {'active':True,'index':0,'agentDirection':direction}
+                with patch('afterhours.rolling_queue.research_hints', return_value=[]), \
+                     patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+                    discovery.hints.return_value = []
+                    discovery.neighbors.return_value = ['Related Artist']
+                    for _ in next_terms:
+                        self.assertTrue(roller.search(session, state, order, style, True))
+                self.assertEqual([call.args[0] for call in session.discover_more.call_args_list], next_terms)
+
+    def test_rolling_breaks_a_repeated_artist_run_without_risking_the_next_track(self):
+        for alternate_bpm, selected in [(125,'x'),(190,'c')]:
+            with self.subTest(alternate_bpm=alternate_bpm):
+                seeds=[{**track(identifier),'artist':artist,'genre':'House'} for identifier,artist in
+                       [('a','Resident DJ'),('b','Resident DJ & Guest'),('c','Resident DJ')]]
+                seeds.append({**track('x',bpm=alternate_bpm),'artist':'Related Artist','genre':'House'})
+                self.session.update(active=False,candidates=seeds)
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+                roller=RollingQueue()
+                roller.advisor.advise=Mock(return_value=(None,False))
+                roller.live_matches.add('c')
+                roller.tick(self.session,28)
+                offered=roller.advisor.advise.call_args.args[2]
+                self.assertEqual([row['id'] for row in offered],['x'])
+                queued=self.session.snapshot()['queuedUpdate']
+                self.assertEqual([row['id'] for row in queued['tracks']],['a','b',selected])
 
     def test_rolling_measured_set_uses_existing_background_verification(self):
         self.session.plan(['a','b'])
@@ -122,6 +309,137 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
 
+    def test_rolling_refill_avoids_returning_to_one_artist_every_other_track(self):
+        rows = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in (
+            ('a','Resident DJ'), ('b','Different Artist'), ('c','Resident DJ & Guest'),
+            ('d','Resident DJ'), ('x','Compatible Artist'))]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b','c'])
+        self.session.update(index=2,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.add('d')
+        roller.advisor.enabled = False
+        roller.tick(self.session, 24)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'], 'x')
+
+    def test_rolling_search_tries_related_artists_before_extending_an_artist_streak(self):
+        order=[{**track('a'),'artist':'Resident DJ','genre':'House'},
+               {**track('b'),'artist':'Resident DJ & Guest','genre':'House'}]
+        roller=RollingQueue()
+        session=Mock()
+        with patch('afterhours.rolling_queue.research_hints',return_value=[]), \
+                patch('afterhours.rolling_queue.DISCOVERY') as facts:
+            facts.hints.return_value=[]
+            facts.neighbors.return_value=['Related Artist']
+            self.assertTrue(roller.search(session, {}, order, 'house', True))
+        self.assertEqual(session.discover_more.call_args.args, ('Related Artist',))
+
+    def test_rolling_prefers_variety_after_an_artist_has_featured_across_the_set(self):
+        order = [{**track(str(i)), 'artist':'Resident DJ' if i < 6 else f'Guest {i}', 'genre':'House'}
+                 for i in range(9)]
+        repeat = {**track('resident'), 'artist':'Resident DJ & Collaborator', 'genre':'House'}
+        related = {**track('related'), 'artist':'Related Artist', 'genre':'House'}
+        self.session.update(candidates=[*order, repeat, related])
+        self.session.plan([row['id'] for row in order])
+        self.session.update(index=8,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.add('resident')
+        roller.advisor.enabled = False
+        roller.tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'], 'related')
+
+    def test_variety_lookahead_searches_a_related_artist_before_one_exact_title(self):
+        order = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in
+                 (('a','Resident DJ'), ('b','Resident DJ & Guest'))]
+        hint = {'artist':'Different Artist', 'title':'Specific Release'}
+        for variety, query in ((False, 'Different Artist Specific Release'), (True, 'Related Artist')):
+            with self.subTest(artist_variety=variety):
+                session = Mock()
+                with patch('afterhours.rolling_queue.research_hints', return_value=[hint]), \
+                     patch('afterhours.rolling_queue.DISCOVERY') as facts:
+                    facts.hints.return_value = []
+                    facts.neighbors.return_value = ['Resident DJ', 'Related Artist']
+                    self.assertTrue(RollingQueue().search(session, {}, order, 'house', True,
+                                                         lookahead=True, artist_variety=variety))
+                self.assertEqual(session.discover_more.call_args.args, (query,))
+
+    def test_rolling_exact_title_miss_broadens_once_to_the_same_credited_artist(self):
+        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
+        hints = [{'artist':'Related Artist', 'title':'Catalog Version'},
+                 {'artist':'Another Artist', 'title':'Second Candidate'}]
+        for seen, direction, expected, scope in (
+            (set(), 'house late set', 'Related Artist', ('Related Artist','')),
+            ({'found'}, 'house late set', 'Another Artist Second Candidate', ('Another Artist','Second Candidate')),
+            (set(), 'house early set', 'Another Artist Second Candidate', ('Another Artist','Second Candidate')),
+        ):
+            with self.subTest(seen=seen, direction=direction):
+                roller = RollingQueue()
+                session = Mock()
+                searches = []
+
+                def discover(term, **_):
+                    searches.append(term)
+                    session.catalog_job = Mock(done=False, seen=set())
+
+                session.discover_more.side_effect = discover
+                def research(_, __, searched):
+                    return [row for row in hints
+                            if f"{row['artist']} {row['title']}".lower() not in searched]
+
+                with patch('afterhours.rolling_queue.research_hints', side_effect=research), \
+                        patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+                    discovery.hints.return_value = []
+                    discovery.neighbors.return_value = []
+                    self.assertTrue(roller.search(session, {'agentDirection':'house late set'}, order, 'house', True))
+                    session.catalog_job.set_rolling_seed.assert_called_once_with('Related Artist','Catalog Version',
+                                                                                 eligible=unittest.mock.ANY)
+                    session.catalog_job.done = True
+                    session.catalog_job.seen = seen
+                    self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
+                    self.assertEqual(searches, ['Related Artist Catalog Version', expected])
+                    session.catalog_job.set_rolling_seed.assert_called_once_with(*scope, eligible=unittest.mock.ANY)
+
+    def test_rolling_search_recovers_from_exhausted_recent_collaboration_queries(self):
+        order = [{**track('a'), 'artist':'Earlier Artist'},
+                 {**track('b'), 'artist':'Recent Duo & Guest Artist', 'genre':'Pop'},
+                 {**track('c'), 'artist':'Later Artist', 'genre':'Pop'},
+                 {**track('d'), 'artist':'Last Artist', 'genre':'Pop'}]
+        roller = RollingQueue()
+        roller.searched.update(('last artist','later artist','recent duo guest artist','pop'))
+        session = Mock()
+        with patch('afterhours.rolling_queue.DISCOVERY') as facts:
+            facts.hints.return_value=[]
+            facts.neighbors.return_value=[]
+            self.assertTrue(roller.search(session, {}, order, 'pop', True))
+        self.assertEqual(session.discover_more.call_args.args, ('guest artist',))
+
+    def test_measured_rolling_set_refills_while_three_followups_remain(self):
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            executionPlan={'id':'plan','applied':True,'targetBpm':125})
+        RollingQueue().tick(self.session,22)
+        staged=self.session.snapshot()['queuedUpdate']
+        self.assertEqual(staged['protectedIds'],['a','b'])
+        self.assertEqual(staged['rollingTrackId'],'x')
+
+    def test_open_ended_refill_replaces_a_conclusive_scan_or_fit_failure(self):
+        self.session.update(candidates=[{**track(tid), 'genre': 'Christmas: Pop'}
+                                        for tid in ('a', 'b', 'c', 'd')])
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status': 'ready'},
+                            executionPlan={'id': 'plan', 'applied': True, 'targetBpm': 125},
+                            agentDirection='Christmas favorites')
+        roller = RollingQueue()
+        roller.tick(self.session, 22)
+        pending = self.session.state['queuedUpdate']
+        rejected = pending['rollingTrackId']
+        pending.update(status='blocked', analysisMissId=rejected)
+        current = {'position': 45, 'controls': {'durationMs': 180000}}
+        self.assertGreater(self.session.final_preparation_runway({'id': 'b'}, 1, current), 16)
+        roller.tick(self.session, 22)
+        self.assertIn(rejected, roller.missed)
+        self.assertNotEqual(self.session.state['queuedUpdate']['rollingTrackId'], rejected)
     def test_rolling_replaces_only_its_failed_catalog_lookup_after_cleanup(self):
         self.session.plan(['a','b'])
         self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
@@ -142,6 +460,33 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(replacement['protectedIds'],['a','b'])
         self.assertNotIn(miss,[item['id'] for item in replacement['tracks']])
 
+    def test_failed_model_candidate_releases_refill_but_operator_pick_is_retained(self):
+        for source in ('planner','operator'):
+            with self.subTest(source=source):
+                self.session.update(active=False,phase='stopped',setPins=[])
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    executionPlan={'id':'plan','applied':True,'targetBpm':125})
+                self.session.revise_queue(['a','b','c','d'],source=source)
+                pending=self.session.state['queuedUpdate']
+                pending['status']='analyzing'
+                job=Mock(revision=pending['id'],done=True,error='Track analysis did not settle.',
+                         analysis_miss='c',catalog_miss=None,cache={},osc_reply_timeout=False)
+                job.snapshot.return_value={'message':job.error}
+                self.session.background_job=job
+                self.session.service_background(Mock(),24)
+                job.close.assert_called_once()
+                roller=RollingQueue()
+                roller.tick(self.session,24)
+                state=self.session.snapshot()
+                self.assertEqual([t['id'] for t in state['order']],['a','b'])
+                if source=='planner':
+                    self.assertEqual(roller.missed,{'c'})
+                    self.assertNotIn('c',[t['id'] for t in state['queuedUpdate']['tracks']])
+                else:
+                    self.assertEqual(state['queuedUpdate']['id'],pending['id'])
+                    self.assertEqual(state['queuedUpdate']['status'],'blocked')
+
     def test_timed_refill_starts_when_nine_upcoming_slots_remain(self):
         tracks = [track(chr(97+i)) for i in range(13)]
         self.session.update(candidates=tracks)
@@ -158,18 +503,198 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(update['rollingTrackIds'], ['l', 'm'])
         self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
 
+    def test_timed_house_refill_prefers_house_evidence_while_one_successor_is_protected(self):
+        rows = [{**track('a'), 'genre':'House', 'artist':'House DJ'}, {**track('b'), 'genre':'House'},
+                {**track('c'), 'genre':'Dance', 'artist':'House DJ'}, {**track('d'), 'genre':'Deep House'},
+                {**track('x'), 'genre':'Dance', 'artist':'Uncorroborated Artist'}]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.live_matches.add('c')
+        roller.live_matches.add('x')
+        roller.tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['d','c'])
+
+    def test_one_spare_stages_two_last_slot_picks_without_waiting_for_the_advisor(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125},
+                            resumeBlocked=True, cleanupPending={'analysis':[{'deck':3,'selectionId':'unconfirmed'}]})
+        self.assertEqual(self.session.preparation_decks(), (4,))
+        roller = RollingQueue()
+        roller.advisor.advise = Mock(return_value=(None, True))
+        roller.tick(self.session, 27)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(len(queued['rollingTrackIds']), 2)
+        self.assertEqual(queued['protectedIds'], ['a', 'b'])
+        self.assertEqual(queued['status'], 'needs-analysis')
+        roller.advisor.advise.assert_not_called()
+
+    def test_long_last_slot_can_stage_two_without_waiting_to_pick_again(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(len(queued['rollingTrackIds']), 2)
+        self.assertEqual(queued['protectedIds'], ['a', 'b'])
+
+    def test_timed_refill_does_not_stage_two_versions_of_one_song_in_the_same_batch(self):
+        self.session.update(candidates=[
+            track('a'), track('b'),
+            {**track('c'), 'title':'Latch (Original Mix)', 'artist':'Disclosure'},
+            {**track('d'), 'title':'Latch (feat. Sam Smith) [Extended]', 'artist':'Disclosure & Sam Smith'},
+            {**track('e', bpm=125.5), 'title':'Another Song', 'artist':'Different Artist'},
+        ])
+        self.session.plan(['a','b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        batch = self.session.snapshot()['queuedUpdate']['rollingTrackIds']
+        self.assertEqual(len(batch), 2)
+        self.assertEqual(len(set(batch) & {'c','d'}), 1)
+        self.assertIn('e', batch)
+
+    def test_two_track_refill_prefers_one_compatible_record_per_artist(self):
+        for related_bpm, second in ((125.5, 'e'), (190, 'd')):
+            with self.subTest(related_bpm=related_bpm):
+                candidates = [
+                    track('a'), track('b'),
+                    {**track('c'), 'artist':'Resident DJ'},
+                    {**track('d'), 'artist':'Resident DJ & Guest'},
+                    {**track('e', bpm=related_bpm), 'artist':'Related Artist'},
+                ]
+                self.session.update(active=False,candidates=candidates)
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+                roller = RollingQueue()
+                roller.advisor.advise = Mock(return_value=('c',False))
+                roller.tick(self.session, 43)
+                self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['c',second])
+
+    def test_timed_refill_discovers_successors_while_the_current_batch_is_measured(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.tick(self.session, 43)
+        pending = self.session.state['queuedUpdate']
+        pending['status'] = 'analyzing'
+        self.session.background_job = Mock(revision=pending['id'])
+        self.session.background_job.navigation_idle.return_value = False
+        roller.search = Mock()
+        roller.tick(self.session, 32)
+        roller.search.assert_not_called()
+        self.session.background_job.navigation_idle.return_value = True
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], '', True,
+                                              lookahead=True)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], pending['id'])
+        self.assertEqual(self.session.state['rollingQueue']['status'], 'preparing')
+
+    def test_timed_lookahead_digs_when_live_search_only_found_the_repeated_artist(self):
+        rows = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in (
+            ('a','Resident DJ'), ('b','Resident DJ & Guest'), ('c','Resident DJ'),
+            ('d','Resident DJ'), ('e','Resident DJ'), ('x','Different Artist'), ('y','Other Artist'))]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        self.session.revise_queue(['a','b','c'], source='planner')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='c')
+        self.session.background_job = Mock(revision=pending['id'])
+        roller = RollingQueue()
+        roller.live_matches.update(('d','e'))
+        roller.search = Mock()
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], 'house', True,
+                                              lookahead=True)
+        roller.search.reset_mock()
+        roller.live_matches.update(('x','y'))
+        roller.tick(self.session, 32)
+        roller.search.assert_not_called()
+
+    def test_timed_lookahead_does_not_count_two_releases_of_the_same_song(self):
+        self.session.update(candidates=[
+            track('a'), track('b'), track('c'),
+            {**track('d'), 'title':'Latch', 'artist':'Disclosure'},
+            {**track('e'), 'title':'Latch (Extended Mix)', 'artist':'Disclosure & Sam Smith'},
+        ])
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+        self.session.revise_queue(['a','b','c'], source='planner')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='c')
+        self.session.background_job = Mock(revision=pending['id'])
+        roller = RollingQueue()
+        roller.live_matches.update(('d','e'))
+        roller.search = Mock()
+
+        roller.tick(self.session, 32)
+
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], '', True,
+                                              lookahead=True)
+
+    def test_manual_timed_queue_makes_room_for_related_artists_before_another_repeat(self):
+        rows = [{**track(tid), 'artist':'Resident DJ', 'genre':'House'} for tid in ('a','b','c','d')]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b','c'])
+        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.live_matches.add('d')
+        roller.search = Mock(return_value=True)
+        roller.tick(self.session, 32)
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, self.session.state['order'],
+                                              'house', True, lookahead=True, artist_variety=True)
+        self.assertIsNone(self.session.state['queuedUpdate'])
+        self.session.catalog_job = Mock(done=False, rolling=True, seen=set())
+        roller.tick(self.session, 28)
+        self.assertIsNone(self.session.state['queuedUpdate'])
+        self.session.catalog_job.done = True
+        roller.tick(self.session, 28)
+        self.assertEqual(self.session.state['queuedUpdate']['rollingTrackId'], 'd')
+        roller.search.assert_called_once()
+
     def test_timed_refill_skips_provider_continuous_mix_cuts(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
                             entryCadence=[60,30], executionPlan={'applied':True, 'targetBpm':125})
-        for row, suffix in zip(self.session.state['candidates'][2:4], [' [Mixed]', ' (Mixed)']):
-            row['title'] += suffix
+        self.session.state['candidates'][2]['title'] += ' [Mixed]'
+        self.session.state['candidates'][3]['album'] = 'Fixture Continuous Set (DJ Mix)'
         roller = RollingQueue()
         roller.live_matches.update(row['id'] for row in self.tracks)
         roller.tick(self.session, 35)
         added = self.session.snapshot()['queuedUpdate']['tracks'][2:]
         self.assertTrue(added)
-        self.assertTrue(all(not row['title'].endswith((' [Mixed]', ' (Mixed)')) for row in added))
+        self.assertEqual([row['id'] for row in added], ['x'])
+
+    def test_timed_refill_avoids_a_title_suffix_that_matches_its_version_tag(self):
+        self.session.state['candidates'][0].update(title='Demented', artist='Tres Demented', remix='Or Just Crazy')
+        self.session.state['candidates'][2].update(title='Demented (Or Just Crazy)',
+                                                   artist='Carl Craig & Tres Demented', remix='Or Just Crazy')
+        self.session.state['candidates'][3].update(title='Demented Drums', artist='Tres Demented')
+        self.session.plan(['a', 'b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True, 'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.update(row['id'] for row in self.tracks)
+        roller.tick(self.session, 35)
+        planned = {row['id'] for row in self.session.snapshot()['queuedUpdate']['tracks']}
+        self.assertNotIn('c', planned)
+        self.assertIn('d', planned)
 
     def test_timed_queue_recovers_a_rejected_measured_fit_but_preserves_uncertain_load(self):
         self.session.plan(['a','b'])
@@ -205,6 +730,25 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertNotIn(miss,ids)
         self.assertNotIn('analysisMissId',replacement)
 
+    def test_scan_failure_prefers_a_new_song_and_keeps_another_version_in_reserve(self):
+        for preferred_bpm, expected in ((125,'different'), (190,'other-version')):
+            with self.subTest(preferred_bpm=preferred_bpm):
+                session = DJSession(threading.Lock())
+                failed = {**track('failed'), 'title':'Fly Away', 'artist':'Producer'}
+                other_version = {**track('other-version'), 'title':'Fly Away (Full Vocal Version)', 'artist':'Producer'}
+                different = {**track('different', '11B', preferred_bpm), 'artist':'New Artist'}
+                session.update(candidates=[track('a'), track('b'), failed, other_version, different])
+                session.plan(['a','b'])
+                session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                               executionPlan={'id':'plan', 'applied':True, 'targetBpm':125})
+                session.revise_queue(['a','b','failed'], source='planner')
+                session.state['queuedUpdate'].update(status='blocked', rollingTrackId='failed', analysisMissId='failed')
+                roller = RollingQueue()
+                roller.advisor.advise = Mock(return_value=(None,False))
+                roller.tick(session, 25)
+                self.assertEqual(session.state['queuedUpdate']['rollingTrackId'], expected)
+                self.assertEqual([row['id'] for row in roller.advisor.advise.call_args.args[2]], ['different'])
+
     def test_timed_queue_prepares_explicit_opening_tail_in_order(self):
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
@@ -214,6 +758,42 @@ class QueuePlanningTests(unittest.TestCase):
         state = self.session.snapshot()
         self.assertEqual([row['id'] for row in state['queuedUpdate']['tracks']], ['a','b','x'])
         self.assertEqual([row['id'] for row in state['timedContinuation']], ['d'])
+
+    def test_timed_append_recovers_a_stale_tempo_only_with_an_exact_slot_receipt(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', entryCadence=[30,60],
+                            executionPlan={'targetBpm':125,'applied':True})
+        stale = track('stale', bpm=145)
+        self.session.update(candidates=self.tracks + [stale])
+        with patch('afterhours.vdj_session.VerifiedCues') as cache:
+            cache.return_value.read.return_value = None
+            with self.assertRaises(ValueError):
+                self.session.revise_queue(['a','b','stale'],source='planner')
+            self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+            cache.return_value.read.return_value = {'bpm':124,'camelot':'8A','duration':230}
+            queued = self.session.revise_queue(['a','b','stale'],source='planner')['queuedUpdate']
+            cache.return_value.read.assert_called_with(stale,30,True)
+        self.assertEqual([row['id'] for row in queued['tracks']], ['a','b','stale'])
+        self.assertEqual(queued['tracks'][-1]['bpm'],124)
+        self.assertEqual(queued['protectedIds'], ['a','b'])
+        self.assertEqual(queued['status'], 'needs-analysis')
+
+    def test_timed_refill_uses_measured_tempo_when_the_committed_runway_is_short(self):
+        self.session.plan(['a','b'])
+        self.session.state['candidates'].insert(0, {**track('untitled'), 'title':None})
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={
+                                'applied':True, 'targetBpm':125,
+                                'tempoSchedule':tempo_planner.estimate(self.tracks[:2])})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.cues.compatible_timed_bpm = Mock(
+            side_effect=lambda row, *_: 125 if row['id'] == 'x' else None)
+        roller.tick(self.session, 18)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(queued['rollingTrackId'], 'x')
+        self.assertEqual(queued['protectedIds'], ['a','b'])
+        self.assertTrue(all(call.args[1:] == (30,125,8) for call in roller.cues.compatible_timed_bpm.call_args_list))
 
     def test_timed_queue_commits_the_measured_prefix_and_keeps_its_preparation_owner(self):
         self.session.plan(['a','b'])
@@ -251,6 +831,160 @@ class QueuePlanningTests(unittest.TestCase):
             self.session.service_background(Mock(), 24)
         self.assertEqual(self.session.state['queuedUpdate']['measuredFitMissId'], second['id'])
         self.assertEqual([track['id'] for track in self.session.state['order']], ['a','b',first['id']])
+
+    def staged_measured_batch(self, missed, *, pin=None):
+        _, report, response = fixture()
+        tracks = [{key: t[key] for key in ('id', 'title', 'bpm', 'duration', 'camelot', 'genre', 'artist')}
+                  for t in report['tracks']]
+        measured = copy.deepcopy(report['tracks'][2:])
+        # Catalog estimates admitted both candidates. Native measurement
+        # proves one cannot join this actually frozen 155 BPM route.
+        measured[int(missed) - 2]['bpm'] = 143 if missed == '2' else 141
+        seed = {**report, 'tracks': report['tracks'][:2]}
+        seed['fingerprint'] = cue_planner.fingerprint(seed['tracks'])
+        review = ai_mix.validate_plan({**response, 'selections': response['selections'][:2],
+                                     'transitions': response['transitions'][:1]}, seed, 30)
+        plan = cue_planner.compile_plan(review, seed, tracks[:2], 30)
+        plan['applied'] = True
+        self.session.update(candidates=tracks, active=False)
+        self.session.plan(['0','1'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'preparing'},
+                            entryCadence=[60,30], executionPlan=plan, analysis=seed, aiReview=review,
+                            setPins=[pin] if pin else [])
+        self.session.revise_queue(['0','1','2','3'], source='planner', reason='Timed rolling pair.')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='2', rollingTrackIds=['2','3'])
+        self.session.background_job = Mock(revision=pending['id'], result=measured, done=True, error=None, cache={})
+        self.session.background_job.snapshot.return_value = {'message': 'Both recordings measured.'}
+        return plan, pending['id'], measured
+
+    def test_typed_two_record_fit_recovers_the_other_recording_on_verified_cues(self):
+        for missed, survivor in (('2', '3'), ('3', '2')):
+            with self.subTest(missed=missed):
+                plan, revision, measured = self.staged_measured_batch(missed)
+                state = self.session.snapshot()
+                with self.assertRaises(tempo_planner.TempoRouteError) as error:
+                    self.session.fit_background_tracks(state, state['queuedUpdate'],
+                                                       state['queuedUpdate']['tracks'], measured, 2)
+                self.assertEqual(error.exception.track['id'], missed)
+                client = Mock()
+                with patch('afterhours.cue_planner.verify_receipts') as verify:
+                    self.session.service_background(client, 24)
+                    pending = self.session.snapshot()['queuedUpdate']
+                    self.assertEqual(pending['protectedIds'], ['0','1'])
+                    self.assertEqual(pending['id'], revision)
+                    self.assertEqual(pending['status'], 'ready')
+                    self.assertEqual(pending['rollingTrackId'], survivor)
+                    self.assertEqual([t['id'] for t in pending['tracks']], ['0','1',survivor])
+                    verify.assert_called_once()
+                    self.session.update(index=1)
+                    self.assertGreater(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 16)
+                    order, applied = self.session.adopt_queue(1)
+                self.assertEqual([t['id'] for t in order], ['0','1',survivor])
+                self.assertEqual(applied['selections'][:2], plan['selections'])
+                self.assertEqual(applied['transitions'][0], plan['transitions'][0])
+                self.assertIsNone(self.session.state['queuedUpdate'])
+                client.send.assert_not_called()
+
+    def test_promoted_survivor_reuses_the_receipt_for_its_new_cadence(self):
+        for reject_cached in (False, True):
+            with self.subTest(reject_cached=reject_cached):
+                _, _, measured = self.staged_measured_batch('2')
+                survivor = measured[1]
+                survivor.update(timedPreparation=True, preparationSeconds=30)
+                cached = {**survivor, 'preparationSeconds':60}
+                with patch('afterhours.vdj_session.VerifiedCues') as cache, \
+                     patch('afterhours.cue_planner.verify_receipts',
+                           side_effect=[ValueError('Changed receipt'), None] if reject_cached else [None]):
+                    cache.return_value.read.return_value = cached
+                    self.session.service_background(Mock(), 24)
+                promoted, seconds, timed = cache.return_value.read.call_args.args
+                self.assertEqual((promoted['id'], seconds, timed), ('3', 60, True))
+                pending = self.session.snapshot()['queuedUpdate']
+                self.assertEqual(pending['status'], 'ready')
+                observed = pending['prepared']['analysis']['tracks'][-1]
+                self.assertEqual(observed['preparationSeconds'], 30 if reject_cached else 60)
+
+    def test_failed_survivor_verification_leaves_existing_plan_and_refill_runway(self):
+        original, revision, _ = self.staged_measured_batch('2')
+        with patch('afterhours.cue_planner.verify_receipts', side_effect=ValueError('Survivor digest drift')):
+            self.session.service_background(Mock(), 24)
+        state = self.session.snapshot()
+        self.assertEqual(state['executionPlan'], original)
+        self.assertEqual([track['id'] for track in state['order']], ['0','1'])
+        pending = state['queuedUpdate']
+        self.assertEqual(pending['id'], revision)
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertEqual(pending['measuredFitMissId'], '2')
+        self.assertGreater(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 16)
+        self.session.update(setPins=['3'])
+        RollingQueue().tick(self.session, 24)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+        self.assertEqual(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 0)
+
+    def test_native_miss_retains_a_verified_automatic_successor(self):
+        for field, basis, missed in (('catalog_miss', 'catalog', '2'), ('analysis_miss', 'analysis', '3')):
+            with self.subTest(field=field):
+                old, revision, measured = self.staged_measured_batch(missed)
+                job = self.session.background_job
+                job.error = 'Native preparation failed.'
+                job.result = [item for item in measured if item['id'] != missed]
+                setattr(job, field, missed)
+                client = Mock()
+                with patch('afterhours.cue_planner.verify_receipts'):
+                    self.session.service_background(client, 24)
+                    pending = self.session.snapshot()['queuedUpdate']
+                    survivor = job.result[0]['id']
+                    self.assertEqual(pending['id'], revision)
+                    self.assertEqual(pending['status'], 'ready')
+                    self.assertEqual([item['id'] for item in pending['tracks']], ['0', '1', survivor])
+                    self.assertTrue(any(event.get('basis') == f'verified-rolling-{basis}-miss'
+                                        for event in self.session.snapshot()['events']))
+                    self.session.update(index=1)
+                    _, applied = self.session.adopt_queue(1)
+                self.assertEqual(applied['selections'][:2], old['selections'])
+                rolling = RollingQueue()
+                self.session.update(queuedUpdate={'status':'analyzing'})
+                rolling.tick(self.session, 4)
+                self.assertIn(missed, rolling.missed)
+                client.send.assert_not_called()
+
+    def test_an_unattributed_native_error_cannot_drop_a_pick(self):
+        _, revision, measured = self.staged_measured_batch('2')
+        self.session.background_job.error = 'Native preparation failed.'
+        self.session.background_job.result = measured[1:]
+        self.session.service_background(Mock(), 24)
+        pending = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(pending['id'], revision)
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertEqual([item['id'] for item in pending['tracks']], ['0', '1', '2', '3'])
+
+    def test_operator_owned_sibling_is_not_removed_with_the_failed_revision(self):
+        _, revision, _ = self.staged_measured_batch('2')
+        self.session.state['queuedUpdate']['sourceById']['3'] = 'operator'
+        self.session.service_background(Mock(), 24)
+        pending = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertNotIn('measuredFitMissId', pending)
+        RollingQueue().tick(self.session, 24)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+
+    def test_pending_pins_and_unattributed_fit_failures_remain_held(self):
+        for pin in ('2', '3', None):
+            with self.subTest(pin=pin):
+                original, revision, _ = self.staged_measured_batch('2', pin=pin)
+                if pin:
+                    self.session.service_background(Mock(), 24)
+                else:
+                    with patch.object(self.session, 'fit_background_tracks', side_effect=ValueError('Unknown proof error')):
+                        self.session.service_background(Mock(), 24)
+                state = self.session.snapshot()
+                self.assertEqual(state['executionPlan'], original)
+                self.assertEqual(state['queuedUpdate']['status'], 'blocked')
+                self.assertNotIn('measuredFitMissId', state['queuedUpdate'])
+                RollingQueue().tick(self.session, 24)
+                self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+                self.assertEqual([track['id'] for track in self.session.state['queuedUpdate']['tracks']], ['0','1','2','3'])
 
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',
@@ -295,11 +1029,11 @@ class QueuePlanningTests(unittest.TestCase):
         provider=Mock(return_value=({**decision(['c','d']), 'reply':'Opening pair selected.'}, {}))
         agent=dj_agent.DJAgent(self.session, evaluator=provider)
         agent.enable(True,seconds=120,requests=6)
-        self.session.discover_more=Mock(side_effect=lambda _: self.session.update(
+        self.session.discover_more=Mock(side_effect=lambda _, **__: self.session.update(
             phase='discovering',catalogSearch={'status':'searching'}))
         deadline=agent.deadline
         result=agent.message('Play Daft Punk',source='voice',message_id='voice-fresh',approved=True)
-        self.session.discover_more.assert_called_once_with('daft punk')
+        self.session.discover_more.assert_called_once_with('daft punk',opening_query='daft punk')
         self.assertEqual(result['status'],'searching')
         provider.assert_not_called()
         self.session.update(phase='catalog-ready',catalogSearch={'status':'complete','matched':2})
@@ -335,7 +1069,7 @@ class QueuePlanningTests(unittest.TestCase):
         state=self.session.snapshot()
         request={'status':'preparing','source':'voice','sessionId':state['id'],
                  'revision':agent.state['revision'],'orderIds':[t['id'] for t in state['order']],
-                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk'}
+                 'expiresAt':agent.clock()+60,'fastOpeningQuery':'daft punk','freshQueue':True}
         for scope in (None,'finite'):
             with self.subTest(scope=scope):
                 agent.playback_request={**request,'scope':scope}
@@ -362,14 +1096,14 @@ class QueuePlanningTests(unittest.TestCase):
 
     def test_voice_title_by_artist_starts_that_recording_with_a_distinct_followup(self):
         self.session.start=Mock()
-        self.session.discover_more=Mock(side_effect=lambda _:self.session.update(
+        self.session.discover_more=Mock(side_effect=lambda _, **__:self.session.update(
             phase='discovering',catalogSearch={'status':'searching'}))
         evaluator=Mock(side_effect=AssertionError('Exact live matches should start without a planning call'))
         agent=dj_agent.DJAgent(self.session,evaluator=evaluator)
         agent.enable(True,seconds=120,requests=5)
         agent.message('Play Around the World by Daft Punk',source='voice',message_id='title-by-artist',approved=True)
         search='around the world by daft punk; daft punk'
-        self.session.discover_more.assert_called_once_with(search)
+        self.session.discover_more.assert_called_once_with(search,opening_query='around the world by daft punk')
         candidates=[{**track('cover'),'title':'Around the World','artist':'Cover Artist'},
                     {**track('requested'),'title':'Around the World','artist':'Daft Punk'},
                     {**track('remix',bpm=125.2),'title':'Around the World','artist':'Daft Punk'},
@@ -378,7 +1112,7 @@ class QueuePlanningTests(unittest.TestCase):
             'status':'complete','query':search,'foundIds':[item['id'] for item in candidates]})
         agent.tick(force=True)
         self.assertEqual([item['id'] for item in self.session.snapshot()['order']],['requested','next'])
-        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True,allow_grid_opening=True)
+        self.session.start.assert_called_once_with(initialize_mixer=True,immediate=True,rolling_queue=True,allow_grid_opening=True,cue_led_opening=True)
         evaluator.assert_not_called()
 
     def test_next_track_prefers_a_verified_cue_between_key_matches(self):

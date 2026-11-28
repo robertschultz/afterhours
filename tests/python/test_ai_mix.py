@@ -80,11 +80,16 @@ class AnalysisTests(unittest.TestCase):
             start, end = b'<VirtualDJ_Database>', b'</VirtualDJ_Database>'
             tracks = [{'id': 'recording', 'title': 'Test', 'bpm': 120,
                        'engine': {'selection_id': identity('example')}}]
-            path.write_bytes(start + song + end + b'\n\x00\n')
-            result = track_analysis(tracks, path)['tracks'][0]
-            self.assertEqual(result['duration'], 180)
-            self.assertEqual(result['points'][0]['seconds'], 12)
-            for corrupted in (start + song + b'\x00' + end, start + song + b'\x00'):
+            for padding in (b'\n\x00\n', b'\r\n\x00>\r\n', b'\n\x00Database>\n'):
+                with self.subTest(padding=padding):
+                    original = start + song + end + padding
+                    path.write_bytes(original)
+                    result = track_analysis(tracks, path)['tracks'][0]
+                    self.assertEqual(result['duration'], 180)
+                    self.assertEqual(result['points'][0]['seconds'], 12)
+                    self.assertEqual(path.read_bytes(), original)
+            for corrupted in (start + song + b'\x00' + end, start + song + b'\x00',
+                              start + song + end + b'\n\x00<Song/>\n'):
                 path.write_bytes(corrupted)
                 with self.assertRaises(ValueError):
                     track_analysis(tracks, path)

@@ -4,6 +4,85 @@ from afterhours import dj_discovery, queue_planning
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_christian_set_rejects_tempo_only_and_partial_name_matches(self):
+        opening = {'id': 'opening', 'artist': 'Forrest Frank & The Figs', 'genre': 'Christian'}
+        alternatives = (
+            {'id': 'am', 'artist': 'Flowers and Sea Creatures', 'genre': 'Alternative'},
+            {'id': 'memories', 'artist': 'Frank Sinatra', 'genre': 'Easy Listening'},
+            {'id': 'house', 'artist': 'Forrest Frank', 'genre': 'Deep House'},
+        )
+        for candidate in alternatives:
+            with self.subTest(artist=candidate['artist']):
+                with self.assertRaises(dj_discovery.SetStyleMismatch):
+                    dj_discovery.require_faith_set([opening, candidate])
+        for candidate in (
+            {'id': 'same-artist', 'artist': 'Forrest Frank', 'genre': ''},
+            {'id': 'adjacent', 'artist': 'Another artist', 'genre': 'Christian Hip Hop'},
+        ):
+            dj_discovery.require_faith_set([opening, candidate])
+
+    def test_public_artist_relationships_require_an_unambiguous_seed(self):
+        seed = '11111111-1111-1111-1111-111111111111'
+        artists = {'artists': [{'id':seed, 'name':'Fleetwood Mac'}]}
+        radio = {seed:[{'similar_artist_name':'Fleetwood Mac'}],
+                 'another':[{'similar_artist_name':'Stevie Nicks'}, {'similar_artist_name':'Stevie Nicks'}]}
+        calls = []
+        replies = iter((artists, radio))
+        def fetch(url):
+            calls.append(url)
+            return next(replies)
+        self.assertEqual(dj_discovery.similar_artists('Fleetwood Mac', fetch), ('Stevie Nicks',))
+        self.assertIn(seed, calls[-1])
+        self.assertIn('pop_begin=55', calls[-1])
+        ambiguous = {'artists': artists['artists'] + [{'id':'another', 'name':'Fleetwood Mac'}]}
+        self.assertEqual(dj_discovery.similar_artists('Fleetwood Mac', lambda _:ambiguous), ())
+
+    def test_public_recording_tag_requires_exact_credit_title_and_version(self):
+        first = {'id':'a'*36, 'title':'Part of the Night', 'length':243000,
+                 'artist-credit':[{'name':'Alex'}, {'name':'Sam'}],
+                 'tags':[{'name':'Deep house', 'count':3}, {'name':'House','count':0}]}
+        alternate = {**first, 'id':'b'*36, 'length':180000}
+        near_artist = {**first, 'id':'c'*36, 'artist-credit':[{'name':'Alexandria'}, {'name':'Sam'}]}
+        remix = {**first, 'id':'d'*36, 'title':'Part of the Night (Remix)'}
+        payload = {'recordings':[first, alternate, near_artist, remix]}
+        resolve = dj_discovery.recording_house_tags
+        self.assertEqual(resolve(first['title'], 'Alex & Sam', 243, lambda _:payload), ('deep house',))
+        self.assertEqual(resolve(first['title'], 'Alex & Sam', None, lambda _:payload), ())
+        self.assertEqual(resolve(first['title'], 'Alex', 243, lambda _:payload), ())
+
+    def test_verified_public_recording_tags_are_cached_for_the_exact_duration(self):
+        track = {'title':'Cut','artist':'Alex','duration':220}
+        calls = []
+        def fetch(url):
+            calls.append(url)
+            return {'recordings':[{'id':'a'*36, 'title':'Cut', 'length':220000,
+                                    'artist-credit':[{'name':'Alex'}], 'tags':[{'name':'house','count':1}]}]}
+
+        discovery = dj_discovery.Discovery(fetch=fetch)
+        discovery.request_house_tag_checks([track])
+        worker = discovery.artist_worker
+        if worker:
+            worker.join(2)
+        self.assertTrue(discovery.has_recording_house_tag(track))
+        self.assertFalse(discovery.has_recording_house_tag({**track,'duration':183}))
+        discovery.request_house_tag_checks([track])
+        self.assertIsNone(discovery.artist_worker)
+        self.assertEqual(len(calls), 1)
+
+    def test_non_house_genres_keep_their_own_ranking(self):
+        self.assertEqual(dj_discovery.style_for('Play Christian pop'), 'gospel')
+        self.assertEqual(dj_discovery.style_for('Classic Rock'), 'rock')
+        self.assertEqual(dj_discovery.style_for('Alternative'), 'alternative')
+        self.assertEqual(dj_discovery.style_for('Alternative Rock'), 'rock')
+        self.assertEqual(dj_discovery.style_for('Indie Dance'), 'indie dance')
+        self.assertEqual(dj_discovery.style_for('R&B'), 'r&b')
+        self.assertEqual(dj_discovery.style_for('Hip-Hop/Rap'), 'hip hop')
+        pick = lambda row: (0, 0)
+        rock = {'id':'rock', 'title':'Rock track', 'artist':'Band A', 'genre':'Classic Rock'}
+        house = {'id':'house', 'title':'House track', 'artist':'Artist B', 'genre':'House'}
+        ranked, _ = dj_discovery.rank_candidates([house, rock], 'rock', [], [], pick)
+        self.assertEqual([row['id'] for row in ranked], ['rock', 'house'])
+
     def test_rolling_hints_reach_records_beyond_the_first_six(self):
         discovery = dj_discovery.Discovery(clock=lambda: 1)
         discovery.feeds['house'] = {'observedAt': 1, 'source': 'Test house chart',
@@ -39,6 +118,18 @@ class DiscoveryTests(unittest.TestCase):
         now[0] = dj_discovery.MAX_AGE + 2
         self.assertEqual(discovery.evidence({'title': 'Home', 'artist': 'Steph, Alex'}), {})
 
+    def test_dance_chart_matches_do_not_require_genre_percentiles(self):
+        discovery = dj_discovery.Discovery(clock=lambda: 1)
+        discovery.feeds['dance'] = {'observedAt': 1, 'source': 'iTunes Dance',
+                                    'rows': [{'title': 'Track', 'artist': 'Artist', 'rank': 2}]}
+        track = {'id': 'exact', 'title': 'Track', 'artist': 'Artist', 'genre': 'Dance'}
+        ranked, facts = dj_discovery.rank_candidates([track], 'dance', [], [], lambda _: (0, 0),
+                                                      discovery=discovery)
+        self.assertEqual(ranked, [track])
+        self.assertEqual(facts['exact']['danceChart']['rank'], 2)
+        self.assertNotIn('genrePopularity', facts['exact'])
+        self.assertEqual(discovery.hints('dance', [])[0]['rank'], 2)
+
     def test_ranking_keeps_request_priority_and_avoids_artist_repeats(self):
         played = {'id': 'playing', 'artist': 'Alex', 'label': 'A Label', 'genre': 'House'}
         same_artist = {'id': 'same', 'artist': 'Alex', 'label': 'A Label', 'genre': 'House'}
@@ -60,6 +151,26 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNone(queue_planning.quick_opening(room,'Daft Punk',{'a','c'}))
         self.assertIsNone(queue_planning.quick_opening(room,'A mood',{'a','b','c'}))
 
+    def test_sparse_live_results_only_reuse_a_cached_followup_with_same_artist_and_source(self):
+        opener = {'id':'a', 'title':'First', 'artist':'Forrest Frank', 'bpm':118,
+                  'catalog':{'provider':'online-a'}}
+        matching = {**opener, 'id':'b', 'title':'Second', 'bpm':120}
+        wrong_artist = {**opener, 'id':'c', 'title':'Unrelated', 'artist':'Other'}
+        another_provider = {**opener, 'id':'d', 'title':'Third', 'catalog':{'provider':'online-b'}}
+        state = {'candidates':[opener, wrong_artist, another_provider, matching]}
+        self.assertEqual(queue_planning.quick_opening(state,'Forrest Frank',{'a'}),['a','b'])
+        self.assertIsNone(queue_planning.quick_opening(state,'Forrest Frank',{'c'}))
+        self.assertIsNone(queue_planning.quick_opening({'candidates':state['candidates'][:-1]},'Forrest Frank',{'a'}))
+
+    def test_settled_spoken_search_accepts_one_unambiguous_doubled_letter(self):
+        first={'id':'a','title':'First','artist':'Forrest Frank','bpm':118}
+        second={**first,'id':'b','title':'Second'}
+        state={'candidates':[first,second]}
+        self.assertIsNone(queue_planning.quick_opening(state,'Forest Frank',{'a','b'}))
+        self.assertEqual(queue_planning.quick_opening(state,'Forest Frank',{'a','b'},allow_spoken_spelling=True),['a','b'])
+        state['candidates'].append({**first,'id':'c','artist':'Forest Frrank'})
+        self.assertIsNone(queue_planning.quick_opening(state,'Forest Frank',{'a','b','c'},allow_spoken_spelling=True))
+
     def test_peak_slot_prefers_energy_and_credited_collaborators(self):
         anchor={'id':'anchor','artist':'Alex','genre':'House'}
         collab={'id':'collab','artist':'Alex, Jules','energy':.4,'genre':'House'}
@@ -70,3 +181,17 @@ class DiscoveryTests(unittest.TestCase):
                                                    lambda _: (0,0),set_slot=slot)
         self.assertEqual(ranked[0]['id'],'related')
         self.assertEqual(facts['related']['collaborationLinks'],['jules'])
+
+    def test_saved_night_plan_changes_the_target_without_inventing_missing_energy(self):
+        plan={'startAt':0,'peakAt':3600,'endAt':7200,'warm':True,'onePeak':True,'darkLate':False}
+        rows=[{'id':'warm','artist':'Act A','genre':'House','energy':.35},
+              {'id':'peak','artist':'Act B','genre':'House','energy':.9},
+              {'id':'unknown','artist':'Act C','genre':'House'}]
+        for at, expected in ((120,'warm'),(3600,'peak')):
+            slot=dj_discovery.set_slot('house',plan=plan,at=at)
+            ranked,facts=dj_discovery.rank_candidates(rows,'house',[],[],lambda _:(0,0),set_slot=slot)
+            self.assertEqual(ranked[0]['id'],expected)
+            self.assertIn('setEnergyFit',facts[expected])
+            self.assertNotIn('setEnergyFit',facts['unknown'])
+        self.assertIsNone(dj_discovery.set_slot('house',plan=plan,at=7201))
+        self.assertEqual(dj_discovery.set_slot('warm up',plan=plan,at=3600)['name'],'warm-up')

@@ -317,12 +317,29 @@ class LookupTests(unittest.TestCase):
 
     def test_tool_definitions_are_strict_and_cover_exactly_the_lookups(self):
         self.assertEqual([tool['name'] for tool in agent_loop.TOOL_DEFS],
-                         ['search_catalog','suggest_next','compare_tracks','check_transition','inspect_track'])
+                         ['search_catalog','suggest_next','compare_tracks','check_transition','inspect_track',
+                          'get_queue_status','get_mixer_status'])
         for tool in agent_loop.TOOL_DEFS:
             self.assertEqual(tool['type'],'function');self.assertIs(tool['strict'],True)
             schema=tool['parameters']
             self.assertFalse(schema['additionalProperties']);self.assertEqual(set(schema['required']),set(schema['properties']))
             self.assertEqual(list(schema['properties'])[0],'why');self.assertEqual(schema['properties']['why']['type'],'string')
+
+    def test_state_lookups_report_the_native_readings_and_staged_queue(self):
+        set_state=real_session(queue=3,size=5)[0]
+        first, second, third=set_state['order']
+        set_state.update(active=True,index=0,phase='playing',
+                         queuedUpdate={'tracks':[first,second,third],'status':'analyzing'},
+                         telemetry={'sampledAt':10,'crossfader':0,'decks':[{'deck':1,'playing':True,'bpm':125}]})
+        book=lookups(set_state)
+        queue=book.run('get_queue_status',{})
+        self.assertEqual(queue['current']['id'],first['id'])
+        self.assertEqual([t['id'] for t in queue['upcoming']],[second['id'],third['id']])
+        self.assertEqual(queue['preparation'],'analyzing')
+        mixer=book.run('get_mixer_status',{})
+        self.assertEqual(mixer['sampledAt'],10)
+        self.assertEqual(mixer['decks'][0]['bpm'],125)
+        self.assertIsNone(mixer['nextHandoff'])
 
 
 class DigestRoomTests(unittest.TestCase):

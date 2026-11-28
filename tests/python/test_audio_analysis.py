@@ -25,10 +25,11 @@ def report():
 
 
 class Peer:
-    def __init__(self, root, zero_first=False):
+    def __init__(self, root, zero_first=False, interior_gap_passes=0):
         self.root = root; self.now = 0; self.commands = []; self.effect = 'Flanger'
         self.active = False; self.playing = False; self.scans = 0
         self.zero_first = zero_first; self.changed = False
+        self.interior_gap_passes = interior_gap_passes
     def wait(self, seconds): self.now += seconds
     def clock(self): return self.now
     def query(self, q, kind=None):
@@ -47,6 +48,8 @@ class Peer:
             self.scans += 1; data = report(); data['scanStartedAtMs'] += self.scans
             if self.zero_first and self.scans == 1:
                 for f in data['features'][10:]: f['rmsDb'] = f['lowDb'] = f['highDb'] = -120
+            if self.scans <= self.interior_gap_passes:
+                for f in data['features'][3:14]: f['rmsDb'] = f['lowDb'] = f['highDb'] = -120
             (self.root/(SID+'.json')).write_text(json.dumps(data))
         else: raise AssertionError(q)
 
@@ -121,6 +124,30 @@ class AudioAnalysisTests(unittest.TestCase):
             data['features'][0]['rmsDb'] = -40; path.write_text(json.dumps(data))
             self.assertIsNone(verified_energy(SID, 10, root))
 
+    def test_persistent_zero_gap_releases_a_replaceable_automatic_candidate(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            peer = Peer(root, interior_gap_passes=100)
+            with self.assertRaisesRegex(AudioAnalysisTimeout, 'Repeated scans returned'):
+                scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait,
+                           timeout=40, can_replace_stalled=lambda: True)
+            self.assertGreaterEqual(peer.now, 10)
+            self.assertLess(peer.now, 13)
+            self.assertGreaterEqual(peer.scans, 3)
+            self.assertEqual(peer.effect, 'Flanger')
+            self.assertFalse(peer.active)
+            self.assertIsNone(verified_energy(SID, 10, root))
+
+    def test_temporary_zero_gap_and_protected_pick_still_verify_when_decoding_recovers(self):
+        for gap_passes, replaceable in ((7, True), (12, False)):
+            with self.subTest(gap_passes=gap_passes), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                peer = Peer(root, interior_gap_passes=gap_passes)
+                receipt = scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait,
+                                     timeout=40, can_replace_stalled=lambda: replaceable)
+                self.assertEqual(receipt['passes'], gap_passes + 2)
+                self.assertIsNotNone(verified_energy(SID, 10, root))
+
     def test_spare_scan_receipt_accepts_a_bounded_delay_between_matching_passes(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -155,7 +182,24 @@ class AudioAnalysisTests(unittest.TestCase):
             self.assertFalse(peer.active); self.assertEqual(peer.effect, 'Flanger')
             self.assertFalse((root/(SID+'.verified.json')).exists())
 
-    def test_completed_native_scan_reports_split_storage_without_waiting(self):
+    def test_stale_completion_readback_allows_the_new_native_pass_to_arrive(self):
+        class StaleCompletionPeer(Peer):
+            def send(self, q):
+                if q == 'deck 1 effect_button 1 1' and self.scans == 1:
+                    self.commands.append(q)
+                    self.scans += 1
+                    return  # The prior pass is still the most recent OSC status and file.
+                super().send(q)
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            peer = StaleCompletionPeer(root)
+            receipt = scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait)
+            self.assertEqual(peer.scans, 3)
+            self.assertEqual(receipt['passes'], 2)
+            self.assertIsNotNone(verified_energy(SID, 10, root))
+
+    def test_completed_native_scan_reports_split_storage_with_bounded_retries(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             native = root / 'bridge-reports'
@@ -165,7 +209,8 @@ class AudioAnalysisTests(unittest.TestCase):
                 scan_track(peer, TRACK, 9.8, root=root, clock=peer.clock, wait=peer.wait)
             self.assertTrue((native/(SID+'.json')).is_file())
             self.assertFalse((root/(SID+'.verified.json')).exists())
-            self.assertLess(peer.now, 1)
+            self.assertLess(peer.now, 1.2)
+            self.assertGreater(peer.scans, 1)
             self.assertEqual(peer.effect, 'Flanger')
             self.assertFalse(peer.active)
 

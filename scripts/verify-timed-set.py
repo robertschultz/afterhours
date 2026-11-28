@@ -26,7 +26,7 @@ def request(path, body=None, token=None):
 def handoff_checks(row, previous, requested_interval):
     samples = row.get('samples', [])
     controls = row.get('mixerSamples', [])
-    loop = row.get('loop', {})
+    loop = row.get('loop') or {}
     phase = max((s['phaseDifference'] for s in samples), default=None)
     bpm = max((abs(s['bpmA'] - s['bpmB']) for s in samples), default=None)
     interval = row['at'] - previous
@@ -62,7 +62,7 @@ def main():
     parser.add_argument('--start', action='store_true', help='Start the already selected queue with alternating 60/30 seconds.')
     parser.add_argument('--prepare', action='store_true', help='Verify the opening buffer while paused before starting.')
     parser.add_argument('--provider', help='Require every observed recording to have this exact native provider.')
-    parser.add_argument('--provider-sequence', help='Require this comma-separated sequence at the start of the set.')
+    parser.add_argument('--provider-sequence', help='Verify this comma-separated sequence in native playback.')
     args = parser.parse_args()
     if args.prepare and not args.start:
         parser.error('--prepare requires --start.')
@@ -72,6 +72,13 @@ def main():
     if len(expected_sources) > 12 or not all(expected_sources):
         parser.error('Supply up to twelve nonempty provider IDs in order.')
     state = request(SESSION)
+    prior_start = state.get('startedAt')
+    started_at = None if args.start else prior_start
+    if args.start and expected_sources:
+        planned = tuple((track.get('catalog') or {}).get('provider')
+                        for track in state['order'][:len(expected_sources)])
+        if planned != expected_sources:
+            raise ValueError('The queued opening does not match the requested provider sequence.')
     if args.start:
         if state['active'] or any(d.get('playing') for d in (state.get('telemetry') or {}).get('decks', [])):
             raise ValueError('The decks are already in use.')
@@ -98,6 +105,7 @@ def main():
     last_order = ()
     last_event = 0
     last_entry = None
+    last_recording = None
     max_observation_gap = 0
     last_music = None
     deck_meter_seen = set()
@@ -112,8 +120,12 @@ def main():
         seconds_playing = time.time() - state['startedAt'] if state.get('startedAt') else 0
         if state['index'] > counts['handoffs'] or not state['active'] or seconds_playing >= args.seconds:
             state = request(SESSION)
-        if state['id'] != session:
+        reported_start = state.get('startedAt')
+        if state['id'] != session or (started_at is not None and reported_start != started_at):
             raise RuntimeError('A different set replaced the observed session.')
+        if (started_at is None and state['active'] and state['phase'] in ('playing', 'mixing')
+                and reported_start and (not args.start or reported_start != prior_start)):
+            started_at = reported_start
         order = state['order']
         ordered_ids = tuple(t['id'] for t in order)
         titles = {t['id']: t.get('title') for t in order}
@@ -132,10 +144,13 @@ def main():
                 emit('selection', foundInCurrentSearch=event['currentCatalogMatch'], detail=event['text'],
                      musicEvidence=event['musicEvidence'], at=event['at'])
             last_event = event['at']
-        for row in state.get('transitions', [])[counts['handoffs']:]:
+        transitions = state.get('transitions', []) if started_at is not None else ()
+        for row in transitions[counts['handoffs']:]:
             if last_entry is None:
-                last_entry = state['startedAt']
+                last_entry = started_at
                 provider_sequence.append(providers.get(row['from']))
+            if row['at'] <= last_entry or (last_recording is not None and row['from'] != last_recording):
+                raise ValueError('The native handoff receipts do not describe a contiguous playback sequence.')
             provider_sequence.append(providers.get(row['to']))
             if args.provider and any(providers.get(row[key]) != args.provider for key in ('from','to')):
                 raise ValueError('A verified handoff used a different or unclassified provider.')
@@ -148,18 +163,21 @@ def main():
             emit('handoff', fromTrack=titles.get(row['from']), toTrack=titles.get(row['to']),
                  fromProvider=providers.get(row['from']), toProvider=providers.get(row['to']), at=row['at'], **checks)
             last_entry = row['at']
-        started = state.get('startedAt')
+            last_recording = row['to']
         now = time.time()
-        if started:
+        if started_at is not None:
             telemetry = state.get('telemetry') or {}
-            playing = [d for d in telemetry.get('decks', []) if d.get('playing')]
-            deck_meter_seen.update(d['id'] for d in playing if d.get('level', 0) > .025)
-            if playing and now - telemetry.get('sampledAt', 0) < 3:
-                if last_music is not None:
-                    max_observation_gap = max(max_observation_gap, now-last_music)
+            sampled = telemetry.get('sampledAt')
+            metered = [d['id'] for d in telemetry.get('decks', [])
+                       if d.get('playing') is True and not d.get('unavailable')
+                       and d.get('id') and type(d.get('level')) in (int, float) and d['level'] > .025]
+            if metered and type(sampled) in (int, float) and 0 <= now - sampled < 3:
+                deck_meter_seen.update(metered)
+                max_observation_gap = max(max_observation_gap, now-(last_music or started_at))
                 last_music = now
-            elapsed = now - started
+            elapsed = now - started_at
             if elapsed >= args.seconds and state['active']:
+                max_observation_gap = max(max_observation_gap, now-(last_music or started_at))
                 # Do not disturb the running set when observation finishes.
                 required = 0
                 latest = 0
@@ -171,7 +189,7 @@ def main():
                           and len(provider_sequence) >= len(expected_sources))
                 emit('complete', seconds=round(elapsed, 1), nativeMeterTracks=len(deck_meter_seen),
                      minimumHandoffs=required, maxObservationGapSeconds=round(max_observation_gap, 2),
-                     passed=passed, **counts)
+                     providerSequence=provider_sequence, passed=passed, **counts)
                 return 0 if passed else 1
         if not state['active'] and state['phase'] in ('error', 'takeover', 'completed', 'stopped'):
             emit('ended', phase=state['phase'], message=state['message'], at=now, **counts)

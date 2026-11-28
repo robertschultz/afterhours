@@ -166,7 +166,11 @@ def resume_pair(snapshot, allow_paused=False):
     return current, next(d for d in decks if d['deck'] == deck_rotation.following(current['deck'], rotation))
 
 
-def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, earliest_beat=None):
+class NoVerifiedHandoff(ValueError):
+    """No replay-verified exit fits the current timing constraints."""
+
+
+def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, actual_entry=None, latest_beat=None, earliest_beat=None, allow_outro_bars=False, cadence_recovery=False):
     """Earliest verified exit with lead time, preserving the actual entry.
 
     A different candidate supplies only its measured exit region. The track is
@@ -189,24 +193,26 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
     if index < len(rows):
         row = rows[index]
         earliest = max(earliest, cue['entryBeat']+row['startOffsetBeats']+row['durationBeats']+row['settleBeats'])
+    guarded_beat = earliest
     source = next((t for t in (snapshot.get('analysis') or {}).get('tracks', []) if t['id'] == current['id']), {})
     entry = actual_entry or cue
     target = earliest if entry_interval is None else entry['entryBeat'] + entry_interval * current['bpm'] / 60
-    if entry_interval is not None and not final:
+    if entry_interval is not None and not final and not cadence_recovery:
         # A timed run can flex to a nearby verified bar. A window several
         # minutes later belongs to cue-led pacing, not the requested cadence.
         tolerance = 10 * current['bpm'] / 60
         earliest = max(earliest, target - tolerance)
         cadence_end = target + tolerance
+        latest_beat = min(latest_beat, cadence_end) if latest_beat is not None else cadence_end
     blend = 0 if final else fade_beats
     valid = []
     for candidate in source.get('cueCandidates', []):
         if candidate.get('replayVerified') is not True or candidate['maxBlendBeats'] < blend:
             continue
         exit_beat = candidate['exitBeat']
-        if entry_interval is None or final:
-            if exit_beat >= earliest:
-                valid.append(candidate)
+        if final or (entry_interval is None and not allow_outro_bars):
+            if exit_beat >= earliest and (latest_beat is None or exit_beat <= latest_beat):
+                valid.append((candidate, False))
             continue
         # Both endpoints of this audible outro were read from the native
         # grid. Bound the bar adjustment to the measured audio span, leaving
@@ -214,27 +220,45 @@ def retime(snapshot, current, fade_beats, final=False, *, entry_interval=None, a
         span = candidate['endBeat']-exit_beat
         first_bar = max(0, math.ceil((earliest-exit_beat)/4))
         last_bar = math.floor((min(span, candidate['maxBlendBeats'])-blend+1e-4)/4)
-        last_bar = min(last_bar, math.floor((cadence_end-exit_beat)/4))
+        if latest_beat is not None:
+            last_bar = min(last_bar, math.floor((latest_beat-exit_beat)/4))
         if first_bar > last_bar:
             continue
         bars = min(last_bar, max(first_bar, round((target-exit_beat)/4)))
         if bars:
             seconds = (candidate['endSeconds']-candidate['exitSeconds']) * bars*4/span
-            valid.append({**candidate,'exitBeat':exit_beat+bars*4,'exitSeconds':candidate['exitSeconds']+seconds})
+            valid.append(({**candidate,'exitBeat':exit_beat+bars*4,
+                           'exitSeconds':candidate['exitSeconds']+seconds,'loopBridgeBeats':None}, True))
         else:
-            valid.append(candidate)
+            valid.append((candidate, False))
     if not valid:
         timing = ' within the requested cadence' if entry_interval is not None and not final else ' ahead'
-        raise ValueError(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
-    selected = min(valid, key=lambda c: (abs(c['exitBeat']-target), c['exitBeat']))
+        raise NoVerifiedHandoff(f'No verified handoff remains{timing}. The current track keeps playing; take over or prepare another exit.')
+    selected, _ = min(valid, key=lambda row: (abs(row[0]['exitBeat']-target), row[0]['exitBeat'], row[1]))
     window = cue_planner.execution_window(selected, position, fade_beats, final)
     window.update(entryBeat=entry['entryBeat'], entrySeconds=entry['entrySeconds'],
                   segmentBeats=window['endBeat']-entry['entryBeat'],
-                  basis='operator-steered-measured-exit', originalCandidateId=cue['id'])
+                  basis='operator-steered-measured-exit', originalCandidateId=cue['id'],
+                  scheduledFromBeat=position, guardedFromBeat=guarded_beat)
     if entry_interval is not None:
         window.update(basis='cadence-measured-exit', requestedEntryInterval=entry_interval,
+                      cadenceTargetBeat=target, scheduledBpm=current['bpm'],
                       plannedEntryInterval=(selected['exitBeat']-entry['entryBeat'])*60/current['bpm'])
     return window
+
+
+def automatic_timed_window(snapshot, current, fade_beats, seconds, *, actual_entry=None, earliest_beat=None,
+                           latest_beat=None):
+    """Treat the requested interval as a target while preserving a verified fade."""
+    try:
+        return retime(snapshot, current, fade_beats, entry_interval=seconds,
+                      actual_entry=actual_entry, earliest_beat=earliest_beat, latest_beat=latest_beat)
+    except NoVerifiedHandoff:
+        window = retime(snapshot, current, fade_beats, entry_interval=seconds,
+                        actual_entry=actual_entry, earliest_beat=earliest_beat, latest_beat=latest_beat,
+                        cadence_recovery=True)
+        window['basis'] = 'cadence-recovery-measured-exit'
+        return window
 
 
 def skip_plan(snapshot):

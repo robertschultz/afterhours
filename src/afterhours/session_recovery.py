@@ -181,10 +181,11 @@ class SessionRecovery:
         # that safety evidence even if unrelated queue validation then fails.
         _restore_cleanup_metadata(session,state)
         state,history,remainder,windowed=_restore_window(state)
+        keep_catalog = [row['id'] for row in remainder]
         # The existing restore transaction validates exact recording identity,
         # catalog scope, ordering, cue digests and policy before committing.
         try:
-            session.restore(state)
+            session.restore(state, checkpoint=True, keep_catalog=keep_catalog)
             session.update(recoveryHistory=history,recoveryRemainder=remainder)
             if windowed or remainder:
                 message=('The final remaining recording is retained in Catalog. Add another recording to prepare a new queue; playback is paused.' if remainder else
@@ -197,7 +198,7 @@ class SessionRecovery:
         except (ValueError,OSError,BridgeError):
             if not state.get('analysis') and not state.get('aiReview'):raise
             crate=copy.deepcopy(state);crate.update(analysis=None,aiReview=None)
-            session.restore(crate)
+            session.restore(crate, checkpoint=True, keep_catalog=keep_catalog)
             session.update(recoveryHistory=history,recoveryRemainder=remainder)
             session.update(message='The saved queue is restored. Its previous mix analysis needs refreshing.')
             return {'status':'needs-analysis','restored':True,'tracks':len(crate['order']),

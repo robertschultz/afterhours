@@ -5,9 +5,21 @@ its exact recording is confirmed; afterward C/D share slices, weighted toward
 the earliest queued recording. No audio output or model request is created.
 """
 import copy
-from afterhours.background_analysis import BackgroundAnalysis,guard_deck
+import time
+from afterhours.background_analysis import BackgroundAnalysis,guard_deck,preparation_seconds
 from afterhours.dj_bridge import BridgeError,as_bool
 from afterhours import cue_planner
+from afterhours.verified_cues import VerifiedCues
+
+
+def service_timed_analysis(job, client, seconds_available, wait, *, clock=time.monotonic):
+    """Use at most one short analysis window between transport reads."""
+    deadline = clock() + .12
+    while not job.done and clock() < deadline:
+        job.step(client, seconds_available)
+        remaining = deadline - clock()
+        if remaining > 0 and not job.done:
+            wait(min(.012, remaining))
 
 
 class PreparationPool:
@@ -17,23 +29,37 @@ class PreparationPool:
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
         self.analysis_miss=None
+        self.measured_fit_miss=None
         self.osc_reply_timeout=False
+        self.osc_timeout_track_id=None
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
+        verified = VerifiedCues() if self.timed or state.get('rollingQueue') else None
         for track in self.tracks:
             try:session.availability.require_track(track)
             except BridgeError as exc:
                 self.error=str(exc);self.done=True;self.result=[];self.pending=[];return
             cached=self.cache.get(track['id'])
-            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==state['secondsPerTrack']
+            seconds = preparation_seconds(state, revision, track['id'])
+            if (cached and cached.get('cueCandidates') and cached.get('preparationSeconds')==seconds
                     and bool(cached.get('timedPreparation')) == self.timed):
                 try:cue_planner.measured_rows(cached);self.result.append(cached);continue
                 except (ValueError,OSError):pass
+            reused = verified.read(track, seconds, self.timed) if verified else None
+            if reused:
+                self.result.append(reused)
+                continue
             self.pending.append(track)
 
     def decks(self):
         choose=getattr(self.session,'preparation_decks',None)
         return choose() if choose else (3,4)
+
+    def navigation_idle(self):
+        """A scan can share the browser once all in-flight loads are confirmed."""
+        active = [job for job in self.jobs if not job.done]
+        return (bool(active) and all(job.loaded is not None for job in active)
+                and (not self.pending or set(self.decks()).issubset(job.deck for job in active)))
 
     def release(self,client,deck):
         """The set needs this deck now. End its preparation; its record goes back to the front of the line."""
@@ -56,11 +82,20 @@ class PreparationPool:
         self.analysis_timed_out=job.analysis_timed_out
         self.catalog_miss=getattr(job,'catalog_miss',None)
         self.analysis_miss=getattr(job,'analysis_miss',None)
+        self.measured_fit_miss=getattr(job,'measured_fit_miss',None)
         self.osc_reply_timeout=getattr(job,'osc_reply_timeout',False)
+        self.osc_timeout_track_id=job.osc_timeout_track_id
         self.done=True
 
+    def set_suspended(self, suspended):
+        if self.suspended != suspended:
+            self.suspended = suspended
+            for job in self.jobs:
+                if not job.done:
+                    job.set_suspended(suspended)
+
     def step(self,client,seconds_available):
-        self.suspended=seconds_available<12
+        self.set_suspended(seconds_available < 12)
         if self.suspended or self.done or self.closed:return
         # A deck that joined the playing pair is no longer a spare.
         pair=getattr(self.session,'pair_decks',None) or ()
@@ -110,10 +145,25 @@ class PreparationPool:
             self.cache.update(job.cache)
             try:job.close(client)
             except (BridgeError,OSError,ValueError) as exc:errors.append(f'Deck {job.deck}: {exc}')
+            else:
+                if job.done and not job.error and not getattr(job, 'pool_closed', False):
+                    self.result.extend(job.result)
+                    job.pool_closed = True
         if errors:raise BridgeError('; '.join(errors))
 
     def cleanup_descriptors(self):
         return [row for job in self.jobs for row in job.cleanup_descriptors()]
+
+    def deferred_cleanup_owner(self):
+        """Retain typed local proof only for the failed spare owned by this run."""
+        for job in self.jobs:
+            load_pending = bool(job.cleanup_state.get('loadPending'))
+            unload_requested = bool(job.cleanup_state.get('unloadRequested'))
+            if (job.deck == 4 and job.owned and getattr(job, 'cleanup_reply_timeout', False) is True
+                    and not job.cleanup_state.get('restoreRequested')
+                    and load_pending != unload_requested):
+                return job.owner_id
+        return None
 
     def snapshot(self):
         active=[j for j in self.jobs if not j.done or j.owned]

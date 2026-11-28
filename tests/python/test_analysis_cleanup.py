@@ -9,9 +9,9 @@ import unittest
 from contextlib import nullcontext
 from unittest.mock import Mock,patch
 
-from afterhours.background_analysis import BackgroundAnalysis,cleanup_analysis_deck,merge_cleanup_pending
+from afterhours.background_analysis import BackgroundAnalysis,cleanup_analysis_deck,cleanup_descriptor,merge_cleanup_pending
 from afterhours.preparation_pool import PreparationPool
-from afterhours.dj_bridge import BridgeError
+from afterhours.dj_bridge import BridgeError, OSCReplyTimeout
 from afterhours.session_recovery import SessionRecovery
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_mixing import NativeHandoff,TransitionMixer
@@ -93,6 +93,24 @@ class AnalysisCleanupTests(unittest.TestCase):
                 self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
                 self.assertTrue(descriptor['restoreRequested'])
 
+    def test_one_lost_cleanup_reply_does_not_repeat_the_unload(self):
+        _, peer, job = self.owned(deck=4)
+        native_query = peer.query
+        lost = []
+
+        def query(script, kind=None):
+            if not lost and script == 'deck 4 get_deck' and any(
+                    command.endswith('deck 4 unload') for command in peer.commands):
+                lost.append(script)
+                raise OSCReplyTimeout('Missed one native reply.')
+            return native_query(script, kind)
+
+        peer.query = query
+        job.close(peer)
+        self.assertEqual(lost, ['deck 4 get_deck'])
+        self.assertEqual(sum(command.endswith('deck 4 unload') for command in peer.commands), 1)
+        self.assertFalse(job.owned)
+
     def test_failed_close_keeps_ownership_until_explicit_cleanup_verifies_it(self):
         s,p,j=self.owned();self.latch(s,p,j)
         self.assertTrue(j.owned);self.assertEqual(j.cleanup_descriptors()[0]['selectionId'],identity('test'))
@@ -123,6 +141,29 @@ class AnalysisCleanupTests(unittest.TestCase):
                 self.assertEqual(peer.values['deck 3 volume'],1)
                 self.assertTrue(all('deck 3' in command for command in peer.commands))
                 self.assertEqual(sum(command.count('deck 3 unload') for command in peer.commands),1)
+
+    def test_late_owned_load_can_clear_native_auto_cue_but_never_touches_another_recording(self):
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                _, peer, job = self.owned()
+                job.requested_load, job.loaded = job.loaded, None
+                peer.values['deck 3 pfl'] = True
+                if not valid:
+                    peer.values['deck 3 get_filepath'] = 'operator'
+                descriptor = job.cleanup_descriptors()[0]
+                if valid:
+                    cleanup_analysis_deck(peer, descriptor)
+                    self.assertFalse(descriptor['loadPending'])
+                    self.assertFalse(peer.values['deck 3 loaded'])
+                    self.assertFalse(peer.values['deck 3 pfl'])
+                    self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
+                    self.assertEqual(sum(command.endswith('deck 3 unload') for command in peer.commands), 1)
+                    self.assertFalse(any(re.search(r'\bload\b', command) for command in peer.commands))
+                else:
+                    with self.assertRaisesRegex(BridgeError, 'no longer paused and isolated'):
+                        cleanup_analysis_deck(peer, descriptor)
+                    self.assertTrue(descriptor['loadPending'])
+                    self.assertEqual(peer.commands, [])
 
     def test_failed_owned_load_keeps_spare_when_disk_error_does_not_clear(self):
         _, peer, job = self.owned()
@@ -207,6 +248,96 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual(p.values['deck 3 volume'],1)
         self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
 
+    def test_live_late_load_only_recovers_after_the_exact_spare_is_confirmed(self):
+        s, p, j = self.owned()
+        j.loaded = None
+        j.requested_load = identity('test')
+        p.values['deck 3 loaded'] = False
+        p.values['deck 1 play'] = True
+        s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+        s.remember_cleanup_failure('background', j)
+
+        self.assertFalse(s.service_late_spare_load(p, 25))
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(p.commands, [])
+        self.assertFalse(s.service_late_spare_load(p, 30))
+
+        s.update(index=1)
+        p.values['deck 3 loaded'] = True
+        p.values['deck 3 get_filepath'] = 'another recording'
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(p.commands, [])
+
+        s.update(index=2)
+        p.values['deck 3 get_filepath'] = 'test'
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertFalse(s.state['resumeBlocked'])
+        self.assertTrue(p.values['deck 1 play'])
+        self.assertFalse(p.values['deck 3 loaded'])
+        self.assertEqual(p.values['deck 3 volume'], 1)
+        self.assertTrue(all(command.startswith('deck 3 ') for command in p.commands))
+
+    def test_live_spare_recovery_verifies_d_while_c_still_has_an_unconfirmed_load(self):
+        s, peer, first = self.owned()
+        _, _, second = self.owned(4, peer, s)
+        first.requested_load = first.loaded
+        first.loaded = None
+        peer.values['deck 3 loaded'] = False
+        peer.values['deck 1 play'] = True
+        second.cleanup_state['unloadRequested'] = True
+        peer.values['deck 4 loaded'] = False
+        peer.values['deck 4 pfl'] = True
+        s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+        s.remember_cleanup_failure('background', first)
+        descriptor = second.cleanup_descriptors()[0]
+        s.remember_cleanup_failure('background', second)
+
+        self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(peer.commands, [])
+        self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertTrue(peer.values['deck 1 play'])
+        self.assertFalse(peer.values['deck 4 pfl'])
+        self.assertEqual(peer.values['deck 4 volume'], descriptor['baseline']['volume'])
+        self.assertEqual(len(peer.commands), 1)
+        self.assertTrue(peer.commands[0].startswith('deck 4 '))
+        self.assertNotIn('unload', peer.commands[0])
+
+    def test_live_late_load_resumes_readbacks_without_replaying_cleanup_writes(self):
+        for interruption in ('unload', 'restore'):
+            with self.subTest(interruption=interruption):
+                s, peer, job = self.owned()
+                job.loaded = None
+                job.requested_load = identity('test')
+                peer.values['deck 1 play'] = True
+                s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+                s.remember_cleanup_failure('background', job)
+                native_send = peer.send
+                def send(command):
+                    native_send(command)
+                    if interruption == 'unload' and command.endswith('deck 3 unload'):
+                        peer.fail_query = 'get_decks'
+                peer.send = send
+                peer.fail_after_restore = interruption == 'restore'
+
+                self.assertTrue(s.service_late_spare_load(peer, 30))
+                retained = s.state['cleanupPending']['analysis'][0]
+                self.assertFalse(retained['loadPending'])
+                self.assertTrue(retained['unloadRequested'])
+                self.assertEqual(retained['restoreRequested'], interruption == 'restore')
+                self.assertFalse(s.service_late_spare_load(peer, 30))
+
+                s.update(index=1)
+                self.assertTrue(s.service_late_spare_load(peer, 30))
+                self.assertFalse(s.state['resumeBlocked'])
+                self.assertEqual(peer.values['deck 3 volume'], 1)
+                self.assertTrue(peer.values['deck 1 play'])
+                self.assertEqual(sum('deck 3 unload' in command for command in peer.commands), 1)
+                self.assertEqual(sum('deck 3 volume 100.' in command for command in peer.commands), 1)
+                self.assertTrue(all(command.startswith('deck 3 ') for command in peer.commands))
+
     def test_pool_keeps_only_failed_children_and_reports_the_actual_deck(self):
         s,p,c=self.owned();_,_,d=self.owned(4,p,s)
         pool=PreparationPool(s,'rev',[]);pool.jobs=[c,d]
@@ -218,12 +349,13 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual([r['deck'] for r in pool.snapshot()['decks']],[4])
         self.assertFalse(any('deck 4' in cmd for cmd in p.commands))
 
-    def test_normal_completion_failure_latches_and_stops_future_scheduling(self):
+    def test_normal_completion_failure_quarantines_only_the_unconfirmed_spare(self):
         s,p,j=self.owned();j.done=True;p.ignore_unload.add(3)
         s.background_job=j
         s.update(queuedUpdate={'id':'rev','status':'analyzing','tracks':[],'protectedIds':[],'reason':'fixture'})
-        with self.assertRaisesRegex(BridgeError,'unload was not confirmed'):s.service_background(p,20)
+        s.service_background(p,20)
         self.assertIsNone(s.background_job);self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(s.preparation_decks(),(4,))
         self.assertFalse(s.state['cleanupPending']['unknown'])
         self.assertEqual(s.state['cleanupPending']['analysis'][0]['deck'],3)
         self.assertEqual(s.state['queuedUpdate']['status'],'blocked')
@@ -331,3 +463,158 @@ class AnalysisCleanupTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class DeferredSpareCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.session = DJSession(threading.Lock())
+        self.peer = CleanupPeer()
+        self.job = BackgroundAnalysis(self.session, 'revision', [{'id':'test','title':'Test'}], deck=4)
+        self.job.acquire(self.peer)
+        self.job.loaded = identity('test')
+        self.peer.values['deck 4 loaded'] = True
+        self.peer.commands.clear()
+        s, peer, job = self.session, self.peer, self.job
+        tracks = [{'id':'current','title':'Current'}, {'id':'test','title':'Test'}]
+        self.c = {'version':1, 'ownerId':'a'*32, 'deck':3, 'selectionId':'b'*64,
+                  'baseline':{'volume':1, 'pfl':False, 'effect':'Flanger'}, 'loadPending':True}
+        s.update(active=True, phase='playing', resumeBlocked=True,
+                 cleanupPending=merge_cleanup_pending({'analysis':[self.c]}), order=tracks[:1],
+                 rollingQueue={'status':'preparing'},
+                 queuedUpdate={'id':job.revision, 'tracks':tracks, 'status':'analyzing',
+                               'rollingTrackId':'test', 'protectedIds':['current']})
+        peer.values['deck 3 volume'] = 0
+        peer.values['deck 1 play'] = True
+        pool = PreparationPool(s, job.revision, tracks)
+        pool.jobs[:] = [job]
+        pool.pending.clear()
+        job.done = True
+        s.background_job = pool
+
+    def lose_post_unload_reads(self, loss=OSCReplyTimeout, count=2):
+        native_query = self.peer.query
+        lost = []
+
+        def query(script, kind=None):
+            if len(lost) < count and script == 'deck 4 get_deck' and any(
+                    command.endswith('deck 4 unload') for command in self.peer.commands):
+                lost.append(script)
+                raise loss('private raw timeout detail')
+            return native_query(script, kind)
+
+        self.peer.query = query
+        return lost
+
+    def test_verified_deferred_cleanup_reopens_refill_after_one_restore(self):
+        lost = self.lose_post_unload_reads()
+        s, peer = self.session, self.peer
+        with patch('afterhours.vdj_session.time.monotonic', return_value=100) as clock:
+            s.service_background(peer, 25)
+            state = s.snapshot()
+            self.assertEqual(state['backgroundAnalysis']['spareCleanup']['status'], 'waiting')
+            self.assertEqual(state['queuedUpdate']['status'], 'blocked')
+            self.assertNotIn('private raw timeout detail', json.dumps(state))
+            self.assertEqual(s.preparation_decks(), ())
+            clock.return_value = 101
+            s.service_background(peer, 15)
+            self.assertEqual(len(peer.commands), 1)
+            s.service_background(peer, 25)
+        state = s.snapshot()
+        self.assertEqual(len(lost), 2)
+        self.assertEqual(state['backgroundAnalysis']['spareCleanup']['status'], 'verified')
+        self.assertEqual(len(peer.commands), 2)
+        self.assertTrue(peer.commands[0].endswith('deck 4 unload'))
+        self.assertIn('deck 4 volume 100.000000%', peer.commands[1])
+        self.assertTrue(all(command.startswith('deck 4 ') for command in peer.commands))
+        self.assertEqual(state['cleanupPending']['analysis'], [cleanup_descriptor(self.c)])
+        self.assertTrue(state['resumeBlocked'])
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertEqual(state['queuedUpdate']['status'], 'needs-analysis')
+        self.assertEqual(state['queuedUpdate']['id'], self.job.revision)
+        self.assertTrue(peer.values['deck 1 play'])
+
+    def test_unconfirmed_restore_is_not_replayed(self):
+        self.lose_post_unload_reads()
+        s, peer = self.session, self.peer
+        with patch('afterhours.vdj_session.time.monotonic', return_value=100) as clock:
+            s.service_background(peer, 25)
+            peer.fail_after_restore = True
+            clock.return_value = 101
+            s.service_background(peer, 25)
+            clock.return_value = 102
+            s.service_background(peer, 25)
+        state = s.snapshot()
+        d = next(row for row in state['cleanupPending']['analysis'] if row['deck'] == 4)
+        self.assertEqual(state['backgroundAnalysis']['spareCleanup']['status'], 'unconfirmed')
+        self.assertTrue(d['restoreRequested'])
+        self.assertEqual(state['queuedUpdate']['status'], 'blocked')
+        self.assertEqual(len(peer.commands), 2)
+
+    def test_late_load_confirmation_reopens_the_exact_blocked_queue(self):
+        s, peer, job = self.session, self.peer, self.job
+        job.requested_load, job.loaded = job.loaded, None
+        peer.values['deck 4 loaded'] = False
+        read = peer.query
+        losses = []
+
+        def lose_initial_read(script, kind=None):
+            if script == 'deck 4 get_deck' and len(losses) < 2:
+                losses.append(script)
+                raise OSCReplyTimeout('Spare reply timed out.')
+            return read(script, kind)
+
+        peer.query = lose_initial_read
+        s.service_background(peer, 25)
+        self.assertEqual(s.snapshot()['queuedUpdate']['spareCleanupOwner'], job.owner_id)
+        self.assertIsNone(s.deferred_spare_cleanup)
+        current = s.snapshot()['order'][0]
+        self.assertGreater(s.final_preparation_runway(current,0,{'position':60,'controls':{'durationMs':300000}}), 26)
+        for _ in range(2):
+            self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(peer.commands, [])
+        self.assertEqual(s.snapshot()['queuedUpdate']['status'], 'blocked')
+        peer.values['deck 4 loaded'] = True
+        s.update(index=1)
+        for _ in range(2):
+            self.assertTrue(s.service_late_spare_load(peer, 30))
+        state = s.snapshot()
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertEqual(state['queuedUpdate']['id'], job.revision)
+        self.assertEqual(state['queuedUpdate']['status'], 'needs-analysis')
+        self.assertEqual(state['queuedUpdate']['oscReadRetries'], 1)
+        self.assertTrue(peer.values['deck 1 play'])
+        self.assertTrue(all(command.startswith('deck 4 ') for command in peer.commands))
+        self.assertEqual(sum(command.endswith('deck 4 unload') for command in peer.commands), 1)
+
+    def test_changed_or_stale_spare_is_not_restored(self):
+        for reason in ('loaded', 'revision', 'ownership', 'expired', 'unknown', 'deck-c-changed'):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.lose_post_unload_reads()
+                s, peer = self.session, self.peer
+                with patch('afterhours.vdj_session.time.monotonic', return_value=100) as clock:
+                    s.service_background(peer, 25)
+                    clock.return_value = 101
+                    if reason == 'loaded':
+                        peer.values.update({'deck 4 loaded':True, 'deck 4 get_filepath':'operator track'})
+                    elif reason == 'revision':
+                        s.state['queuedUpdate']['id'] = 'new revision'
+                    elif reason == 'ownership':
+                        s.state['cleanupPending']['analysis'][-1]['ownerId'] = 'd'*32
+                    elif reason == 'unknown':
+                        s.state['cleanupPending']['unknown'] = True
+                    elif reason == 'deck-c-changed':
+                        peer.values['deck 3 volume'] = .5
+                    else:
+                        clock.return_value = 106
+                    s.service_background(peer, 25)
+                self.assertIsNone(s.deferred_spare_cleanup)
+                self.assertEqual(len(peer.commands), 1)
+                self.assertEqual(s.state['queuedUpdate']['status'], 'blocked')
+                self.assertTrue(s.state['resumeBlocked'])
+
+    def test_untyped_cleanup_error_does_not_authorize_deferred_recovery(self):
+        self.lose_post_unload_reads(BridgeError, count=1)
+        self.session.service_background(self.peer, 25)
+        self.assertIsNone(self.session.deferred_spare_cleanup)
+        self.assertEqual(len(self.peer.commands), 1)

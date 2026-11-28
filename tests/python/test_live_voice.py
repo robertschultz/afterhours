@@ -42,6 +42,14 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(body['session']['audio']['output']['voice'],'gleam')
         self.assertEqual(self.voice.status()['voice'],'gleam')
 
+    def test_dawt_presentation_uses_dot_even_with_a_different_assigned_profile(self):
+        self.agent.profile_context=Mock(return_value={'id':'nova','name':'Nova'})
+        self.voice.create('v=0','dawt-request','nova',True,voice='gleam',presentation='dawt')
+        body=json.loads(self.requests[0].data)['session']
+        self.assertIn('You are Dot',body['instructions'])
+        self.assertIn('Introduce yourself as Dot',body['instructions'])
+        self.assertNotIn('Nova',json.dumps(body))
+
     def test_startup_history_keeps_useful_facts_and_bounds_escaped_text(self):
         messages=[{'role':'user','text':'🪩'*5000} for _ in range(10)]
         messages.append({'role':'assistant','text':'The next blend is scheduled.'})
@@ -112,6 +120,39 @@ class VoiceTests(unittest.TestCase):
         self.assertFalse(state['finalized'])
         self.voice.opener=provider
         self.voice.create('v=0','request_456','nova',True)
+
+    def test_closed_transport_releases_slot_while_provider_hangup_is_in_flight(self):
+        for initially_closed in (True, False):
+            with self.subTest(initially_closed=initially_closed):
+                self.voice.create('v=0',f'initial_{initially_closed}', 'nova',True)
+                entered=threading.Event()
+                release=threading.Event()
+                provider=self.voice.opener
+                def hangup(request, **kwargs):
+                    if request.full_url.endswith('/hangup'):
+                        entered.set()
+                        release.wait(2)
+                        raise URLError('Hangup response was delayed.')
+                    return provider(request, **kwargs)
+                self.voice.opener=hangup
+                worker=threading.Thread(target=self.voice.end, args=('voice_fixture',),
+                                        kwargs={'transport_closed':initially_closed}, daemon=True)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    self.assertEqual(self.voice.status()['status'], 'closed' if initially_closed else 'closing')
+                    if not initially_closed:
+                        self.voice.end('voice_fixture', transport_closed=True)
+                    self.assertEqual(self.voice.status()['status'], 'closed')
+                    self.assertFalse(self.voice.status()['finalized'])
+                    self.voice.create('v=0',f'new_{initially_closed}','nova',True)
+                    self.assertEqual(self.voice.status()['status'], 'active')
+                finally:
+                    release.set()
+                    worker.join(2)
+                self.assertEqual(self.voice.status()['status'], 'active')
+                self.voice.opener=provider
+                self.voice.end('voice_fixture', transport_closed=True)
 
     def test_missing_heartbeats_releases_an_abruptly_closed_browser(self):
         with patch('time.monotonic',return_value=10):

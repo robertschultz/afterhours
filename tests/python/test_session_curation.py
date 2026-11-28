@@ -24,7 +24,8 @@ class RunSession(Session):
             'tempoSchedule':[{'trackId':t['id'],'fromBpm':125,'toBpm':125,'durationBeats':0,'startOffsetBeats':0,'maxPitchPercent':8} for t in self.state['order']]}
     def revise_queue(self, ids, **kwargs):
         super().revise_queue(ids,**kwargs);self.prepared()
-    def start(self, initialize_mixer=False, immediate=False, rolling_queue=False):
+    def start(self, initialize_mixer=False, immediate=False, rolling_queue=False,
+              allow_grid_opening=False, cue_led_opening=False):
         assert initialize_mixer and immediate
         self.calls.append(('start',))
         self.update(active=True,phase='playing',index=0,startedAt=1234,

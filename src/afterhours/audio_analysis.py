@@ -23,10 +23,19 @@ PLUGIN = 'Afterhours Analysis'
 MAX_SCAN_SECONDS = 1200
 PAUSED_SCAN_TIMEOUT = 40
 SPARE_SCAN_TIMEOUT = 120
+STALLED_GAP_GRACE_SECONDS = 10
+STALLED_GAP_MIN_PASSES = 3
+FRESH_REPORT_GRACE_SECONDS = .65
 
 
 class AudioAnalysisTimeout(BridgeError):
     pass
+
+
+class InteriorBufferGap(ValueError):
+    def __init__(self, digest):
+        super().__init__('An interior zero-filled region needs verification before analysis can be used.')
+        self.digest = digest
 
 
 def bounded(value, low, high):
@@ -106,11 +115,12 @@ def validate_scan(data, sound_end):
         raise ValueError('The audio scan does not cover the whole track.')
     if last_signal < sound_end-2:
         raise ValueError('The buffer is still silent before the native end-of-sound marker.')
+    feature_digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
     if longest_interior_zero > 4:
-        raise ValueError('An interior zero-filled region needs verification before analysis can be used.')
+        raise InteriorBufferGap(feature_digest)
     return {'lastSignalSeconds': round(last_signal, 6),
             'longestInteriorZeroSeconds': round(longest_interior_zero, 6),
-            'featureDigest': hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()}
+            'featureDigest': feature_digest}
 
 
 def restore_effect(client, deck, previous, wait=time.sleep, clock=time.monotonic):
@@ -133,7 +143,8 @@ def restore_effect(client, deck, previous, wait=time.sleep, clock=time.monotonic
 
 
 def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
-               root=REPORTS, clock=time.monotonic, timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None):
+               root=REPORTS, clock=time.monotonic, timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None,
+               can_replace_stalled=None):
     """One bounded scan operation. The caller owns the OSC connection lock.
 
     An isolated deck is a spare one held paused, at zero volume and off the
@@ -168,6 +179,8 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
     last = None
     last_time = None
     last_reason = 'Waiting for a fresh buffer scan.'
+    gap_digest = gap_since = None
+    gap_passes = 0
     try:
         client.send(f'deck {deck} effect_select 1 "{PLUGIN}"')
         until = clock()+3
@@ -188,6 +201,7 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
             # A completed scan starts a new pass; partial scans continue without
             # reloading or seeking the track. Readbacks serialize native work.
             fresh = False
+            finished_without_report_since = None
             while clock() < deadline:
                 guard()
                 if client.query(f'deck {deck} get_effect_name 1', 'text') != PLUGIN:
@@ -198,15 +212,23 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                 if isolated and 'pause both decks' in str(label).lower():
                     raise BridgeError('Update Afterhours Analysis and restart VirtualDJ to analyze on a spare deck while others play.')
                 current = read_scan(sid, root)
-                if current and (fresh or current[0]['scanStartedAtMs'] != old_id):
+                scan_id = current[0].get('scanStartedAtMs') if current else None
+                if bounded(scan_id, 1, 1e16) and (fresh or scan_id != old_id):
                     fresh = True
                     if current[0].get('bufferReadComplete') is True:
                         break
                 if not fresh and str(label or '').startswith('Buffer read finished'):
-                    raise AudioAnalysisTimeout(
-                        'VirtualDJ finished scanning, but Afterhours could not read a new report. '
-                        'Check that Afterhours and the installed analysis bridge use the same report folder.'
-                    )
+                    # The OSC readback can still show the previous pass while
+                    # VirtualDJ processes the next button press.
+                    now = clock()
+                    if finished_without_report_since is None:
+                        finished_without_report_since = now
+                        last_reason = (
+                            'VirtualDJ reported a completed scan without a fresh report for this recording. '
+                            'Check that Afterhours and the installed analysis bridge use the same report folder.'
+                        )
+                    if now - finished_without_report_since >= FRESH_REPORT_GRACE_SECONDS:
+                        raise AudioAnalysisTimeout(last_reason)
                 if label and not any(s in label for s in ('scanned', 'incomplete', 'Buffer read finished')):
                     raise BridgeError('The analysis bridge could not scan this recording. ' + str(label)[:192])
                 wait(.15)
@@ -218,7 +240,19 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                 details = validate_scan(data, sound_end)
             except ValueError as exc:
                 last, last_time, last_reason = None, None, str(exc)
+                if isinstance(exc, InteriorBufferGap) and can_replace_stalled:
+                    now = clock()
+                    if gap_digest != exc.digest:
+                        gap_digest, gap_since, gap_passes = exc.digest, now, 0
+                    gap_passes += 1
+                    if (gap_passes >= STALLED_GAP_MIN_PASSES
+                            and now - gap_since >= STALLED_GAP_GRACE_SECONDS and can_replace_stalled()):
+                        raise AudioAnalysisTimeout('Audio analysis remains unverified: '+last_reason
+                                                   +' Repeated scans returned the same incomplete audio.')
+                else:
+                    gap_digest, gap_since, gap_passes = None, None, 0
             else:
+                gap_digest, gap_since, gap_passes = None, None, 0
                 digest = details['featureDigest']
                 if digest == last and clock()-last_time >= 1:
                     guard()

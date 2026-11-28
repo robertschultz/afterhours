@@ -23,7 +23,7 @@ class ScenarioSession(DJSession):
                        'bpm':125+i*.5,'camelot':'8A','genre':'House'} for i,c in enumerate('abcd')]
         self.update(candidates=copy.deepcopy(self.records), telemetry={'decks':[]},maxTempoShift=8)
 
-    def discover_more(self,*args):
+    def discover_more(self,*args,**kwargs):
         self.calls.append(('search',args));self.update(phase='discovering',active=True)
 
     def finish_search(self,records=None,error=None):

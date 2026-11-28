@@ -17,7 +17,7 @@ import uuid
 from afterhours.dj_bridge import VirtualDJ, BridgeError, as_bool
 from afterhours.track_metadata import musical_key
 from afterhours.vdj_catalog import (folder_state, selection, identity, load_selected, search_literal, count_value,
-                         paused_load_target, load_exact_recording)
+                         paused_load_target, load_exact_recording, catalog_keywords)
 from afterhours.native_recording import RECORDINGS
 from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, transition_recipe
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
@@ -330,9 +330,7 @@ class DJSession:
             if not locator:
                 # Archived metadata may predate saved browser cursors. Use a
                 # safe title/artist search, then revalidate the exact engine ID.
-                raw = str(record.get('artist') or record.get('title') or '')
-                query = re.sub(r'[\x00-\x1f\x7f"`/\\*?\[\]{}#]', ' ', raw)
-                query = ' '.join(query.split())[:160]
+                query = catalog_keywords(record.get('artist'), record.get('title'))
                 locator = {'query': query, 'position': 0} if query else None
             found.append(record)
             if locator:
@@ -626,8 +624,10 @@ class DJSession:
             number(track.get('bpm'), 40, 300)
             if not isinstance(track.get('title'), str) or not track['title'].strip():
                 raise ValueError('Saved track has no title.')
-            search_literal(track.get('artist'))
-            positions[track['id']] = {'position': 0, 'query': track['artist']}
+            if not isinstance(track.get('artist'), str):
+                raise ValueError('Saved track artist is invalid.')
+            if query := catalog_keywords(track['artist'], track['title']):
+                positions[track['id']] = {'position': 0, 'query': query}
             folders.add(engine['folder_id'])
         # A crate can retain recordings found in earlier folders. Their origin
         # is provenance, not the current search scope. Recover that scope
@@ -1961,7 +1961,9 @@ class DJSession:
         if self.background_job:self.background_job.invalidate_catalog()
         if folder_state(client)['id'] != self.folder['id']:
             raise BridgeError('Catalog folder changed. Discover music again before starting.')
-        context = self.positions[track['id']]
+        context = self.positions.get(track['id'])
+        if not context:
+            raise RecordingLookupIncomplete('No searchable metadata is available for this exact recording.')
         if self.catalog_job:self.catalog_job.resume_search()
         self._dig_resume=True
         # Re-run the saved search; another view/operator may have changed it.
@@ -2009,8 +2011,7 @@ class DJSession:
             return False
 
         original=context['query']
-        title=re.sub(r'[\x00-\x1f\x7f"`/\\*?\[\]{}#]',' ',str(track.get('title') or ''))
-        title=' '.join(title.split())[:160]
+        title = catalog_keywords(track.get('title'))
         # Keep the saved cursor's fast path, then narrow by title before a
         # costly artist walk. Versions with the same title are never substitutes:
         # only the original opaque recording identity can authorize Load.
@@ -2098,7 +2099,7 @@ class DJSession:
                 return
         raise BridgeError('Track load remains unconfirmed. No repeat load or Play was sent.')
 
-    def telemetry(self, client, observing=False, preloading=False):
+    def telemetry(self, client, observing=False, preloading=False, *, clock_only=False):
         q = (lambda client,script,kind=None: client.query(script,kind)) if observing else self.q
         def read_deck(deck):
             loaded = as_bool(q(client, f'deck {deck} loaded', 'bool'))
@@ -2151,15 +2152,16 @@ class DJSession:
         known = [d for d in heard if d['deck'] == self.active_deck]
         if all(d.get('unavailable') for d in (known or heard)):
             raise BridgeError('The audible deck clock is unavailable.')
-        # Keep controls visible outside transitions. The mixer already reads EQ
-        # on its timing loop; avoid adding six queries to that critical path.
-        mixing = self.snapshot().get('phase') == 'mixing'
+        # The mixer already reads EQ on its timing loop. Check the phase
+        # without copying the entire set and its growing transition history.
+        with self.lock:
+            mixing = self.state['phase'] == 'mixing'
         for d in decks:
             deck = d['deck']
             cached = self.eq_readings.get(deck)
             if cached and cached['trackId'] != d.get('id'):
                 cached = None
-            if not mixing and not preloading and not d.get('unavailable') and not d.get('standby') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and not d.get('standby') and (
                     not cached or time.time() - cached['sampledAt'] >= .75):
                 try:
                     values = {name: number(q(client, f'deck {deck} {name}'), 0, 1)
@@ -2179,7 +2181,7 @@ class DJSession:
             cached = self.console_readings.get(d['deck'])
             if cached and cached['trackId'] != d.get('id'): cached = None
             if d.get('standby'): continue
-            if not preloading and not d.get('unavailable') and (
+            if not mixing and not clock_only and not preloading and not d.get('unavailable') and (
                     not cached or time.time()-cached['values']['sampledAt'] >= .5):
                 values = bounded_controls(client, d['deck'], d.get('loaded') is True)
                 # A load from hardware while reading cannot attach old metadata
@@ -2192,7 +2194,8 @@ class DJSession:
                 cached={'trackId':d.get('id'),'values':values}
                 self.console_readings[d['deck']]=cached
             if cached:
-                d['controls']=live_controls(client,d['deck'],cached['values']) if not preloading else cached['values']
+                d['controls'] = (cached['values'] if mixing or clock_only or preloading
+                                 else live_controls(client,d['deck'],cached['values']))
         result = {'decks': decks, 'crossfader': crossfader, 'sampledAt': time.time()}
         self.update(telemetry=result)
         return result
@@ -2408,6 +2411,26 @@ class DJSession:
             self.event(reason,'queue-skipped',trackId=rejected['id'])
             return retained,plan
 
+    def refresh_preparing_queue(self, order):
+        """Refit cues after a native key update without rescanning unchanged candidates."""
+        with self.lock:
+            queued = self.state.get('queuedUpdate')
+            if not queued:
+                return
+            checked = {track['id']: track for track in order}
+            queued['tracks'] = [copy.deepcopy(checked.get(track['id'], track)) for track in queued['tracks']]
+            job = self.background_job
+            owned = job is not None and job.revision == queued['id'] and (
+                queued['status'] == 'analyzing' or bool(queued.get('partialPrepared')))
+            if owned:
+                queued.update(status='analyzing', prepared=None)
+            else:
+                queued.update(id=uuid.uuid4().hex, status='needs-analysis', prepared=None)
+            # The eventual fit uses the refreshed protected prefix. No plan
+            # compiled using the previous key survives, even a partial plan.
+            for key in ('partialTracks', 'partialPrepared', 'error', 'failure'):
+                queued.pop(key, None)
+
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
         from afterhours.rolling_queue import RollingQueue
@@ -2476,13 +2499,7 @@ class DJSession:
                 self.prepare_deck(client,revised[index],deck,target,cue=newplan['selections'][index],checked=exc.track)
                 newplan['applied']=True
                 self.update(order=revised,**prepared,mixPlans=newplan['transitions'])
-                with self.lock:
-                    queued=self.state.get('queuedUpdate')
-                    if queued:
-                        checked_by_id={t['id']:t for t in revised}
-                        queued['tracks']=[copy.deepcopy(checked_by_id.get(t['id'],t)) for t in queued['tracks']]
-                        queued.update(id=uuid.uuid4().hex,status='needs-analysis',prepared=None)
-                        queued.pop('error',None);queued.pop('failure',None)
+                self.refresh_preparing_queue(revised)
                 order,planned=revised,newplan
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
         def preload_following(client,deck,target,index):
@@ -2663,13 +2680,20 @@ class DJSession:
                 revised_final=False
                 waiting_for_continuation=False
                 stems_check_at=0
+                retried_mixer_window=False
                 while True:
-                    t = self.telemetry(client)
+                    # A near-boundary sample still reads identity, transport,
+                    # tempo, meter and phase. Defer only console UI readbacks.
+                    if not final and current['beatPosition'] >= goal-12:
+                        t = self.telemetry(client, clock_only=True)
+                    else:
+                        t = self.telemetry(client)
                     current = t['decks'][active-1]
                     if current['id'] != track['id'] or not current['playing']:
                         raise BridgeError('A deck changed or was paused. Scheduling stopped for manual control.')
                     if tempo_row:
-                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1])
+                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1],
+                            handoff_beat=goal if entry_cadence and not final else None)
                         self.update(tempoControl=control)
                     change = self.service_copilot(client, current, incoming, ready, target, window)
                     if change:
@@ -2718,6 +2742,28 @@ class DJSession:
                         waiting_for_continuation=True
                         self.event('Keeping the current track playing while the upcoming handoff is verified.', 'queue')
                     if current['beatPosition'] >= goal and runway<16:
+                        if self.mixer and not final and entry_cadence:
+                            # Assess mixer state before committing to the
+                            # handoff. A delayed reply can consume this bar.
+                            self.mixer.validate_armed(client)
+                            observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
+                            if observed<goal:
+                                raise MixerControlChanged('The outgoing beat clock moved before the handoff. No transition was sent.')
+                            current={**current,'beatPosition':observed}
+                            if observed-goal>1:
+                                if retried_mixer_window:
+                                    raise BridgeError('Mixer checks missed the transition window. No late transition was started.')
+                                try:
+                                    window=copilot_commands.retime(self.snapshot(),current,recipe['fadeBeats'],
+                                        entry_interval=entry_cadence[index % len(entry_cadence)],actual_entry=window,
+                                        latest_beat=goal+min(16,current['bpm']*8/60))
+                                except ValueError as exc:
+                                    raise BridgeError('Mixer checks missed the transition window. '+str(exc)) from exc
+                                retried_mixer_window=True
+                                start_beat,goal=window['entryBeat'],window['mixAtBeat']
+                                self.update(targetBeat=goal,timing=dict(window),segmentBeats=window['segmentBeats'])
+                                self.event('Mixer readback arrived late. Waiting for a nearby verified bar.', 'timing')
+                                continue
                         if current['beatPosition'] - goal > 1 and not waiting_for_continuation:
                             if planned:
                                 raise BridgeError('The analyzed transition window was missed. Scheduling stopped; no substitute cue was used.')
@@ -2791,7 +2837,7 @@ class DJSession:
                 if tempo_row and not self.tempo_ramp.done:
                     raise BridgeError('Tempo ramp was not confirmed before the handoff. No transition was started.')
                 fade_beats = window['fadeBeats']
-                if self.mixer:
+                if self.mixer and not entry_cadence:
                     self.mixer.validate_armed(client)
                     observed=number(self.q(client,f'deck {active} get_beatpos'),-10000,100000)
                     if observed-goal>1:

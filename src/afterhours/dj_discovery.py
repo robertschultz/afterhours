@@ -23,7 +23,14 @@ def normalized(value):
 
 
 def credit(value):
-    return frozenset(normalized(name) for name in re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(value or ''), flags=re.I) if normalized(name))
+    return frozenset(credited_names(value))
+
+
+def credited_names(value):
+    """Map normalized credit names to their original spelling."""
+    return {key: name.strip()
+            for name in re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(value or ''), flags=re.I)
+            if (key := normalized(name))}
 
 
 def identity(title, artist):

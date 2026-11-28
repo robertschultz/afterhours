@@ -116,6 +116,37 @@ class MixerTests(unittest.TestCase):
         mixer.begin(None)
         self.assertTrue(any("afterhours_in_high' 0.320000 0.500000 48bt" in script for script in sent))
 
+    def test_louder_measured_entrance_is_attenuated_and_ramps_to_the_same_baseline(self):
+        mixer, values, sent = self.mixer()
+        pair = {**transition_recipe(track(), track()), 'fadeBeats':16, 'entryLevel':.75}
+        plan = {'transitions':[pair], 'selections':[
+            {'replayVerified':True,'exit':{'rmsDb':-19}},
+            {'replayVerified':True,'entry':{'rmsDb':-10}},
+        ]}
+        recipe = measured_recipe(plan, 0)
+        self.assertEqual(recipe['entryLevel'], .6)
+        self.assertEqual(recipe['entryRampBeats'], 12)
+        self.assertIn('9.0 dB louder', recipe['reason'])
+        self.assertNotIn('entryRampBeats', pair)
+        mixer.arm(None, 1, 2, recipe)
+        self.assertAlmostEqual(values[2]['level'], .48)
+        self.assertEqual(values[2]['eq_low_freq'], 0)
+        mixer.begin(None)
+        self.assertTrue(any("afterhours_in_level' 0.480000 0.800000 12bt" in cmd for cmd in sent))
+
+    def test_quieter_entrance_stays_attenuated_and_unverified_windows_preserve_prior_mix(self):
+        pair = {**transition_recipe(track(), track()), 'fadeBeats':8}
+        plan = {'transitions':[pair], 'selections':[
+            {'replayVerified':True,'exit':{'rmsDb':-12}},
+            {'replayVerified':True,'entry':{'rmsDb':-18}},
+        ]}
+        recipe = measured_recipe(plan, 0)
+        self.assertGreater(recipe['entryLevel'], pair['entryLevel'])
+        self.assertLess(recipe['entryLevel'], 1)
+        self.assertNotIn('entryRampBeats', recipe)
+        plan['selections'][1]['replayVerified'] = False
+        self.assertEqual(measured_recipe(plan, 0), pair)
+
     def test_measured_bridge_is_bound_to_the_verified_exit_and_room_for_a_wrap(self):
         outgoing={'exitBeat':128,'loopBridgeBeats':8,'replayVerified':True}
         plan={'selections':[outgoing]}

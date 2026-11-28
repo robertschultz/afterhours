@@ -43,6 +43,18 @@ def measured_recipe(plan, index):
     cues = plan.get('selections') or []
     if len(cues) > index + 1:
         evidence = window_pair_evidence(cues[index], cues[index + 1])
+        level_gap = evidence.get('rmsDb', 0)
+        if level_gap >= 4:
+            # Ease the louder record into the overlap without changing its
+            # solo level or allowing two basslines or leads to play together.
+            initial = recipe['entryLevel']
+            recipe['entryLevel'] = min(initial, max(.6, initial * 10 ** (-min(level_gap, 9) / 60)))
+            recipe['entryRampBeats'] = recipe['fadeBeats'] * 3 // 4
+            recipe['reason'] += f' Incoming cue measures {level_gap:.1f} dB louder; easing its channel in more slowly.'
+        elif level_gap <= -4:
+            # Keep a quieter entrance present without boosting past baseline.
+            recipe['entryLevel'] = min(.9, recipe['entryLevel'] + .10)
+            recipe['reason'] += f' Incoming cue measures {-level_gap:.1f} dB quieter; introducing it closer to its normal level.'
         if evidence.get('sharedBrightHighs'):
             recipe['incomingHighEq'] = .32
             recipe['reason'] += ' Both phrase windows have strong highs; easing in the incoming percussion.'
@@ -460,7 +472,8 @@ class TransitionMixer:
     def begin(self, client):
         level=self.baselines[self.incoming]['level']
         beats=self.recipe['fadeBeats']
-        self.ramp(client,'in_level',self.incoming,'level',level*self.recipe['entryLevel'],level,beats//2)
+        level_beats = self.recipe.get('entryRampBeats', beats//2)
+        self.ramp(client,'in_level',self.incoming,'level',level*self.recipe['entryLevel'],level,level_beats)
         initial_high = self.armed[self.incoming]['eq_high_freq']
         if initial_high < .5:
             self.ramp(client,'in_high',self.incoming,'eq_high_freq',initial_high,.5,beats*3//4)

@@ -126,6 +126,31 @@ class QueuePlanningTests(unittest.TestCase):
         queued = self.session.snapshot()['queuedUpdate']
         self.assertEqual(queued['tracks'][-1]['id'], 'house')
 
+    @patch('afterhours.rolling_queue.DISCOVERY.neighbors', return_value=())
+    def test_named_artist_refill_rejects_electronic_cache_but_can_broaden_to_related_music(self, _):
+        seeds = [
+            {**track('opener', '7A', 118), 'artist': 'Avery Stone & The Chorus', 'genre': 'Christian'},
+            {**track('current', '6B', 120), 'artist': 'Avery Stone', 'genre': 'Christian'},
+        ]
+        other = {**track('other', '6B', 120), 'artist': 'Unrelated Producer', 'genre': 'Electronic'}
+        related = {**track('related', '6B', 120), 'artist': 'Another Singer', 'genre': 'R&B/Soul'}
+        self.session.update(candidates=seeds + [other])
+        self.session.plan([row['id'] for row in seeds])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            agentDirection='Play Avery Stone',
+                            executionPlan={'id':'plan','applied':True,'targetBpm':120})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.search = Mock(return_value=False)
+        roller.tick(self.session, 25)
+        self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+        self.assertEqual(roller.search.call_args.args[3], 'gospel')
+
+        self.session.update(candidates=seeds + [other, related])
+        roller.tick(self.session, 25)
+        staged = self.session.snapshot()['queuedUpdate']
+        self.assertEqual([row['id'] for row in staged['tracks']], ['opener', 'current', 'related'])
+
     def test_rolling_quick_set_appends_as_each_track_starts(self):
         self.session.plan(['a','b'],mix_style='quick')
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})

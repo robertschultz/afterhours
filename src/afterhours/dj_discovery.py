@@ -104,6 +104,7 @@ def style_for(request):
         ('disco', 'disco'), ('funk', 'funk'), ('soul', 'soul'), ('reggae', 'reggae|dancehall'),
         ('country', 'country'), ('latin', 'latin|reggaeton|salsa|bachata'), ('pop', 'pop'),
         ('techno', 'techno'), ('drum and bass', 'drum and bass|drum bass|dnb'),
+        ('electronic', 'electronic|electronica|idm'),
     ):
         if re.search(r'\b(?:'+aliases+r')\b', text):
             return style

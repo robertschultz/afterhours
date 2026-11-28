@@ -15,7 +15,7 @@ from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 # Adjacent styles give the DJ room to follow a compatible thread without
 # taking an unrelated track simply because its BPM happens to fit.
 STYLE_GROUPS = (
-    frozenset(('house', 'deep house', 'tech house', 'techno', 'disco', 'dance')),
+    frozenset(('house', 'deep house', 'tech house', 'techno', 'disco', 'dance', 'electronic')),
     frozenset(('soul', 'funk', 'r&b', 'gospel', 'hip hop')),
     frozenset(('rock', 'pop', 'funk', 'soul')),
 )

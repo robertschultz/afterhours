@@ -8,6 +8,10 @@ import json
 from math import isfinite, sqrt
 from pathlib import Path
 from statistics import median, quantiles
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from afterhours.dj_discovery import credit
 
 
 def number(value, field, minimum=0, maximum=None):
@@ -54,6 +58,28 @@ def energy_phases(plan, target):
         (start, phases[index + 1][0] if index + 1 < len(phases) else target, energy)
         for index, (start, energy) in enumerate(phases)
     ]
+
+
+def artist_concentration(credited_names):
+    appearances = Counter()
+    streaks = {}
+    longest_streak = adjacent_pairs = known = 0
+    for names in credited_names:
+        names = credit(names) if isinstance(names, str) else ()
+        appearances.update(names)
+        known += bool(names)
+        adjacent_pairs += any(name in streaks for name in names)
+        streaks = {name:streaks.get(name, 0)+1 for name in names}
+        longest_streak = max(longest_streak, max(streaks.values(), default=0))
+    maximum = max(appearances.values(), default=0)
+    return {
+        'tracksWithKnownArtists':known,
+        'distinctCreditedArtists':len(appearances),
+        'mostAppearancesByOneArtist':maximum,
+        'mostPlayedArtists':sorted(name for name, count in appearances.items() if count == maximum),
+        'longestConsecutiveAppearances':longest_streak,
+        'adjacentPairsSharingAnArtist':adjacent_pairs,
+    }
 
 
 def read_plan(path):
@@ -150,6 +176,7 @@ def read_plan(path):
         'energyAndGenreByPhase': phase_results,
         'extraPlaysByRecording': {key: count - 1 for key, count in sorted(recorded_decisions.items()) if count > 1},
         'extraPlaysByArtistCredit': {key: count - 1 for key, count in sorted(artists.items()) if count > 1},
+        'artistConcentration': artist_concentration(track['artist'] for track in tracks),
         'trackDwell': dwell,
         'plannedOverlapsSeconds': [round(seconds, 3) for seconds in overlaps],
         'cadenceSeconds': cadence,
@@ -276,6 +303,7 @@ def observed_curatorial_variety(handoffs):
         'knownArtistCredits':sum(artists.values()),
         'distinctArtistCredits':len(artists),
         'extraPlaysByArtistCredit':{key: count-1 for key, count in sorted(artists.items()) if count > 1},
+        'artistConcentration':artist_concentration(artist_credits),
         'consecutiveRepeatedCreditPairs':sum(bool(previous and previous == current)
                                              for previous, current in zip(normalized, normalized[1:])),
     }

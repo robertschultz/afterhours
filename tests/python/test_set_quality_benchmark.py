@@ -197,6 +197,19 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertIsNone(SCORER['observed_curatorial_variety'](rows))
         self.assertIsNone(SCORER['observed_curatorial_variety']([{'verified': True}]))
 
+    def test_artist_concentration_counts_collaborations_and_breaks_on_missing_credits(self):
+        result = SCORER['artist_concentration']([
+            'Resident & Guest', 'Resident feat. Resident', 'Guest, Resident', None, 'Resident', 'Guest',
+        ])
+        self.assertEqual(result, {
+            'tracksWithKnownArtists':5,
+            'distinctCreditedArtists':2,
+            'mostAppearancesByOneArtist':4,
+            'mostPlayedArtists':['resident'],
+            'longestConsecutiveAppearances':3,
+            'adjacentPairsSharingAnArtist':2,
+        })
+
     def test_observed_genre_timing_totals_verified_intervals_and_keeps_unknowns(self):
         rows = [
             {'verified':True, 'outgoingGenre':'House', 'incomingGenre':'Tech House'},

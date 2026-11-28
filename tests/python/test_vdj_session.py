@@ -3,6 +3,7 @@ import copy
 import re
 import threading
 import unittest
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_session import DJSession, Cancelled, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
@@ -17,6 +18,23 @@ def tracks():
 
 
 class SessionTests(unittest.TestCase):
+    def test_unexpected_worker_failure_logs_code_locations_without_request_data(self):
+        s = DJSession(threading.Lock(), client_factory=lambda *args, **kwargs: nullcontext(None))
+        invoked = []
+
+        def fail_once(client):
+            invoked.append(True)
+            raise TypeError('fixture private request')
+
+        with self.assertLogs('afterhours.vdj_session', level='ERROR') as logs:
+            s._launch(fail_once, 'preparing')
+            s.worker.join(2)
+        self.assertEqual(invoked, [True])
+        self.assertEqual(s.state['phase'], 'error')
+        self.assertIn('TypeError', logs.output[0])
+        self.assertIn('fail_once', logs.output[0])
+        self.assertNotIn('fixture private request', logs.output[0])
+
     def test_spare_deck_cue_is_rechecked_at_all_measured_timestamps(self):
         session = DJSession(threading.Lock())
         cue = {'id':'cue', 'anchorBeat':0, 'entryBeat':16, 'exitBeat':80, 'endBeat':112,

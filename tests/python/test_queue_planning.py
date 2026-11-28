@@ -481,6 +481,24 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(len(set(batch) & {'c','d'}), 1)
         self.assertIn('e', batch)
 
+    def test_two_track_refill_prefers_one_compatible_record_per_artist(self):
+        for related_bpm, second in ((125.5, 'e'), (190, 'd')):
+            with self.subTest(related_bpm=related_bpm):
+                candidates = [
+                    track('a'), track('b'),
+                    {**track('c'), 'artist':'Resident DJ'},
+                    {**track('d'), 'artist':'Resident DJ & Guest'},
+                    {**track('e', bpm=related_bpm), 'artist':'Related Artist'},
+                ]
+                self.session.update(active=False,candidates=candidates)
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+                roller = RollingQueue()
+                roller.advisor.advise = Mock(return_value=('c',False))
+                roller.tick(self.session, 43)
+                self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['c',second])
+
     def test_timed_refill_discovers_successors_while_the_current_batch_is_measured(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},

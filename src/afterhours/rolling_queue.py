@@ -348,8 +348,10 @@ class RollingQueue:
             while remaining and len(picked) < batch:
                 if session.cancel.is_set():
                     return
-                avoid = (repeated_artists(order + picked) | heavily_played_credits(order + picked)
-                         if not deferred else set())
+                avoid = set()
+                if not deferred:
+                    avoid = repeated_artists(order + picked) | heavily_played_credits(order + picked)
+                    avoid.update(artist for track in picked for artist in credit(track.get('artist')))
                 # Favor artists with room in the set. Keep repeats in reserve if every
                 # alternative fails the native queue and tempo checks.
                 slot = min(range(len(remaining)), key=lambda index: (

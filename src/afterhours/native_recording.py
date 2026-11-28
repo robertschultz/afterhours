@@ -13,6 +13,7 @@ import threading
 import xml.etree.ElementTree as ET
 
 from afterhours.dj_bridge import BridgeError
+from afterhours.native_database import complete_xml_prefix
 
 
 DATABASE = Path.home() / 'Library/Application Support/VirtualDJ/database.xml'
@@ -96,7 +97,8 @@ class NativeRecordings:
             matches = 0
             try:
                 with self.database.open('rb') as stream:
-                    for _, song in ET.iterparse(_BoundedReader(stream), events=('end',)):
+                    xml = complete_xml_prefix(stream, MAX_DATABASE_BYTES)
+                    for _, song in ET.iterparse(_BoundedReader(xml), events=('end',)):
                         if song.tag != 'Song':
                             continue
                         locator = song.get('FilePath', '')

@@ -1,6 +1,5 @@
 """Read-only, identity-bound native analysis. Never reads streamed audio or auth."""
 import hashlib
-import io
 import json
 import math
 from pathlib import Path
@@ -9,6 +8,7 @@ import xml.etree.ElementTree as ET
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_catalog import identity
 from afterhours.audio_analysis import verified_energy
+from afterhours.native_database import complete_xml_prefix
 
 class NativeAnalysisUnsettled(BridgeError):
     """A confirmed, paused recording never exposed a stable native grid."""
@@ -20,24 +20,15 @@ class NativeAnalysisDatabaseUpdating(ValueError):
 
 DATABASE = Path.home() / 'Library/Application Support/VirtualDJ/database.xml'
 DATABASE_LIMIT = 128 * 1024 * 1024
-XML_TRAILING_PADDING = b'\x00 \t\r\n'
 
 
 def analysis_source(database):
-    """Ignore host NUL padding only beyond the closed native database root."""
+    """Handle native NUL padding and a torn closing-tag suffix after the root."""
     with database.open('rb') as source:
-        size = source.seek(0, 2)
-        if size > DATABASE_LIMIT:
+        if source.seek(0, 2) > DATABASE_LIMIT:
             raise ValueError('VirtualDJ analysis database exceeds the bounded reader size.')
-        source.seek(max(0, size - 256))
-        tail = source.read(256)
-        content = tail.rstrip(XML_TRAILING_PADDING)
-        if (b'\x00' in tail[len(content):] and content.endswith(b'</VirtualDJ_Database>')):
-            source.seek(0)
-            snapshot = source.read(size + 1)
-            if len(snapshot) == size and snapshot.endswith(tail):
-                return io.BytesIO(snapshot.rstrip(XML_TRAILING_PADDING))
-    return database
+        xml = complete_xml_prefix(source, DATABASE_LIMIT)
+        return database if xml is source else xml
 
 
 def finite(value, low=0, high=86400):

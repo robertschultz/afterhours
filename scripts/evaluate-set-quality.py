@@ -446,7 +446,25 @@ def read_observed_run(prefix):
         raise ValueError('The master capture does not match the native playback owner.')
     meter = next((row for row in reversed(master) if 'capturedAudioSeconds' in row), {})
     quiet = [row for row in master if row.get('event') == 'quiet-window']
-    quiet_during_blend = sum(any(first <= row['at'] <= last for first, last in blends) for row in quiet)
+    quiet_during_blend = measured_windows = 0
+    measured_blend_quiet = 0
+    for row in quiet:
+        end = number(row['at'], 'quiet window end')
+        duration = row.get('windowSeconds')
+        if duration is None:
+            quiet_during_blend += any(first <= end <= last for first, last in blends)
+            continue
+        duration = number(duration, 'quiet window duration', minimum=.001, maximum=end)
+        measured_windows += 1
+        start_of_window = end - duration
+        covered_until = start_of_window
+        for first, last in blends:
+            overlap_start = max(covered_until, first)
+            overlap_end = min(last, end)
+            if overlap_end > overlap_start:
+                measured_blend_quiet += overlap_end - overlap_start
+                covered_until = overlap_end
+        quiet_during_blend += covered_until > start_of_window
     last = browser[-1]
     elapsed = number(datetime.fromisoformat(last['at']).timestamp() - start, 'observed seconds')
     terminal = phase.get('phase') in ('completed', 'stopped', 'error', 'takeover')
@@ -484,6 +502,9 @@ def read_observed_run(prefix):
         'longestBelowMinus65Seconds':meter.get('longestBelowMinus65Seconds'),
         'quietWindowsDuringBlend':quiet_during_blend,
         'quietWindowsOutsideBlend':len(quiet)-quiet_during_blend,
+        'quietWindowsWithDuration':measured_windows,
+        'measuredQuietSecondsDuringBlend':round(measured_blend_quiet, 3)
+                                         if measured_windows else None,
         'listeningVerdict':None,
     }
 

@@ -35,6 +35,7 @@ def cadence_metrics(intervals, targets):
             'within5Seconds': sum(error <= 5 for error in values),
             'within10Seconds': sum(error <= 10 for error in values),
             'medianAbsoluteErrorSeconds': round(median(values), 3),
+            'worstAbsoluteErrorSeconds': round(max(values), 3),
             'p95AbsoluteErrorSeconds': round(quantiles(values, n=20, method='inclusive')[18], 3) if len(values) > 1 else None,
         }
         for target, values in sorted(errors.items())
@@ -427,6 +428,12 @@ def read_observed_run(prefix):
     terminal = phase.get('phase') in ('completed', 'stopped', 'error', 'takeover')
     if terminal and last['event'] != 'Endurance reached':
         elapsed = max(elapsed, number(phase['seconds'], 'terminal native observation'))
+    waiting = None
+    if (not terminal and last.get('phase') == 'playing' and last.get('index') == len(handoffs)):
+        current_elapsed = max(0, start + elapsed - entry)
+        requested = cadence[len(handoffs) % len(cadence)]
+        waiting = {'trackIndex':last['index'], 'elapsedSeconds':round(current_elapsed, 3),
+                   'targetSeconds':requested, 'pastTargetSeconds':round(max(0, current_elapsed-requested), 3)}
     verified = sum(row.get('verified') is True for row in handoffs)
     return {
         'trialId':prefix.name,
@@ -440,6 +447,7 @@ def read_observed_run(prefix):
         'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
+        'openEntryInterval':waiting,
         'upNextOverlay':observed_up_next(browser, start),
         'curatorialVariety':observed_curatorial_variety(handoffs),
         'genreTiming':observed_genre_timing(handoffs, intervals),

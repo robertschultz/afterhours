@@ -520,6 +520,25 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertNotIn(miss,ids)
         self.assertNotIn('analysisMissId',replacement)
 
+    def test_scan_failure_prefers_a_new_song_and_keeps_another_version_in_reserve(self):
+        for preferred_bpm, expected in ((125,'different'), (190,'other-version')):
+            with self.subTest(preferred_bpm=preferred_bpm):
+                session = DJSession(threading.Lock())
+                failed = {**track('failed'), 'title':'Fly Away', 'artist':'Producer'}
+                other_version = {**track('other-version'), 'title':'Fly Away (Full Vocal Version)', 'artist':'Producer'}
+                different = {**track('different', '11B', preferred_bpm), 'artist':'New Artist'}
+                session.update(candidates=[track('a'), track('b'), failed, other_version, different])
+                session.plan(['a','b'])
+                session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                               executionPlan={'id':'plan', 'applied':True, 'targetBpm':125})
+                session.revise_queue(['a','b','failed'], source='planner')
+                session.state['queuedUpdate'].update(status='blocked', rollingTrackId='failed', analysisMissId='failed')
+                roller = RollingQueue()
+                roller.advisor.advise = Mock(return_value=(None,False))
+                roller.tick(session, 25)
+                self.assertEqual(session.state['queuedUpdate']['rollingTrackId'], expected)
+                self.assertEqual([row['id'] for row in roller.advisor.advise.call_args.args[2]], ['different'])
+
     def test_timed_queue_prepares_explicit_opening_tail_in_order(self):
         self.session.plan(['a','b'])
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},

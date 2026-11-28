@@ -139,6 +139,8 @@ class RollingQueue:
         self.missed = set()
         self.live_matches = set()
         self.missed_titles = set()
+        self.failed_scan_songs = set()
+        self.scan_failure_index = None
         self.artist_expansion = None
 
     def tick(self, session, slack):
@@ -149,6 +151,9 @@ class RollingQueue:
                 return
             if slack < 4 or session.cancel.is_set():
                 return
+            if self.scan_failure_index != state['index']:
+                self.failed_scan_songs.clear()
+                self.scan_failure_index = state['index']
             pending = state.get('queuedUpdate') or {}
             omission = (state.get('lastQueueApplication') or {}).get('refillOmission') or {}
             if omission.get('trackId'):
@@ -163,6 +168,8 @@ class RollingQueue:
                     rejected = next((t for t in pending.get('tracks', []) if t['id'] == miss), None)
                     if rejected:
                         self.missed_titles.add(song_identity(rejected)[0])
+                        if miss == pending.get('analysisMissId'):
+                            self.failed_scan_songs.update(song_credit_keys(rejected))
                 session.update(queuedUpdate=None,rollingQueue={'status':'searching'})
                 session.event('The next candidate did not prepare. Looking for another recording.', 'queue')
                 pending={}
@@ -273,11 +280,13 @@ class RollingQueue:
                 ranked = {t['id']: t for t in candidates}
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
+            failed_songs = self.failed_scan_songs if not deferred else set()
             advised = receipt = None
             if not deferred and (timed_set or not quick):
                 repeat = repeated_artists(order)
-                diverse = [row for row in candidates if brings_new_artist(row, repeat)] if repeat else []
-                advised, waiting = self.advisor.advise(state,tail,diverse or candidates,facts,slack)
+                fresh = [row for row in candidates if not song_credit_keys(row) & failed_songs] or candidates
+                diverse = [row for row in fresh if brings_new_artist(row, repeat)] if repeat else []
+                advised, waiting = self.advisor.advise(state,tail,diverse or fresh,facts,slack)
                 if waiting:
                     return
                 if advised:
@@ -297,7 +306,10 @@ class RollingQueue:
                 # Favor a different credited artist when the last two tracks
                 # share one. Keep the ranked repeats in reserve if every
                 # alternative fails the native queue and tempo checks.
-                slot = next((i for i, row in enumerate(remaining) if brings_new_artist(row, repeat)), 0) if repeat else 0
+                slot = min(range(len(remaining)), key=lambda index: (
+                    bool(failed_songs & song_credit_keys(remaining[index])),
+                    bool(repeat and not brings_new_artist(remaining[index], repeat)),
+                )) if failed_songs or repeat else 0
                 track = remaining.pop(slot)
                 keys = song_credit_keys(track)
                 if keys & song_versions:

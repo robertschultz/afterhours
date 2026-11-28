@@ -71,7 +71,7 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             log('hour', [
                 {'event':'Typed timed opening requested','entryCadence':[30,60]},
                 {'event':'Endurance window','startedAt':1000},
-                {'event':'Endurance heartbeat','at':'1970-01-01T00:18:30+00:00'},
+                {'event':'Endurance heartbeat','at':'1970-01-01T00:19:25+00:00','index':2,'phase':'playing'},
             ])
             log('handoffs', [
                 {'kind':'native-handoff','verified':True,'synced':True,'at':1045,'blendSeconds':4,
@@ -90,7 +90,10 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             self.assertFalse(score['completeHour'])
             self.assertEqual(score['verifiedHandoffs'], 2)
             self.assertEqual(score['timingByTarget']['30']['missesOutside2Seconds']['readyAfterTarget'], 1)
+            self.assertEqual(score['timingByTarget']['30']['worstAbsoluteErrorSeconds'], 10)
             self.assertEqual(score['timingByTarget']['60']['within2Seconds'], 1)
+            self.assertEqual(score['openEntryInterval'], {'trackIndex':2,'elapsedSeconds':65,
+                                                         'targetSeconds':30,'pastTargetSeconds':35})
             self.assertEqual(score['quietWindowsDuringBlend'], 1)
             self.assertEqual(score['quietWindowsOutsideBlend'], 1)
             self.assertIsNone(score['listeningVerdict'])

@@ -3262,6 +3262,7 @@ class DJSession:
                 waiting_for_continuation=False
                 retried_mixer_window=False
                 stems_check_at=0
+                stem_upgrade_at=0
                 extended_tempo_window=False
                 while True:
                     # A near-boundary sample still reads identity, transport,
@@ -3319,6 +3320,13 @@ class DJSession:
                         # substitute cue, or implicit handoff when Hold expires.
                         self.sleep(.12)
                         continue
+                    if (self.mixer and not final and self.mixer.stems_upgrade_pending
+                            and goal-32 <= current['beatPosition'] < goal-16 and time.monotonic() >= stem_upgrade_at
+                            and t['decks'][incoming-1].get('id') == expected['id']):
+                        stem_upgrade_at = time.monotonic() + 2
+                        if self.mixer.upgrade_to_ready_stems(client):
+                            self.event(recipe['leadControlNote'], 'technique')
+                            continue
                     if (self.mixer and not final and self.mixer.lead_mode=='stems'
                             and current['beatPosition']>=goal-12
                             and (time.monotonic()>=stems_check_at or current['beatPosition']>=goal)):

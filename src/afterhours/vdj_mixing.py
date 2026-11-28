@@ -318,6 +318,7 @@ class TransitionMixer:
         self.incoming = None
         self.outgoing = None
         self.lead_mode = None
+        self.stems_upgrade_pending = False
         self.armed = None
         self.resume_controls = {}
 
@@ -444,6 +445,7 @@ class TransitionMixer:
             raise BridgeError('Incoming vocal/instrument controls changed; restore them before preparing a mix.')
         ready={d:self.stems_ready(client,d) for d in (outgoing,incoming)}
         self.lead_mode='stems' if all(ready.values()) else 'frequency-eq'
+        self.stems_upgrade_pending = self.lead_mode == 'frequency-eq'
         # Record the actual control path in the reusable session evidence.
         recipe.update(leadPolicy=LEAD_POLICY,tonalOverlap=False,leadControl=self.lead_mode,
                       leadControlNote=('Native vocal and instrument handoff; phrase boundaries remain unverified.'
@@ -456,6 +458,27 @@ class TransitionMixer:
         self.armed={outgoing:controls,incoming:actual}
         self.resume_controls.pop(outgoing,None)
         return actual
+
+    def upgrade_to_ready_stems(self, client):
+        """Change only the silent incoming channel after both cue positions are ready."""
+        if not self.stems_upgrade_pending:
+            return False
+        try:
+            if not all(self.stems_ready(client,deck) for deck in (self.outgoing,self.incoming)):
+                return False
+        except BridgeError:
+            return False  # Optional readbacks never authorize a stem change.
+        if (as_bool(self.q(client,f'deck {self.incoming} play','bool'))
+                or abs(value(self.q(client,'crossfader'))-deck_rotation.crossfader_end(self.outgoing))>.02):
+            raise MixerControlChanged('The incoming channel is no longer silent. No transition was started.')
+        self.validate_armed(client,check_stems=False)
+        self.armed[self.incoming]=self.set_controls(client,self.incoming,
+            {'eq_mid_freq':.5, **dict.fromkeys(LEAD_CONTROLS,0)})
+        self.stems_upgrade_pending = False
+        self.lead_mode = 'stems'
+        self.recipe.update(leadControl=self.lead_mode,
+            leadControlNote='Native vocal and instrument stems became ready before the handoff.')
+        return True
 
     def fallback_from_unready_stems(self, client):
         if self.lead_mode!='stems' or all(self.stems_ready(client,d) for d in (self.outgoing,self.incoming)):

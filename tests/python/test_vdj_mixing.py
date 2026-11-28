@@ -273,6 +273,36 @@ class MixerTests(unittest.TestCase):
         self.assertEqual(sum('afterhours_in_vocal' in script for script in sent),1)
         self.assertEqual(sum('afterhours_in_instru' in script for script in sent),1)
 
+    def test_late_stems_only_upgrade_the_silent_incoming_deck_once(self):
+        mixer, values, sent = self.mixer(stems=False)
+        recipe = transition_recipe(track(),track())
+        mixer.arm(None,1,2,recipe)
+        sent.clear()
+        values[1].update(stems=True,play=True)
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(sent,[])
+        values[2]['stems'] = True
+        self.assertTrue(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(recipe['leadControl'],'stems')
+        self.assertEqual(values[2]['eq_mid_freq'],.5)
+        self.assertEqual([values[2][name] for name in LEAD_CONTROLS],[0,0])
+        self.assertTrue(all('deck 1' not in command and 'play' not in command for command in sent))
+        values[2]['stems'] = False
+        self.assertTrue(mixer.fallback_from_unready_stems(None))
+        values[2]['stems'] = True
+        self.assertFalse(mixer.upgrade_to_ready_stems(None))
+        self.assertEqual(recipe['leadControl'],'frequency-eq')
+
+    def test_late_stems_cannot_change_an_incoming_channel_that_started(self):
+        mixer, values, sent = self.mixer(stems=False)
+        mixer.arm(None,1,2,transition_recipe(track(),track()))
+        sent.clear()
+        values[1].update(stems=True,play=True)
+        values[2].update(stems=True,play=True)
+        with self.assertRaisesRegex(BridgeError,'no longer silent'):
+            mixer.upgrade_to_ready_stems(None)
+        self.assertEqual(sent,[])
+
     def test_unavailable_stems_use_explicit_eq_guard_without_stem_mutation(self):
         m,v,sent=self.mixer(stems=False);recipe=transition_recipe(track(),track());m.arm(None,1,2,recipe);m.begin(None)
         self.assertEqual(recipe['leadControl'],'frequency-eq');self.assertEqual(v[2]['eq_mid_freq'],0)

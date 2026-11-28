@@ -490,6 +490,11 @@ class SessionTests(unittest.TestCase):
     def test_late_staged_handoff_can_start_inside_the_verified_outro(self):
         self.simulate_run(30,8,128,background=True,late_background='outro-bar')
 
+    def test_measured_set_promotes_late_stems_before_the_handoff(self):
+        result = self.simulate_run(30,8,128,control='stems-upgrade')
+        self.assertEqual(result['transitions'][0]['recipe']['leadControl'], 'stems')
+        self.assertEqual(sum('stems became ready before' in event['text'] for event in result['events']), 1)
+
     def test_measured_set_crossfades_on_time_when_stems_drop_before_play(self):
         self.simulate_run(30,8,128,control='stems-drop')
 
@@ -659,6 +664,8 @@ class SessionTests(unittest.TestCase):
             if key=='masterdeck':return master[0]==deck
             if key.startswith('cross_assign'):return key==("cross_assign 'left'" if deck%2 else "cross_assign 'right'")
             if key.startswith('has_stems'):
+                if control=='stems-upgrade' and s.state['index']==0 and deck==2:
+                    return decks[0]['beatPosition'] >= mix_at-24
                 return not (control=='stems-drop' and s.state['index']==0 and deck==2
                             and decks[0]['beatPosition']>=mix_at-9)
             if key=='get_beatpos':
@@ -810,6 +817,7 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(controls[deck]['stem Vocal'],.5)
             self.assertEqual(controls[deck]['stem Instru'],.5)
         self.assertTrue(all(t['mixerSamples'] for t in result['transitions']))
+        return result
 
     def test_prepare_refines_small_tempo_change_and_matches_after_seek(self):
         s=DJSession(threading.Lock());source={'id':'a','title':'Fixture','bpm':162.5,'camelot':'2A','engine':{'selection_id':'fixture'}}

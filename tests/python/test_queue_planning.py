@@ -231,6 +231,24 @@ class QueuePlanningTests(unittest.TestCase):
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(session.discover_more.call_args.args, (expected,))
 
+    def test_low_runway_searches_the_current_style_before_narrow_leads_once(self):
+        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'Deep House'}]
+        state = {'active':True, 'index':0, 'agentDirection':'Deep house'}
+        hints = [{'artist':'Related Artist', 'title':'Exact Release'}]
+        with patch('afterhours.rolling_queue.research_hints', return_value=hints), \
+             patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+            discovery.hints.return_value = []
+            discovery.neighbors.return_value = []
+            urgent, session = RollingQueue(), Mock()
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('deep house',))
+            session.catalog_job.set_rolling_seed.assert_called_once_with('', '')
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
+            regular = RollingQueue()
+            self.assertTrue(regular.search(session, state, order, 'deep house', True, lookahead=True))
+            self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
+
     def test_rolling_breaks_a_repeated_artist_run_without_risking_the_next_track(self):
         for alternate_bpm, selected in [(125,'x'),(190,'c')]:
             with self.subTest(alternate_bpm=alternate_bpm):

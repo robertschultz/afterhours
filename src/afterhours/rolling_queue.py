@@ -452,6 +452,11 @@ class RollingQueue:
         self.artist_expansion = None
         if avoid := repeated_artists(order) | heavily_played_credits(order):
             seeds.sort(key=lambda seed: repeats_artist_query(seed[0], avoid))
+        if (timed_set and not lookahead and style and state.get('active')
+                and 0 <= len(order) - state.get('index', -1) - 1 <= 1):
+            # Seek several compatible prospects in one pass when the buffer
+            # is nearly empty. Normal lookahead still follows exact leads.
+            seeds.insert(0, (style, '', ''))
         for term, artist, title in seeds:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:

@@ -211,6 +211,24 @@ class CrateSessionTests(unittest.TestCase):
         self.assertEqual(s.crate.summary()['count'], 150)
         self.assertEqual(s.snapshot()['order'], [])
 
+    def test_fresh_set_preserves_recorded_provider_restrictions_in_crate_reads(self):
+        session = self.session()
+        self.addCleanup(session.crate.close)
+        record = track(3, playback_verified=True)
+        track_id = record['id']
+        session.crate.upsert(record)
+        session.availability.record_preview_only(track_id, 'Fixture Music', 30,
+            {'source':'operator-confirmed', 'reference':'preview-proof', 'sha256':'a'*64})
+        self.assertFalse(session.crate.get(track_id)['playback_verified'])
+        first = session.snapshot()['id']
+        for _ in range(2):
+            fresh = session.new_set()
+            self.assertNotEqual(fresh['id'], first)
+            self.assertIs(session.crate.availability, session.availability)
+            self.assertFalse(session.crate.get(track_id)['playback_verified'])
+            self.assertEqual(fresh['recordingAvailability'][0]['code'], 'provider-preview-only')
+            first = fresh['id']
+
     def test_restore_seeds_archive_then_restart_keeps_unselected_records(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'crate.sqlite3'

@@ -243,7 +243,11 @@ class DJSession:
         self.crate = crate if crate is not None else RecordCrate()
         self.crate.availability = self.availability
         self.recordings = recordings if recordings is not None else RECORDINGS
-        self.state = {'id': uuid.uuid4().hex, 'phase': 'idle', 'active': False,
+        self.state = self.empty_set()
+
+    @staticmethod
+    def empty_set():
+        return {'id': uuid.uuid4().hex, 'phase': 'idle', 'active': False,
                       'message': 'Discover music to build a live set.', 'candidates': [],
                       'order': [], 'events': [], 'transitions': [], 'telemetry': None,
                       'index': -1, 'secondsPerTrack': track_seconds(), 'excerptBars': 16,
@@ -605,7 +609,7 @@ class DJSession:
             catalog=copy.deepcopy(self.state['candidates'])
             self.archive_call('boundary')
             cleanup={key:copy.deepcopy(self.state.get(key)) for key in ('resumeBlocked','cleanupPending')}
-            self.state=DJSession(self.control_lock,self.port,self.factory,crate=self.crate).state
+            self.state=self.empty_set()
             # Fresh set clears its order, not the operator's music collection.
             # Exact identities and saved searches still revalidate at load.
             self.state['candidates']=catalog

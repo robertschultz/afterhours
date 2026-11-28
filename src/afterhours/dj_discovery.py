@@ -14,6 +14,7 @@ from afterhours.paths import data_root
 DANCE = 'https://itunes.apple.com/us/rss/topsongs/limit=50/genre=17/json'
 LISTENBRAINZ = 'https://api.listenbrainz.org/1/'
 MUSICBRAINZ = 'https://musicbrainz.org/ws/2/artist'
+MUSICBRAINZ_RECORDINGS = 'https://musicbrainz.org/ws/2/recording'
 HOUSE_STYLES = ('house', 'deep house', 'tech house')
 MAX_AGE = 3 * 86400
 FEED_ERRORS = (OSError, URLError, ValueError, KeyError, TypeError, AttributeError)
@@ -95,6 +96,44 @@ def similar_artists(artist, fetch):
     return tuple(artists.values())[:8]
 
 
+def recording_house_tags(title, artist, duration, fetch):
+    def quoted(value):
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    query = f'recording:{quoted(title)} AND artist:{quoted(artist)}'
+    recordings = fetch(MUSICBRAINZ_RECORDINGS + '?' + urlencode({'query':query, 'fmt':'json', 'limit':12}))
+    expected_title, expected_credits = identity(title, artist)
+    exact = {}
+    for row in recordings.get('recordings', []):
+        if not isinstance(row, dict) or normalized(row.get('title')) != expected_title:
+            continue
+        credits = {normalized(person.get('name') or (person.get('artist') or {}).get('name'))
+                   for person in row.get('artist-credit', []) if isinstance(person, dict)}
+        length = row.get('length')
+        if (credits != set(expected_credits) or not re.fullmatch(r'[a-f0-9-]{36}', str(row.get('id')))
+                or duration is not None and (type(length) is not int or abs(length/1000-duration)>2)):
+            continue
+        exact[row['id']] = row
+    if len(exact) != 1:
+        return ()
+    tags = next(iter(exact.values())).get('tags') or []
+    return tuple(sorted({normalized(tag['name']) for tag in tags
+                         if isinstance(tag, dict) and type(tag.get('count')) is int and tag['count'] > 0
+                         and normalized(tag.get('name')) in HOUSE_STYLES}))
+
+
+def recording_lookup_key(track):
+    title, artist = track.get('title'), track.get('artist')
+    if (not isinstance(title, str) or not isinstance(artist, str) or not title.isprintable()
+            or not artist.isprintable() or len(title)>160 or len(artist)>120):
+        return None
+    key = identity(title, artist)
+    if not all(key):
+        return None
+    duration = track.get('duration')
+    return (*key, round(duration) if type(duration) in (int, float) and 0 < duration <= 86400 else None)
+
+
 def style_for(request):
     text = normalized(request)
     if re.search(r'\b(?:gospel|christian|ccm|worship)\b', text):
@@ -166,6 +205,8 @@ class Discovery:
         self.artist_lock = threading.Lock()
         self.artist_cache = {}
         self.artist_pending = {}
+        self.recording_pending = {}
+        self.recording_cache = {}
         self.artist_worker = None
         self.last_artist_lookup = -1.0
 
@@ -189,32 +230,61 @@ class Discovery:
     def read_artist_queue(self):
         while True:
             with self.artist_lock:
-                if self.stop.is_set() or not self.artist_pending:
+                if self.stop.is_set() or not (self.artist_pending or self.recording_pending):
                     self.artist_pending.clear()
+                    self.recording_pending.clear()
                     self.artist_worker = None
                     return
-                key = next(iter(self.artist_pending))
-                name = self.artist_pending[key]
+                artist_lookup = bool(self.artist_pending)
+                pending = self.artist_pending if artist_lookup else self.recording_pending
+                cache = self.artist_cache if artist_lookup else self.recording_cache
+                key = next(iter(pending))
+                search = pending[key]
             if self.stop.wait(max(0, 1.1 - (time.monotonic() - self.last_artist_lookup))):
                 continue
+            lookup = similar_artists if artist_lookup else recording_house_tags
+            arguments = (search,) if artist_lookup else search
             try:
                 self.last_artist_lookup = time.monotonic()
-                rows = similar_artists(name, self.fetch)
+                rows = lookup(*arguments, self.fetch)
             except HTTPError as exc:
                 rows = ()
-                if exc.code == 503 and not self.stop.wait(2):
+                if artist_lookup and exc.code == 503 and not self.stop.wait(2):
                     try:
                         self.last_artist_lookup = time.monotonic()
-                        rows = similar_artists(name, self.fetch)
+                        rows = lookup(*arguments, self.fetch)
                     except FEED_ERRORS:
                         pass
             except FEED_ERRORS:
                 rows = ()
             with self.artist_lock:
-                self.artist_pending.pop(key, None)
-                self.artist_cache[key] = (self.clock() + (21600 if rows else 600), rows)
-                if len(self.artist_cache) > 128:
-                    self.artist_cache.pop(next(iter(self.artist_cache)))
+                pending.pop(key, None)
+                cache[key] = (self.clock() + (21600 if rows else 600), rows)
+                if len(cache) > 128:
+                    cache.pop(next(iter(cache)))
+
+    def request_house_tag_checks(self, tracks):
+        with self.artist_lock:
+            if self.stop.is_set():
+                return
+            for track in tracks:
+                if len(self.recording_pending) >= 4:
+                    break
+                key = recording_lookup_key(track)
+                if key and key not in self.recording_pending:
+                    cached = self.recording_cache.get(key)
+                    if not cached or self.clock() >= cached[0]:
+                        self.recording_pending[key] = (track['title'], track['artist'], key[-1])
+            if self.recording_pending and self.artist_worker is None:
+                self.artist_worker = threading.Thread(target=self.read_artist_queue,
+                                                      name='afterhours-public-music-metadata', daemon=True)
+                self.artist_worker.start()
+
+    def has_recording_house_tag(self, track):
+        key = recording_lookup_key(track)
+        with self.artist_lock:
+            cached = self.recording_cache.get(key)
+            return bool(cached and self.clock() < cached[0] and cached[1])
 
 
     def refresh(self):

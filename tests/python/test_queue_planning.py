@@ -151,6 +151,9 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertTrue(accepts(row), row)
         self.assertFalse(accepts(unrelated))
         self.assertFalse(accepts({**unrelated, 'artist':'Catalog Guest', 'title':'Exact cut (Remix)'}))
+        discovery.recording_cache[dj_discovery.recording_lookup_key(unrelated)] = (200, ('house',))
+        self.assertTrue(accepts(unrelated))
+        self.assertFalse(accepts({**unrelated, 'title':'One broad cut (Edit)'}))
 
     @patch('afterhours.rolling_queue.DISCOVERY.neighbors', return_value=())
     def test_named_artist_refill_rejects_electronic_cache_but_can_broaden_to_related_music(self, _):

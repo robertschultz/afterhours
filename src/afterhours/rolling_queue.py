@@ -73,8 +73,21 @@ def automatic_style_filter(style, order, catalog, discovery=None):
         actual = style_for(track.get('genre'))
         return (actual not in ('', 'dance', 'electronic')
                 or identity(track.get('title'), track.get('artist')) in recordings
-                or bool(credit(track.get('artist')) & established))
+                or bool(credit(track.get('artist')) & established)
+                or discovery.has_recording_house_tag(track))
     return compatible
+
+
+def request_missing_house_evidence(style, eligible, unresolved, target_bpm, max_pitch):
+    if style not in HOUSE_STYLES or len(eligible) >= 3:
+        return
+    candidates = [track for track in unresolved
+                  if (track.get('catalog') or {}).get('provider')
+                  and fits_style(track, style)
+                  and style_for(track.get('genre')) in ('', 'dance', 'electronic')
+                  and abs(target_bpm / track['bpm'] - 1) * 100 <= max_pitch]
+    candidates.sort(key=lambda track: abs(target_bpm - track['bpm']))
+    DISCOVERY.request_house_tag_checks(candidates[:12])
 
 
 def base_song_title(track):
@@ -221,9 +234,15 @@ class RollingQueue:
                           and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
                           and not song_credit_keys(track).intersection(song_versions)
-                          and matches_style(track)
+                          and fits_style(track, style, order[0])
                           and finite(track.get('bpm')) and track['bpm'] > 0]
+            eligible, unresolved = [], []
+            for track in candidates:
+                (eligible if matches_style(track) else unresolved).append(track)
+            candidates = eligible
             upcoming = len(order) - state['index'] - 1
+            if upcoming <= 4:
+                request_missing_house_evidence(style, candidates, unresolved, tail['bpm'], state.get('maxTempoShift', 8))
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.
             urgent_refill = upcoming <= 2 and bool(candidates)

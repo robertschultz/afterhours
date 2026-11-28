@@ -37,6 +37,38 @@ class DiscoveryTests(unittest.TestCase):
         ambiguous = {'artists': artists['artists'] + [{'id':'another', 'name':'Fleetwood Mac'}]}
         self.assertEqual(dj_discovery.similar_artists('Fleetwood Mac', lambda _:ambiguous), ())
 
+    def test_public_recording_tag_requires_exact_credit_title_and_version(self):
+        first = {'id':'a'*36, 'title':'Part of the Night', 'length':243000,
+                 'artist-credit':[{'name':'Alex'}, {'name':'Sam'}],
+                 'tags':[{'name':'Deep house', 'count':3}, {'name':'House','count':0}]}
+        alternate = {**first, 'id':'b'*36, 'length':180000}
+        near_artist = {**first, 'id':'c'*36, 'artist-credit':[{'name':'Alexandria'}, {'name':'Sam'}]}
+        remix = {**first, 'id':'d'*36, 'title':'Part of the Night (Remix)'}
+        payload = {'recordings':[first, alternate, near_artist, remix]}
+        resolve = dj_discovery.recording_house_tags
+        self.assertEqual(resolve(first['title'], 'Alex & Sam', 243, lambda _:payload), ('deep house',))
+        self.assertEqual(resolve(first['title'], 'Alex & Sam', None, lambda _:payload), ())
+        self.assertEqual(resolve(first['title'], 'Alex', 243, lambda _:payload), ())
+
+    def test_verified_public_recording_tags_are_cached_for_the_exact_duration(self):
+        track = {'title':'Cut','artist':'Alex','duration':220}
+        calls = []
+        def fetch(url):
+            calls.append(url)
+            return {'recordings':[{'id':'a'*36, 'title':'Cut', 'length':220000,
+                                    'artist-credit':[{'name':'Alex'}], 'tags':[{'name':'house','count':1}]}]}
+
+        discovery = dj_discovery.Discovery(fetch=fetch)
+        discovery.request_house_tag_checks([track])
+        worker = discovery.artist_worker
+        if worker:
+            worker.join(2)
+        self.assertTrue(discovery.has_recording_house_tag(track))
+        self.assertFalse(discovery.has_recording_house_tag({**track,'duration':183}))
+        discovery.request_house_tag_checks([track])
+        self.assertIsNone(discovery.artist_worker)
+        self.assertEqual(len(calls), 1)
+
     def test_non_house_genres_keep_their_own_ranking(self):
         self.assertEqual(dj_discovery.style_for('Play Christian pop'), 'gospel')
         self.assertEqual(dj_discovery.style_for('Classic Rock'), 'rock')

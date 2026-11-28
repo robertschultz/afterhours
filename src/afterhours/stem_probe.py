@@ -86,9 +86,15 @@ def prepare(session, ids):
         native = client.status()
         if native.get('automix') or any(row.get('playing') for row in native['decks']):
             raise BridgeError('Pause the program decks and turn off Automix before stem measurement.')
+        # Native status reports A/B only. C and D can also hold external playback.
+        spare_decks = tuple(deck for deck in session.preparation_decks() if deck in (3,4))
+        if not spare_decks or float(client.query('get_decks')) < 4:
+            raise BridgeError('No empty isolated spare deck is available for stem measurement.')
+        if any(as_bool(client.query(f'deck {deck} play','bool')) for deck in (3,4)):
+            raise BridgeError('Pause decks C and D before stem measurement.')
         session.verify_preparation_quarantine(client)
-        spare = next((deck for deck in session.preparation_decks() if deck in (3,4)
-                      and not as_bool(client.query(f'deck {deck} loaded','bool'))),None)
+        spare = next((deck for deck in spare_decks
+                      if not as_bool(client.query(f'deck {deck} loaded','bool'))),None)
         if spare is None:
             raise BridgeError('No empty isolated spare deck is available for stem measurement.')
         results = []
@@ -134,7 +140,8 @@ def prepare(session, ids):
                     raise
             if rows:
                 save(track_id,rows)
-            results.append({'trackId':track_id,'windowCount':len(rows)})
+            measured = [{key: row[key] for key in ('role', 'startSeconds', 'durationSeconds')} for row in rows]
+            results.append({'trackId':track_id,'windowCount':len(measured),'measuredWindows':measured})
         session.update(phase=s['phase'],stemAnalysis={'status':'complete','tracks':results},
                        message=f'Inspected {len(results)} recordings for timed stem evidence. Program decks remain paused.')
 

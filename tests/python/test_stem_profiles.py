@@ -73,6 +73,23 @@ class StemWindowTests(unittest.TestCase):
             stem_probe.prepare(session,[OUT,IN])
         session._launch.assert_not_called()
 
+    def test_preparation_refuses_external_playback_on_spare_deck(self):
+        session = Mock()
+        session.snapshot.return_value = {
+            'id':'set', 'active':False, 'order':[{'id':OUT}], 'analysis':{'tracks':[]},
+            'executionPlan':{'id':'plan', 'applied':True, 'selections':[{'trackId':OUT}]},
+        }
+        session.preparation_decks.return_value = (4,)
+        client = Mock()
+        client.status.return_value = {'automix':False, 'decks':[{'playing':False}, {'playing':False}]}
+        client.query.side_effect = lambda command, *args: {'get_decks':4, 'deck 3 play':True}[command]
+        session._launch.side_effect = lambda work, *args, **kwargs: work(client)
+        with patch('afterhours.cue_planner.verify_receipts'), self.assertRaisesRegex(
+                stem_probe.BridgeError, 'Pause decks C and D'):
+            stem_probe.prepare(session,[OUT])
+        client.send.assert_not_called()
+        session.load.assert_not_called()
+
     def test_probe_samples_only_the_isolated_recording_and_confirms_pause(self):
         recording = 'netsearch://bp123789'
         commands = []

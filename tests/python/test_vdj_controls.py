@@ -189,6 +189,21 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(s.observe_once());self.assertEqual(s.snapshot()['telemetry'],previous)
         self.assertFalse(s.control_lock.locked());self.assertFalse(s.observing)
         self.assertEqual(p.sent,[])
+    def test_transition_clock_defers_only_optional_console_reads(self):
+        p = Peer()
+        session = DJSession(threading.Lock())
+        ordinary = session.telemetry(p)
+        with (patch('afterhours.vdj_controls.bounded_controls') as slow,
+              patch('afterhours.vdj_controls.live_controls') as live):
+            for phase, clock_only in (('playing', True), ('mixing', False)):
+                session.update(phase=phase)
+                result = session.telemetry(p, clock_only=clock_only)
+                for before, after in zip(ordinary['decks'], result['decks']):
+                    for field in ('id', 'beatPosition', 'playing', 'bpm', 'level'):
+                        self.assertEqual(before[field], after[field])
+            slow.assert_not_called()
+            live.assert_not_called()
+
     def test_session_requires_takeover_and_releases_lock(self):
         p=Peer();s=DJSession(threading.Lock(),client_factory=lambda *a,**k:p)
         with self.assertRaisesRegex(ValueError,'Take over'):s.console_control(payload(p,'play'))

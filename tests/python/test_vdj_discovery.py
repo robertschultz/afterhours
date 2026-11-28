@@ -12,6 +12,32 @@ from afterhours import cue_planner
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_algorhythm_search_only_keeps_the_matching_native_recording(self):
+        session = DJSession(threading.Lock())
+        now = [0.0]
+        job = CatalogSearch(session, ['Artist Song'], '', '', 110, 130, clock=lambda: now[0])
+        job.set_rolling_seed('Artist', 'Song', version='Extended Mix', exact_credits=True,
+                             linked_provider_reference=('apple-music', '20'))
+        base = {'title': 'Song', 'artist': 'Artist', 'remix': 'Extended Mix', 'bpm': 122}
+        variants = [
+            {'catalog': {'provider': 'apple-music', 'track_id': '10'}},
+            {'catalog': {'provider': 'apple-music', 'track_id': '20'}, 'artist': 'Artist & Other'},
+            {'catalog': {'provider': 'apple-music', 'track_id': '20'}, 'remix': 'Radio Edit'},
+            {'catalog': {'provider': 'apple-music', 'track_id': '20'}},
+        ]
+        rows = [{'id': str(i), 'artist': variant.get('artist', 'Artist'),
+                 'metadata': {**base, **variant, 'id': str(i)}} for i, variant in enumerate(variants)]
+        with (patch('afterhours.vdj_discovery.folder_state', return_value={'id': 'folder'}),
+              patch('afterhours.vdj_discovery.selection', side_effect=rows),
+              patch.object(session, 'send')):
+            job.step(None)
+            now[0] = 2.0
+            job.step(None)
+            for _ in rows:
+                job.step(None)
+        self.assertEqual(job.seen, {'3'})
+        self.assertEqual(session.snapshot()['order'], [])
+
     def test_paused_search_refreshes_deck_observation_without_transport(self):
         s=DJSession(threading.Lock());s.update(order=[{'id':'keep'}],telemetry={'sampledAt':0})
         job=Mock();job.done=False

@@ -35,6 +35,62 @@ class SessionTests(unittest.TestCase):
         self.assertIn('fail_once', logs.output[0])
         self.assertNotIn('fixture private request', logs.output[0])
 
+    def test_spare_deck_cue_is_rechecked_at_all_measured_timestamps(self):
+        session = DJSession(threading.Lock())
+        cue = {'id':'cue', 'anchorBeat':0, 'entryBeat':16, 'exitBeat':80, 'endBeat':112,
+               'entrySeconds':20, 'introEndSeconds':36, 'exitSeconds':52, 'endSeconds':68,
+               'maxBlendBeats':32, 'recordingDuration':100, 'replayVerified':True}
+        track = {'engine':{'selection_id':identity('exact')}}
+        client = Mock()
+        position = 0
+
+        def seek(command):
+            nonlocal position
+            position = float(command.split()[-1].removesuffix('%'))
+
+        def query(command, kind=None):
+            match command.split(' ',2)[-1]:
+                case 'play': return False
+                case 'get_filepath': return 'exact'
+                case 'get_time elapsed absolute': return position * 1000
+                case 'get_beatpos': return 16 + (position - 20) * 2 + 24
+            raise AssertionError(command)
+
+        client.send.side_effect = seek
+        client.query.side_effect = query
+        with patch.object(session,'wait_observed'):
+            verified, = session.recheck_cue_grid(client,2,track,{'cueCandidates':[cue]},24)
+            self.assertEqual(client.send.call_count,4)
+            self.assertEqual((verified['entryBeat'],verified['exitBeat'],verified['endBeat']),(40,104,136))
+            self.assertEqual(verified['entrySeconds'],20)
+            self.assertEqual(cue['entryBeat'],16)
+            client.query.side_effect = lambda command, kind=None: (
+                110 if command.endswith('get_beatpos') and position==52 else query(command,kind))
+            self.assertEqual(session.recheck_cue_grid(client,2,track,{'cueCandidates':[cue]},24),[])
+
+    def test_key_change_keeps_exact_preparation_but_invalidates_partial_fit(self):
+        session = DJSession(threading.Lock())
+        current, cued, upcoming = tracks()
+        session.state['queuedUpdate'] = {
+            'id':'refill', 'status':'ready', 'tracks':[current,cued,upcoming],
+            'partialTracks':[current,cued], 'partialPrepared':{'oldKey':True},
+            'prepared':{'oldKey':True},
+        }
+        job = Mock(revision='refill')
+        session.background_job = job
+
+        session.refresh_preparing_queue([current, {**cued,'camelot':'2A'}])
+
+        queue = session.state['queuedUpdate']
+        self.assertIs(session.background_job, job)
+        self.assertEqual(queue['id'], 'refill')
+        self.assertEqual(queue['status'], 'analyzing')
+        self.assertEqual(queue['tracks'][1]['camelot'], '2A')
+        self.assertEqual(queue['tracks'][2], upcoming)
+        self.assertIsNone(queue['prepared'])
+        self.assertNotIn('partialTracks', queue)
+        self.assertNotIn('partialPrepared', queue)
+
     def test_control_state_is_a_small_isolated_cache_read(self):
         s=DJSession(threading.Lock())
         telemetry={'sampledAt':123,'crossfader':.25,'decks':[{'deck':1,'playing':False,'controls':{'volume':.8}}]}

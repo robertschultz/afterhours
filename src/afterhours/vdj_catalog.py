@@ -24,13 +24,29 @@ def text_value(value):
     return value
 
 
+def _reserved_search_character(c):
+    return ord(c) < 32 or ord(c) == 127 or c in '\"`/\\*?[]{}#'
+
+
+def catalog_keywords(*values):
+    # Provider credits and titles are metadata. Keep the original display
+    # strings and derive a separate bounded query for an exact-ID lookup.
+    for value in values:
+        if isinstance(value, str):
+            clean = ''.join(' ' if _reserved_search_character(c) else c for c in value)
+            query = ' '.join(clean.split())[:160].rstrip()
+            if query:
+                return query
+    return None
+
+
 def search_literal(value):
     if not isinstance(value, str) or not value.strip() or len(value) > 160:
         raise ValueError("Search needs 1 to 160 characters")
     # OSC's documented transport replaces spaces with slashes. Literal slashes
     # cannot round-trip. Quotes/backticks/control chars must not become script.
     # Limit address-pattern characters too; preserve normal Unicode artist names.
-    if any(ord(c) < 32 or ord(c) == 127 or c in '\"`/\\*?[]{}#' for c in value):
+    if any(_reserved_search_character(c) for c in value):
         raise ValueError("Use search keywords without quotes, slashes, backticks or wildcard characters")
     value = " ".join(value.split())
     return '"' + value + '"'

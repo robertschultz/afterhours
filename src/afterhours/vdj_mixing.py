@@ -390,8 +390,11 @@ class TransitionMixer:
     def tick(self, client, beats):
         # Never compress missed steps into an uncontrolled burst.
         length=self.recipe['fadeBeats']
+        # A two-beat treble ramp on an eight-beat mix needs time to
+        # settle before the crossfade ends, including native dispatch lag.
+        high_at=length*5/8 if length==8 else length*3/4
         steps=[(length/4,'out_low'),(length/4,'out_lead'),(length*3/8,'in_low'),
-               (length/2,'in_lead'),(length*3/4,'out_high')]
+               (length/2,'in_lead'),(high_at,'out_high')]
         # Incoming bass depends on the *observed completion* of outgoing bass.
         # Native short ramps can settle after their nominal one-beat duration.
         # Allow a bounded extra window for that dependency, still leaving time

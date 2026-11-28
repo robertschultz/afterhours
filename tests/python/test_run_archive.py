@@ -201,6 +201,25 @@ class ArchiveTests(unittest.TestCase):
                 self.assertEqual((root/(second+'.json')).read_bytes(),second_bytes);n.assert_not_called()
             finally:release.set()
 
+    def test_recent_openings_survive_restart_and_exclude_unplayed_queue_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            clock, archive, session, peer = self.make(root)
+            first, second, unplayed = [row['id'] for row in records()[:3]]
+            for opener in (first, second):
+                emit(session, clock, a_id=opener)
+                clock.advance(2)
+                emit(session, clock, a_id=opener, a=False, phase='stopped', active=False)
+                self.finish(archive)
+                clock.advance(1)
+            self.assertEqual(archive.recent_opening_ids(), {first, second})
+            archive.close()
+            recovered = RunArchive(root)
+            self.addCleanup(recovered.close)
+            self.assertEqual(recovered.recent_opening_ids(), {first, second})
+            self.assertNotIn(unplayed, recovered.recent_opening_ids())
+            peer.assert_not_called()
+
     def test_stale_finalized_journal_cannot_regress_latest_but_incomplete_pointer_commit_recovers(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);c,a,s,n=self.make(root)

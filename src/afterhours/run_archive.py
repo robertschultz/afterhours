@@ -72,12 +72,14 @@ class RunArchive:
         self.active=None;self.pending=None;self.finalizing=[];self.busy=False;self.closed=False
         self.last_checkpoint=0;self.summary=None;self.cache={};self.error=None
         self.sequence=0;self.last_ordinal=-1
+        self.recent_runs = []
         if self.path:
             if self.path.is_symlink():raise ValueError('The recap directory must be a regular local directory.')
             self.path.mkdir(parents=True,exist_ok=True)
             # Ordinary startup reads one pointer. The bounded legacy fallback
             # neither scans the growing music crate nor opens every old recap.
             files=[]
+            pointer = {}
             try:
                 pointer=self._read(self.path/'latest.json')
                 if ID.fullmatch(str(pointer.get('id',''))):files=[self.path/(pointer['id']+'.json')]
@@ -91,6 +93,11 @@ class RunArchive:
                     if record.get('version')==1 and record.get('id')==file.stem:
                         self._validate(record)
                         self.summary=self._summary(record);self.cache[record['id']]=record
+                        recent = pointer.get('recent') if pointer.get('id') == record['id'] else None
+                        if isinstance(recent, list):
+                            self.recent_runs = [item for item in recent[:5]
+                                                if isinstance(item, str) and ID.fullmatch(item)]
+                        self.recent_runs = list(dict.fromkeys([record['id'], *self.recent_runs]))[:5]
                         self.last_ordinal=record.get('archiveOrdinal',0);self.sequence=self.last_ordinal;break
                 except (OSError,ValueError,TypeError,KeyError):continue
             journal=self.path/'active.json'
@@ -360,7 +367,8 @@ class RunArchive:
                         # crash. Persisting it again must not move Last night
                         # behind a newer run, even if the wall clock changed.
                         if record.get('archiveOrdinal',0)>self.last_ordinal:
-                            self._write(self.path/'latest.json',{'id':record['id']})
+                            recent = [record['id'], *self.recent_runs][:5]
+                            self._write(self.path/'latest.json',{'id':record['id'],'recent':recent})
                         journal=self.path/'active.json'
                         if journal.exists() and self._read(journal).get('id')==record['id']:journal.unlink()
                     with self.condition:
@@ -368,6 +376,7 @@ class RunArchive:
                         while len(self.cache)>8:self.cache.pop(next(iter(self.cache)))
                         if record.get('archiveOrdinal',0)>self.last_ordinal:
                             self.summary=self._summary(record);self.last_ordinal=record.get('archiveOrdinal',0)
+                            self.recent_runs = [record['id'], *self.recent_runs][:5]
                         self.error=None
                 elif self.path:self._write(self.path/'active.json',pending)
             except (OSError,ValueError,TypeError,KeyError):
@@ -386,6 +395,20 @@ class RunArchive:
 
     def latest(self,settings_revision=0):
         with self.lock:return {**copy.deepcopy(self.summary),'settingsRevision':settings_revision} if self.summary else None
+
+    def recent_opening_ids(self):
+        """Verified recordings from at most the first two played intervals of five runs."""
+        with self.lock:
+            identifiers = tuple(self.recent_runs)
+        openings = set()
+        for identifier in identifiers:
+            try:
+                record = self.get(identifier)
+            except (OSError, ValueError):
+                continue
+            openings.update(row['id'] for row in sorted(record['played'], key=lambda row: row['start'])[:2]
+                            if row['end'] > row['start'])
+        return openings
 
     def get(self,identifier):
         if not isinstance(identifier,str) or not ID.fullmatch(identifier):raise ValueError('Choose an exact archived run.')

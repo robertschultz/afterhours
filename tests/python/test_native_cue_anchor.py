@@ -3,6 +3,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from afterhours import cue_planner
 from afterhours.dj_bridge import BridgeError
 from test_cue_planner import fixture
 from afterhours.vdj_catalog import identity
@@ -69,13 +70,14 @@ class PausedGridPeer:
 
 
 class NativeCueAnchorTests(unittest.TestCase):
-    def measure(self, peer, seconds=30, *, timed=False):
+    def measure(self, peer, seconds=30, *, timed=False, alternate_seconds=None):
         rows, report, _ = fixture(count=1)
         report['tracks'][0]['duration'] = peer.duration
         track = {**report['tracks'][0], 'engine': {'selection_id': identity(peer.locator)}}
         session = DJSession(threading.Lock())
         with patch('afterhours.cue_planner.measured_rows', return_value=rows), patch.object(session, 'sleep'):
-            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3, timed=timed)
+            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3, timed=timed,
+                                        alternate_seconds=alternate_seconds)
 
     def test_negative_native_anchor_keeps_actual_grid_and_all_cues_in_audio(self):
         peer = PausedGridPeer()
@@ -119,6 +121,27 @@ class NativeCueAnchorTests(unittest.TestCase):
         self.assertTrue(peer.commands[1].endswith('%'))
         self.assertTrue(any(command.startswith('deck 3 goto +') for command in peer.commands))
         self.assertTrue(all(cue['replayVerified'] for cue in result))
+
+    def test_sparse_long_measurement_retains_verified_shorter_recovery_cues(self):
+        propose = cue_planner.propose_offsets
+        for short_positions in (True, False):
+            with self.subTest(short_positions=short_positions):
+                peer = PausedGridPeer(anchor=.25)
+                def sparse(*args, **kwargs):
+                    policy = propose(*args, **kwargs)
+                    if kwargs['span_beats'] == 128:
+                        policy['offsets'] = [512]
+                    elif not short_positions:
+                        policy['offsets'] = []
+                    return policy
+
+                with patch('afterhours.cue_planner.propose_offsets', side_effect=sparse) as probes:
+                    cues = self.measure(peer, seconds=60, timed=True, alternate_seconds=30)
+                self.assertEqual([call.kwargs['limit'] for call in probes.call_args_list], [10, 3])
+                self.assertEqual(cues[0]['spanBeats'], 128)
+                self.assertEqual([cue['spanBeats'] for cue in cues[1:]], [64]*3 if short_positions else [])
+                self.assertTrue(all(cue['replayVerified'] for cue in cues))
+                self.assertTrue(all(command.startswith('deck 3 goto') for command in peer.commands))
 
     def test_short_recording_uses_replay_verified_shorter_phrase(self):
         peer = PausedGridPeer(anchor=.25, duration=123)

@@ -269,6 +269,25 @@ class BackgroundTests(unittest.TestCase):
     def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
         self.verify_refill_audio_without_display_waveform(timed=False)
 
+    def test_second_timed_refill_pick_can_prepare_for_a_shorter_slot(self):
+        first = {'id':'virtualdj:'+'a'*64, 'title':'First', 'bpm':125}
+        second = {'id':'virtualdj:'+'b'*64, 'title':'Second', 'bpm':125,
+                  'engine':{'selection_id':'b'*64}}
+        evidence = {'duration':180, 'energyMap':{'reportDigest':'fresh'}}
+        session = DJSession(threading.Lock())
+        session.update(secondsPerTrack=60, entryCadence=[30,60], order=[],
+                       queuedUpdate={'id':'revision','tracks':[first,second],
+                                     'rollingTrackIds':[first['id'],second['id']]})
+        job = BackgroundAnalysis(session, 'revision', [second])
+        with patch.object(DJSession,'analyze_deck',return_value=second), \
+             patch.object(DJSession,'automatic_refill_tempo_miss',return_value=None), \
+             patch.object(DJSession,'measure_cues',return_value=[{'replayVerified':True}]) as cues, \
+             patch.object(job,'read_evidence',return_value=evidence), \
+             patch('afterhours.verified_cues.VerifiedCues.write'):
+            job.run()
+        self.assertEqual(cues.call_args.args[4], 60)
+        self.assertEqual(cues.call_args.kwargs['alternate_seconds'], 30)
+
     def verify_refill_audio_without_display_waveform(self,timed):
         track = {'id':'virtualdj:'+'a'*64,'title':'Test','bpm':125,'engine':{'selection_id':'a'*64}}
         cold = {'duration':10,'points':[{'label':'realEnd','seconds':9.8}]}

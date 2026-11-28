@@ -564,6 +564,13 @@ class BackgroundAnalysis:
                         scan_waveform(client,checked,evidence,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
                 self.message='Verifying mix cues · '+track['title']
                 timed_option = {'timed': True} if timed else {}
+                staged = s.get('queuedUpdate') or {}
+                batch = staged.get('rollingTrackIds') or []
+                if (timed and staged.get('id') == self.revision and len(batch) == 2
+                        and track['id'] == batch[1]):
+                    prior_seconds = preparation_seconds(s, self.revision, batch[0])
+                    if prior_seconds < seconds:
+                        timed_option['alternate_seconds'] = prior_seconds
                 evidence['cueCandidates']=helper.measure_cues(client,checked,evidence,checked['bpm'],seconds,
                                                               deck=self.deck,isolated=True,**timed_option)
                 evidence['preparationSeconds']=seconds

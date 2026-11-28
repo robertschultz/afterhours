@@ -1648,8 +1648,10 @@ class DJSession:
             quarantine = self.quarantined_preparation_decks()
             retained = state.get('cleanupPending') or {}
             descriptors = retained.get('analysis', [])
+            previous = self.late_spare_attempt
+            previous_owner = previous[2] if previous and previous[0] == state['id'] else None
             row = next((item for item in descriptors if item['deck'] in quarantine
-                        and item['loadPending'] and item['selectionId']), None)
+                        and item['selectionId'] and (item['loadPending'] or item['ownerId'] == previous_owner)), None)
             if row is None:
                 return False
             attempt = (state['id'], state['index'], row['ownerId'])
@@ -1672,10 +1674,13 @@ class DJSession:
                     return client.send(script)
 
             try:
-                cleanup_analysis_deck(BoundedSpare(), row)
+                if row['unloadRequested']:
+                    recover_unloaded_spare(client, row, check)
+                else:
+                    cleanup_analysis_deck(BoundedSpare(), row)
             except (BridgeError, OSError, ValueError):
-                # The cleanup helper advances retained request flags before writes.
-                # Keep that exact ownership state for explicit stopped recovery.
+                # The helper records writes before dispatch. A later playing
+                # window can read them back without replaying either write.
                 return True
             remaining = [item for item in descriptors if item is not row]
             self.update(resumeBlocked=bool(remaining),

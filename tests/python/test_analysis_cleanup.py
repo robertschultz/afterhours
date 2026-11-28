@@ -256,6 +256,39 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual(p.values['deck 3 volume'], 1)
         self.assertTrue(all(command.startswith('deck 3 ') for command in p.commands))
 
+    def test_live_late_load_resumes_readbacks_without_replaying_cleanup_writes(self):
+        for interruption in ('unload', 'restore'):
+            with self.subTest(interruption=interruption):
+                s, peer, job = self.owned()
+                job.loaded = None
+                job.requested_load = identity('test')
+                peer.values['deck 1 play'] = True
+                s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+                s.remember_cleanup_failure('background', job)
+                native_send = peer.send
+                def send(command):
+                    native_send(command)
+                    if interruption == 'unload' and command.endswith('deck 3 unload'):
+                        peer.fail_query = 'get_decks'
+                peer.send = send
+                peer.fail_after_restore = interruption == 'restore'
+
+                self.assertTrue(s.service_late_spare_load(peer, 30))
+                retained = s.state['cleanupPending']['analysis'][0]
+                self.assertFalse(retained['loadPending'])
+                self.assertTrue(retained['unloadRequested'])
+                self.assertEqual(retained['restoreRequested'], interruption == 'restore')
+                self.assertFalse(s.service_late_spare_load(peer, 30))
+
+                s.update(index=1)
+                self.assertTrue(s.service_late_spare_load(peer, 30))
+                self.assertFalse(s.state['resumeBlocked'])
+                self.assertEqual(peer.values['deck 3 volume'], 1)
+                self.assertTrue(peer.values['deck 1 play'])
+                self.assertEqual(sum('deck 3 unload' in command for command in peer.commands), 1)
+                self.assertEqual(sum('deck 3 volume 100.' in command for command in peer.commands), 1)
+                self.assertTrue(all(command.startswith('deck 3 ') for command in peer.commands))
+
     def test_pool_keeps_only_failed_children_and_reports_the_actual_deck(self):
         s,p,c=self.owned();_,_,d=self.owned(4,p,s)
         pool=PreparationPool(s,'rev',[]);pool.jobs=[c,d]

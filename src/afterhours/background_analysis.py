@@ -159,10 +159,10 @@ def restore_empty_spare_controls(client, descriptor):
 
 
 def recover_unloaded_spare(client, descriptor, check, verify_deck_c=False):
-    """Confirm the dispatched unload, then restore controls once on empty Deck D."""
+    """Verify an owned spare unload and restore its baseline at most once."""
     row = cleanup_descriptor(descriptor)
-    if (row['deck'] != 4 or row['loadPending'] or not row['selectionId']
-            or not row['unloadRequested'] or row['restoreRequested']):
+    if (row['deck'] not in (3, 4) or row['loadPending'] or not row['selectionId']
+            or not row['unloadRequested']):
         raise BridgeError('The spare cleanup stage could not be verified.')
 
     # Check the time and authority before every interaction. The owning OSC
@@ -199,6 +199,8 @@ def recover_unloaded_spare(client, descriptor, check, verify_deck_c=False):
     observed = controls()
     if matches_baseline(observed):
         return
+    if row['restoreRequested']:
+        raise BridgeError('The previous spare baseline restoration has not been confirmed.')
     if observed != (0.0, False):
         raise BridgeError('The isolated spare controls changed.')
     # The flag is set before dispatch. Any later uncertainty leaves the

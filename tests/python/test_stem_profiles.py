@@ -45,6 +45,23 @@ class StemWindowTests(unittest.TestCase):
             evidence = agent_loop.Lookups(snapshot,tracks).transition({'fromId':OUT,'toId':IN})
             self.assertEqual(evidence['stemEvidence'],result)
 
+    def test_rolling_candidate_with_cleaner_entrance_beats_vocal_and_bass_overlap(self):
+        vocal_and_bass = [.8, .2, .1, .8, .15]
+        clean_drums = [.02, .7, .4, .04, .08]
+        alternate = 'virtualdj:' + 'c'*64
+        cue = {'replayVerified': True, 'exitSeconds': 40}
+        with tempfile.TemporaryDirectory() as root, patch('afterhours.stem_profiles.data_root', return_value=Path(root)):
+            stem_profiles.save(OUT, [window('exit', 40, vocal_and_bass)])
+            stem_profiles.save(IN, [window('entry', 12, vocal_and_bass)])
+            stem_profiles.save(alternate, [window('entry', 20, clean_drums)])
+            clashing = stem_profiles.candidate_fit(OUT, IN, cue)
+            cleaner = stem_profiles.candidate_fit(OUT, alternate, cue)
+            self.assertEqual(clashing['vocalOverlapFraction'], 1)
+            self.assertEqual(cleaner['vocalOverlapFraction'], 0)
+            self.assertGreater(clashing['lowEndOverlap'], cleaner['lowEndOverlap'])
+            self.assertGreater(clashing['scoreAdjustment'], cleaner['scoreAdjustment'])
+            self.assertIsNone(stem_profiles.candidate_fit(OUT, alternate, {**cue, 'exitSeconds': 60}))
+
     def test_sparse_or_unseparated_meter_readings_are_ignored(self):
         self.assertIsNone(stem_profiles.measure_window('entry',12,4,[(12.2,VOCAL)]))
         self.assertFalse(stem_profiles.valid_window(window('entry',12,[.5]*5)))

@@ -18,3 +18,33 @@ A model proposes decisions at musical boundaries. The execution loop checks that
 Starting a process leaves playback idle. Operator approval and session budgets govern actions that affect playback or incur provider costs. Status distinguishes a proposal, dispatch, verified result, and uncertain outcome. An uncertain native command is never replayed automatically.
 
 For a request to add one supplied recording, the planner delegates placement to the engine. The engine ranks viable slots and applies the result through the same queue and native preparation guards. Automatic lookup and decision work uses the remaining measured queue runway when a fresh deck clock is available.
+
+
+## Optional music research and live advice
+
+With an existing OpenAI credential, run a public catalog research job before a set.
+
+```sh
+.venv/bin/python -m afterhours.set_research --style house --anchor "Dom Dolla" \
+  --brief "Follow Define with a gradual tempo lift and a mix of familiar and deeper house." --save
+```
+
+This explicit job uses the OpenAI Agents API and can incur model and search charges.
+It returns track pages and search terms. The local hints expire after 24 hours and
+apply only when the style and recent artist match. Search hints enter the same native
+catalog lookup and preparation path as other prospects. VirtualDJ verifies the
+exact recording, then Afterhours checks tempo and measured cue compatibility.
+Omit `--save` to inspect the shortlist without providing hints to the booth.
+
+For an opt-in comparison, start the engine with
+`AFTERHOURS_ROLLING_ADVISOR=gpt-6.2-sol`. During an active rolling set, Sol can
+rank a short list of eligible records when preparation has time to spare. If a
+result misses the deadline, local ranking continues. This setting leaves the
+voice model and the wider set-planning model on their configured routes.
+
+While a measured set is paused, the protected `prepare-stem-windows` set
+action can profile up to four exact track IDs on an isolated spare deck.
+It stores time-local vocal, bass, percussion and instrument envelopes.
+That evidence can rank future selections and guide cue choice and overlap
+length. VirtualDJ has to expose ready Stems 2.0 for the recording. When
+stem measurements are absent, Afterhours uses measured full-mix features and EQ.

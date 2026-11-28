@@ -8,6 +8,7 @@ from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidat
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
+from afterhours.set_research import hints as research_hints
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 
 
@@ -169,9 +170,18 @@ class RollingQueue:
                 if waiting:
                     return
                 if advised:
-                    candidates.sort(key=lambda row: row['id']!=advised)
-                    session.event('GPT-6.2 Sol ranked a shortlisted candidate first; native preparation follows.',
-                                  'queue',trackId=advised,model=MODEL)
+                    candidates.sort(key=lambda row: row['id'] != advised)
+                receipt = self.advisor.receipt
+                self.advisor.receipt = None
+                if receipt:
+                    description = {
+                        'selected': 'GPT-6.2 Sol ranked a shortlisted candidate first.',
+                        'no-pick': 'GPT-6.2 Sol left the local track ranking in place.',
+                        'error': 'GPT-6.2 Sol advice was unavailable. Using the local track ranking.',
+                        'deadline': 'GPT-6.2 Sol did not return before the preparation deadline. Using the local track ranking.',
+                        'stale': 'The shortlisted recording changed. Using the current local track ranking.',
+                    }[receipt]
+                    session.event(description, 'queue', trackId=advised, model=MODEL, outcome=receipt)
             picked = []
             # A second isolated deck can work ahead while the immediate
             # incoming recording is being verified. With less runway, start
@@ -217,7 +227,8 @@ class RollingQueue:
         recent = list(reversed(order[-8:]))
         terms = [str(track.get('artist') or '').strip() for track in recent[:3]]
         if timed_set or state.get('mixStyle') == 'phrase':
-            suggestions = DISCOVERY.hints(style, order, searched=self.searched)
+            suggestions = research_hints(style, order, self.searched)
+            suggestions += DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += list(DISCOVERY.neighbors(tail.get('artist')))
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]

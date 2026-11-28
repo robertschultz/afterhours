@@ -57,6 +57,8 @@ class RollingAdvisor:
         self.sent_at = -float('inf')
         self.context = None
         self.result = None
+        self.outcome = None
+        self.receipt = None
         self.pending = threading.Event()
 
     def advise(self, state, tail, candidates, facts, slack):
@@ -66,14 +68,20 @@ class RollingAdvisor:
         # Exact track IDs stay local. Use positions as one-request aliases.
         rows = candidates[:5]
         ids = tuple(row['id'] for row in rows)
-        context = (state['id'], state.get('startedAt'), state['index'], tail['id'])
+        context = (state['id'], state.get('startedAt'), state['index'], tail['id'],
+                   state.get('agentDirection'), state.get('mixStyle'))
         now = time.monotonic()
         if self.context == context:
             if not self.pending.is_set():
-                chosen = self.result
+                chosen = self.result if self.result in ids else None
+                self.receipt = 'selected' if chosen else self.outcome or 'stale'
                 self.context = None
-                return (chosen if chosen in ids else None), False
-            return None, slack>=24 and now-self.sent_at<WAIT_SECONDS
+                return chosen, False
+            if slack >= 24 and now - self.sent_at < WAIT_SECONDS:
+                return None, True
+            self.receipt = 'deadline'
+            self.context = None
+            return None, False
         if self.pending.is_set() or slack<30 or self.calls>=MAX_CALLS or now-self.sent_at<MIN_INTERVAL:
             return None, False
 
@@ -91,14 +99,17 @@ class RollingAdvisor:
         self.calls+=1
         self.sent_at=now
         self.context=context
-        self.result=None
+        self.result = None
+        self.outcome = None
         self.pending.set()
 
         def run():
             try:
-                self.result=aliases.get(request_pick(payload,list(aliases)))
+                self.result = aliases.get(request_pick(payload, list(aliases)))
+                if self.result is None:
+                    self.outcome = 'no-pick'
             except (OSError, ValueError, TypeError, AttributeError, KeyError):
-                pass
+                self.outcome = 'error'
             finally:
                 self.pending.clear()
 

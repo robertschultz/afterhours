@@ -1820,8 +1820,10 @@ class DJSession:
                     analysis_miss = getattr(job, 'analysis_miss', None)
                     if isinstance(catalog_miss, str):
                         missed, skip_reason = catalog_miss, 'catalog'
-                    else:
+                    elif isinstance(analysis_miss, str):
                         missed, skip_reason = analysis_miss, 'analysis'
+                    else:
+                        raise BridgeError(job.error)
                     recovered = self.refit_rolling_batch(s, q, job.result, protected, missed)
                     if recovered is None:
                         raise BridgeError(job.error)

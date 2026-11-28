@@ -54,6 +54,33 @@ class BackgroundTests(unittest.TestCase):
         for values in ({'get_decks':2,'deck 3 get_deck':1},{'deck 3 loaded':True},{'deck 3 play':True},{'deck 3 effect_active 1':True}):
             peer=Peer();peer.values.update(values);job=self.job();job.start(peer)
             self.assertTrue(job.done);self.assertTrue(job.error);self.assertEqual(peer.commands,[])
+    def test_cue_seek_is_guarded_by_the_native_worker_against_the_exact_owned_recording(self):
+        exact = identity('test')
+        for field, value in ((None,None), ('deck 3 play',True),
+                             ('deck 3 get_filepath','other'), ('deck 3 pfl',True)):
+            with self.subTest(field=field):
+                job = self.job()
+                job.thread = Mock()
+                job.owned = True
+                job.loaded = exact
+                peer = Peer()
+                peer.values['deck 3 volume'] = 0
+                if field:
+                    peer.values[field] = value
+                reply = queue.Queue()
+                job.pending.put(('cue-seek','deck 3 goto 20%',exact,reply))
+                job.step(peer,24)
+                result = reply.get_nowait()
+                if field:
+                    self.assertIsInstance(result, BridgeError)
+                    self.assertEqual(peer.commands, [])
+                else:
+                    self.assertIsNone(result)
+                    self.assertEqual(peer.commands, ['deck 3 goto 20%'])
+                    self.assertEqual(peer.queries.count('deck 3 get_filepath'), 1)
+                with self.assertRaises(BridgeError):
+                    MailboxClient(job).seek_cue('deck 4 goto 20%', exact)
+
     def test_acquire_and_cleanup_touch_only_isolated_deck(self):
         peer=Peer();job=self.job();job.acquire(peer);self.assertTrue(job.owned);guard_isolation(peer)
         job.loaded=identity('test');peer.values['deck 3 loaded']=True

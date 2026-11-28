@@ -317,6 +317,9 @@ class MailboxClient:
     def query(self,script,kind=None):return self.job.request('query',script,kind)
     def send(self,script):return self.job.request('send',script,None)
 
+    def seek_cue(self, script, selection):
+        return self.job.request('cue-seek', script, selection)
+
 class BackgroundAnalysis:
     def __init__(self,session,revision,tracks,cache=None,deck=3):
         if type(deck) is not int or deck not in (1,2,3,4):raise ValueError("Preparation needs a spare deck.")
@@ -361,7 +364,9 @@ class BackgroundAnalysis:
         if self.cancelled.wait(seconds):raise AnalysisCancelled()
     def request(self,kind,script,argument):
         self.check()
-        if kind not in ('load','isolate-loaded') and not allowed(script,kind=='send',self.deck):
+        if kind == 'cue-seek' and script != f'deck {self.deck} goto_first_beat' and not script.startswith(f'deck {self.deck} goto '):
+            raise BridgeError('Cue analysis attempted an unsupported seek.')
+        if kind not in ('load','isolate-loaded') and not allowed(script,kind in ('send','cue-seek'),self.deck):
             raise BridgeError('Analysis attempted an unsupported engine operation.')
         response=queue.Queue(maxsize=1);self.pending.put((kind,script,argument,response))
         while True:
@@ -422,7 +427,9 @@ class BackgroundAnalysis:
             except queue.Empty:break
             try:
                 self.check()
-                if kind in ('send','load'):
+                if kind in ('send','load','cue-seek'):
+                    if kind == 'cue-seek' and (not self.owned or not self.loaded or arg != self.loaded):
+                        raise BridgeError('The recording changed during cue analysis.')
                     guard_isolation(client,self.deck)
                     if self.loaded and identity(str(client.query(f'deck {self.deck} get_filepath','text')))!=self.loaded:
                         raise BridgeError('Analysis recording changed outside the background worker.')

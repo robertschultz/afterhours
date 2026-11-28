@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from afterhours import cue_planner
+from afterhours.background_analysis import MailboxClient
 from afterhours.dj_bridge import BridgeError
 from test_cue_planner import fixture
 from afterhours.vdj_catalog import identity
@@ -70,13 +71,13 @@ class PausedGridPeer:
 
 
 class NativeCueAnchorTests(unittest.TestCase):
-    def measure(self, peer, seconds=30, *, timed=False, alternate_seconds=None):
+    def measure(self, peer, seconds=30, *, timed=False, alternate_seconds=None, client=None):
         rows, report, _ = fixture(count=1)
         report['tracks'][0]['duration'] = peer.duration
         track = {**report['tracks'][0], 'engine': {'selection_id': identity(peer.locator)}}
         session = DJSession(threading.Lock())
         with patch('afterhours.cue_planner.measured_rows', return_value=rows), patch.object(session, 'sleep'):
-            return session.measure_cues(peer, track, report['tracks'][0], 155, seconds, deck=3, timed=timed,
+            return session.measure_cues(client or peer, track, report['tracks'][0], 155, seconds, deck=3, timed=timed,
                                         alternate_seconds=alternate_seconds)
 
     def test_negative_native_anchor_keeps_actual_grid_and_all_cues_in_audio(self):
@@ -112,6 +113,24 @@ class NativeCueAnchorTests(unittest.TestCase):
         self.assertLess(len(fast.commands),len(ordinary.commands))
         self.assertFalse(any(command.startswith('deck 3 goto +') for command in fast.commands))
         self.assertFalse(fast.playing)
+
+    def test_isolated_mailbox_sends_one_guarded_operation_per_seek(self):
+        peer = PausedGridPeer()
+        calls = []
+
+        class Job:
+            def request(self, kind, script, argument):
+                calls.append((kind, script))
+                if kind == 'cue-seek':
+                    if argument != identity(peer.locator):
+                        raise AssertionError('The seek omitted its exact recording.')
+                    return peer.send(script)
+                return peer.query(script, argument)
+
+        cues = self.measure(peer, timed=True, client=MailboxClient(Job()))
+        self.assertTrue(all(cue['replayVerified'] for cue in cues))
+        self.assertEqual([script for kind, script in calls if kind == 'cue-seek'], peer.commands)
+        self.assertFalse(any(script in ('get_decks', 'deck 3 get_filepath') for _, script in calls))
 
     def test_timed_seek_mismatch_reverts_to_native_relative_seeks(self):
         peer = PausedGridPeer()

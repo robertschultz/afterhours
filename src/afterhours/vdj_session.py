@@ -2391,6 +2391,18 @@ class DJSession:
                 raise BridgeError('A deck started manually. Cue analysis stopped without changing playback.')
             if identity(str(self.q(client,f'deck {deck} get_filepath','text')))!=track['engine']['selection_id']:
                 raise BridgeError('The recording changed during cue analysis.')
+        from afterhours.background_analysis import MailboxClient
+
+        def seek(command):
+            script = f'deck {deck} {command}'
+            if isolated and isinstance(client, MailboxClient):
+                # The sole native worker checks isolation and exact recording
+                # identity in the same operation immediately before the seek.
+                client.seek_cue(script, track['engine']['selection_id'])
+            else:
+                guard()
+                self.send(client,script)
+
         rows=cue_planner.measured_rows(evidence)
         unavailable=cue_planner.limited_audio(evidence,rows)
         if unavailable:raise cue_planner.LimitedAudio(unavailable)
@@ -2411,11 +2423,10 @@ class DJSession:
             self.check()
             if key in readbacks:
                 return readbacks[key]
-            guard()
             if offset and fast_offsets:
                 expected_time = anchor_time + offset * 60 / track['bpm']
                 if 0 <= expected_time < duration:
-                    self.send(client,f'deck {deck} goto {expected_time/duration*100:.9f}%')
+                    seek(f'goto {expected_time/duration*100:.9f}%')
                     self.sleep(.12)
                     beat, seconds = read_position()
                     if abs(beat-anchor-offset) <= .05 and abs(seconds-expected_time) <= .02:
@@ -2424,11 +2435,10 @@ class DJSession:
                     # Keep the native grid authoritative if a fixed-grid
                     # estimate or the percentage readback doesn't match.
                     fast_offsets = False
-                    guard()
-            self.send(client,f'deck {deck} goto_first_beat')
+            seek('goto_first_beat')
             self.sleep(.12)
             if offset:
-                self.send(client,f'deck {deck} goto +{offset}')
+                seek(f'goto +{offset}')
                 self.sleep(.12)
             # VirtualDJ may place its grid origin just before the first audio
             # sample (Free Your Mind reads -2 ms). Preserve that measured
@@ -2475,8 +2485,7 @@ class DJSession:
                 except ValueError:continue  # Fluid-grid readback may invalidate an estimated window.
                 # Prove that execution can reproduce the absolute cue before the
                 # candidate is offered to the planner. Both decks remain paused.
-                guard()
-                self.send(client,f"deck {deck} goto {cue['entrySeconds']/cue['recordingDuration']*100:.9f}%")
+                seek(f"goto {cue['entrySeconds']/cue['recordingDuration']*100:.9f}%")
                 self.sleep(.12)
                 replay_beat=number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000)
                 replay_time=number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000

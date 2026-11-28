@@ -709,6 +709,25 @@ class QueuePlanningTests(unittest.TestCase):
                 self.assertIsNone(self.session.state['queuedUpdate'])
                 client.send.assert_not_called()
 
+    def test_promoted_survivor_reuses_the_receipt_for_its_new_cadence(self):
+        for reject_cached in (False, True):
+            with self.subTest(reject_cached=reject_cached):
+                _, _, measured = self.staged_measured_batch('2')
+                survivor = measured[1]
+                survivor.update(timedPreparation=True, preparationSeconds=30)
+                cached = {**survivor, 'preparationSeconds':60}
+                with patch('afterhours.vdj_session.VerifiedCues') as cache, \
+                     patch('afterhours.cue_planner.verify_receipts',
+                           side_effect=[ValueError('Changed receipt'), None] if reject_cached else [None]):
+                    cache.return_value.read.return_value = cached
+                    self.session.service_background(Mock(), 24)
+                promoted, seconds, timed = cache.return_value.read.call_args.args
+                self.assertEqual((promoted['id'], seconds, timed), ('3', 60, True))
+                pending = self.session.snapshot()['queuedUpdate']
+                self.assertEqual(pending['status'], 'ready')
+                observed = pending['prepared']['analysis']['tracks'][-1]
+                self.assertEqual(observed['preparationSeconds'], 30 if reject_cached else 60)
+
     def test_failed_survivor_verification_leaves_existing_plan_and_refill_runway(self):
         original, revision, _ = self.staged_measured_batch('2')
         with patch('afterhours.cue_planner.verify_receipts', side_effect=ValueError('Survivor digest drift')):

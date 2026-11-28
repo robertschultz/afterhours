@@ -35,6 +35,7 @@ from afterhours.dj_discovery import require_faith_set
 from afterhours import deck_rotation
 from afterhours.preparation_pool import PreparationPool as BackgroundAnalysis
 from afterhours.preparation_pool import service_timed_analysis
+from afterhours.verified_cues import VerifiedCues
 from afterhours.background_analysis import (cleanup_analysis_deck, guard_isolation, merge_cleanup_pending,
                                             recover_unloaded_spare)
 from afterhours.record_crate import RecordCrate, WORKING_LIMIT
@@ -1547,15 +1548,27 @@ class DJSession:
         stable_positions = set(state.get('setPins', [])) | set(state['setlist'].get('lockedIds', []))
         if staged[0] == missed and survivor in stable_positions:
             return None
-        remaining_measurements = [row for row in measured if row['id'] != missed]
-        if not any(row['id'] == survivor for row in remaining_measurements):
+        survivor_measurement = next((row for row in measured if row['id'] == survivor), None)
+        if survivor_measurement is None:
             return None
-        try:
-            selected, prepared = self.fit_background_tracks(state, queued, retained, remaining_measurements, protected)
-            cue_planner.verify_receipts(prepared['analysis'])
-        except (BridgeError, ValueError, OSError):
-            return None
-        return selected, prepared, missed
+        measurements = [survivor_measurement]
+        cadence = state.get('entryCadence')
+        if cadence and staged[0] == missed and survivor_measurement.get('timedPreparation'):
+            # Removing the first pick can move the survivor to a different
+            # cadence slot. Prefer a receipt measured for its new slot.
+            seconds = cadence[(len(retained)-1) % len(cadence)]
+            if survivor_measurement.get('preparationSeconds') != seconds:
+                cached = VerifiedCues().read({**retained[-1], **survivor_measurement}, seconds, True)
+                if cached:
+                    measurements.insert(0, cached)
+        for measurement in measurements:
+            try:
+                selected, prepared = self.fit_background_tracks(state, queued, retained, [measurement], protected)
+                cue_planner.verify_receipts(prepared['analysis'])
+            except (BridgeError, ValueError, OSError):
+                continue
+            return selected, prepared, missed
+        return None
 
     def publish_prepared_prefix(self, job):
         with self.lock:

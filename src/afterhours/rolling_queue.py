@@ -56,7 +56,10 @@ class RollingQueue:
                 return
 
             order = state['order']
-            if not order or len(order) - state['index'] > (5 if timed_set else 3):
+            # Two spare decks still prepare at most two recordings at once.
+            # Start replenishing timed sets earlier so a slow decode or search
+            # does not consume all of the upcoming 30-second slots.
+            if not order or len(order) - state['index'] > (8 if timed_set else 3):
                 return
             quick = state['mixStyle'] == 'quick'
             if not quick and not (state.get('executionPlan') or {}).get('applied'):
@@ -109,10 +112,12 @@ class RollingQueue:
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
             picked = []
-            # A second isolated deck can work ahead while the immediate
-            # incoming recording is being verified. With less runway, start
-            # just one transport preparation.
-            batch = 2 if timed_set and slack >= 23 and len(order) > state['index']+1 else 1
+            # A short gap after preloading is enough to start a batch when
+            # verified tracks cover the next two handoffs. The pool pauses
+            # native analysis before the mix and resumes it in the next gap.
+            upcoming = len(order) - state['index'] - 1
+            batch_slack = 16 if upcoming >= 2 else 23
+            batch = 2 if timed_set and upcoming > 0 and slack >= batch_slack else 1
             for track in candidates:
                 if session.cancel.is_set():
                     return

@@ -124,6 +124,38 @@ class DiscoveryTests(unittest.TestCase):
             job.step(None);now[0]=26;job.step(None)
         self.assertTrue(job.done);self.assertIn('Keeping',s.snapshot()['catalogSearch']['message'])
 
+    def test_rolling_search_confirms_empty_rows_without_scrolling_and_accepts_late_results(self):
+        late = {'id':'late','artist':'Fixture','metadata':{'id':'late','title':'Late result',
+                                                         'artist':'Fixture','bpm':125}}
+        for recovered in (False, True):
+            with self.subTest(recovered=recovered):
+                session = DJSession(threading.Lock())
+                self.addCleanup(session.crate.close)
+                now = [0]
+                client = Mock()
+                client.query.return_value = 0
+                job = CatalogSearch(session, ['Reference'], '', '', 110, 140, clock=lambda:now[0])
+                job.rolling = True
+                job.reuse_matches = True
+                job.target = 1
+                with patch('afterhours.vdj_discovery.folder_state',return_value={'id':'folder'}), \
+                     patch('afterhours.vdj_discovery.selection',side_effect=[None,late if recovered else None]) as selection, \
+                     patch.object(session, 'send') as send:
+                    job.step(client)
+                    now[0] = 1.5
+                    job.step(client)
+                    job.step(client)
+                    self.assertFalse(job.done)
+                    now[0] = 2
+                    job.step(client)
+                    self.assertEqual(selection.call_count, 1)
+                    now[0] = 3
+                    job.step(client)
+                self.assertTrue(job.done)
+                self.assertEqual(job.seen, {'late'} if recovered else set())
+                self.assertEqual(client.query.call_count, 1 if recovered else 2)
+                self.assertFalse(any('scroll +1' in call.args[-1] for call in send.call_args_list))
+
     def test_playback_search_shares_worker_and_yields_before_transition(self):
         s=DJSession(threading.Lock());s.update(active=True,phase='playing',order=[{'id':'a'}])
         with patch.object(s,'_launch') as launch:

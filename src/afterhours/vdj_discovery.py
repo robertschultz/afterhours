@@ -5,10 +5,12 @@ import time
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import credit, normalized
 from afterhours.track_metadata import clean_text
-from afterhours.vdj_catalog import folder_state, selection, search_literal
+from afterhours.vdj_catalog import count_value, folder_state, selection, search_literal
 
 
 class CatalogSearch:
+    EMPTY_RESULT_SETTLE_SECONDS = 1.5
+
     def __init__(self, session, terms, artist, genre, bpm_min, bpm_max, clock=time.monotonic, recheck_missing=False,
                  external_request_id=None,authorize=None,finish=None, *, opening_query=None):
         self.session=session;self.terms=terms;self.clock=clock;self.folder=None
@@ -25,6 +27,7 @@ class CatalogSearch:
         self.matched=0;self.seen=set()
         self.phase='begin';self.ready_at=0;self.deadline=None;self.done=False
         self.last_id=None;self.repeated=0
+        self.empty_since=None
         self.latest=None
         # A set opening can reuse its first matching records immediately.
         # An explicit import or expansion must dig beyond known archive rows.
@@ -60,7 +63,8 @@ class CatalogSearch:
     def resume_search(self):
         # Preloading may use a different browser search on the same engine.
         # Re-enter this term before reading more rows; retain every found track.
-        if not self.done:self.phase='begin';self.position=0;self.last_id=None;self.repeated=0
+        if not self.done:
+            self.phase='begin';self.position=0;self.last_id=None;self.repeated=0;self.empty_since=None
 
     def step(self,client):
         """One bounded browser operation; the music worker chooses a safe gap."""
@@ -70,6 +74,7 @@ class CatalogSearch:
         if self.deadline is None:self.deadline=now+self.seconds
         if now>=self.deadline:self.finish('Search window ended. Keeping the recordings already found.');return
         if self.phase=='settle' and now<self.ready_at:return
+        if self.empty_since is not None and now-self.empty_since<self.EMPTY_RESULT_SETTLE_SECONDS:return
         current_folder=folder_state(client)
         if self.folder is None:
             self.folder=current_folder
@@ -90,6 +95,16 @@ class CatalogSearch:
             s.send(client,"browser_window 'songs' & browser_scroll 'top'");self.phase='read';return
         try:selected=selection(client,True)
         except BridgeError:selected=None
+        if not selected and self.position==0 and getattr(self,'rolling',False):
+            try:empty=count_value(client.query('file_count'))==0
+            except BridgeError:empty=False
+            if empty and self.empty_since is None:
+                # The provider may still populate the selected source after
+                # VirtualDJ opens its search results.
+                self.empty_since=now
+                return
+            if empty:self.position=self.max_rows
+        self.empty_since=None
         self.examined+=1
         if selected:
             self.repeated=self.repeated+1 if selected['id']==self.last_id else 0;self.last_id=selected['id']

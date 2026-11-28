@@ -56,6 +56,14 @@ class TrackMetadataChanged(BridgeError):
         super().__init__(f"{track['title']} has updated engine analysis. Rebuild the order from the checked metadata.")
 
 
+class CueGridOriginChanged(BridgeError):
+    """The absolute cue still matches, but its beat number moved by bars."""
+    def __init__(self, track, offset):
+        self.track = track
+        self.offset = offset
+        super().__init__('The selected cue moved after analysis. Prepare and plan again; playback was not started.')
+
+
 def number(value, low, high):
     if isinstance(value, bool):
         raise BridgeError("Invalid numeric engine reading")
@@ -2262,6 +2270,10 @@ class DJSession:
         if cue:
             beat=number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000)
             position=number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000
+            delta = beat - cue['entryBeat']
+            offset = round(delta/4)*4
+            if abs(position-cue['entrySeconds'])<=.2 and offset and abs(delta-offset)<=.2:
+                raise CueGridOriginChanged(actual, offset)
             if abs(beat-cue['entryBeat'])>.2 or abs(position-cue['entrySeconds'])>.2:
                 raise BridgeError('The selected cue moved after analysis. Prepare and plan again; playback was not started.')
         self.match_tempo(client, track, deck, target_bpm)
@@ -2387,6 +2399,38 @@ class DJSession:
             for key in ('partialTracks', 'partialPrepared', 'error', 'failure'):
                 queued.pop(key, None)
 
+    def recheck_cue_grid(self, client, deck, track, source, offset):
+        """Read the measured cue timestamps again on the exact paused deck."""
+        readings = {}
+        verified = []
+        expected_id = track['engine']['selection_id']
+        for cue in source['cueCandidates']:
+            if cue.get('replayVerified') is not True:
+                continue
+            points = (
+                (cue['entrySeconds'], cue['entryBeat']),
+                (cue['introEndSeconds'], cue['entryBeat'] + cue['maxBlendBeats']),
+                (cue['exitSeconds'], cue['exitBeat']),
+                (cue['endSeconds'], cue['endBeat']),
+            )
+            for seconds, _ in points:
+                if seconds in readings:
+                    continue
+                if (as_bool(self.q(client,f'deck {deck} play','bool')) or
+                        identity(str(self.q(client,f'deck {deck} get_filepath','text'))) != expected_id):
+                    raise BridgeError('The paused recording changed during cue verification.')
+                self.send(client,f"deck {deck} goto {seconds/cue['recordingDuration']*100:.9f}%")
+                self.wait_observed(client, .12)
+                readings[seconds] = (
+                    number(self.q(client,f'deck {deck} get_time elapsed absolute'),0,1200000)/1000,
+                    number(self.q(client,f'deck {deck} get_beatpos'),-10000,100000),
+                )
+            if all(abs(readings[s][0]-s)<=.2 and abs(readings[s][1]-beat-offset)<=.2 for s,beat in points):
+                verified.append({**cue, **{key:cue[key]+offset
+                    for key in ('anchorBeat','entryBeat','exitBeat','endBeat')},
+                    'gridSource':'VirtualDJ playback deck replay at measured timestamps'})
+        return verified
+
     def start(self, resume=False, initialize_mixer=False, immediate=False, adopt_mixer=False, resume_paused=False,
               held_recording=None, rolling_queue=False, entry_cadence=None, loop_handoffs=False):
         from afterhours.rolling_queue import RollingQueue
@@ -2434,6 +2478,26 @@ class DJSession:
             try:
                 if selected:self.prepare_deck(client,track,deck,target,cue=selected['selections'][index])
                 else:self.prepare_deck(client,track,deck,target)
+            except CueGridOriginChanged as exc:
+                if override or not selected:
+                    raise
+                live = self.snapshot()
+                analysis = live['analysis']
+                review = live['aiReview']
+                source = next(row for row in analysis['tracks'] if row['id']==track['id'])
+                source['cueCandidates'] = self.recheck_cue_grid(client,deck,track,source,exc.offset)
+                if not any(row['id']==selected['selections'][index]['id'] for row in source['cueCandidates']):
+                    raise BridgeError('The prepared cue grid could not be confirmed on the playback deck. No playback was started.')
+                analysis['fingerprint'] = cue_planner.fingerprint(analysis['tracks'])
+                review['analysisFingerprint'] = analysis['fingerprint']
+                refreshed = cue_planner.compile_plan(review,analysis,order,snapshot['secondsPerTrack'],snapshot['mixStyle'])
+                cue_planner.verify_receipts(analysis)
+                self.prepare_deck(client,track,deck,target,cue=refreshed['selections'][index],checked=exc.track)
+                refreshed['applied'] = True
+                self.update(analysis=analysis,aiReview=review,executionPlan=refreshed,mixPlans=refreshed['transitions'])
+                self.refresh_preparing_queue(order)
+                planned = refreshed
+                self.event(f"{track['title']}: cue timestamps verified on the playback deck after a beat-grid origin change.",'analysis')
             except TrackMetadataChanged as exc:
                 if not override and not selected and snapshot['mixStyle']=='quick':
                     checked=exc.track

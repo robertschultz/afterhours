@@ -1586,7 +1586,7 @@ class DJSession:
             self.event('The immediate next track is verified. Preparing the rest of the queue continues.', 'queue-ready')
 
     def schedule_deferred_spare_cleanup(self, job, queued, progress):
-        """Keep a short-lived token only for a typed timeout after D's unload."""
+        """Keep ownership proof when D's load or unload is still awaiting a reply."""
         if (not isinstance(job, BackgroundAnalysis) or not self.state.get('rollingQueue')
                 or not self.state['active'] or self.state['phase'] != 'playing' or self.cancel.is_set()
                 or not queued.get('rollingTrackId') or queued.get('oscReadRetries', 0) >= 2
@@ -1594,6 +1594,14 @@ class DJSession:
             return
         owner = job.deferred_cleanup_owner()
         if owner is None or 4 not in self.quarantined_preparation_decks():
+            return
+        descriptors = (self.state.get('cleanupPending') or {}).get('analysis', [])
+        descriptor = next((row for row in descriptors if row['ownerId'] == owner and row['selectionId']), None)
+        if descriptor is None:
+            return
+        queued['spareCleanupOwner'] = owner
+        if descriptor['loadPending']:
+            # Wait until a later read confirms the exact recording or a native load error.
             return
         now = time.monotonic()
         self.deferred_spare_cleanup = (self.state['id'], job.revision, owner, now + .5, now + 5)
@@ -1651,14 +1659,24 @@ class DJSession:
             remaining = [row for row in descriptors if row is not descriptor]
             self.update(resumeBlocked=bool(remaining),
                         cleanupPending={**retained, 'analysis':remaining} if remaining else None)
-            queued.update(status='needs-analysis', oscReadRetries=queued.get('oscReadRetries', 0)+1)
-            queued.pop('error', None)
-            self.update(rollingQueue={**self.state['rollingQueue'], 'status':'preparing'},
-                        backgroundAnalysis={**progress, 'status':'queued', 'deck':None, 'decks':[],
-                            'message':'Isolated spare verified. Resuming preparation of the same queue.',
-                            'spareCleanup':{'deck':4, 'stage':'baseline-confirmed', 'status':'verified'}})
-            self.event('Isolated spare verified. Resuming preparation of the same queue.', 'analysis',
-                       deck=4, stage='baseline-confirmed')
+            self.reopen_queue_after_spare_cleanup(descriptor)
+
+    def reopen_queue_after_spare_cleanup(self, descriptor):
+        queued = self.state.get('queuedUpdate') or {}
+        progress = self.state.get('backgroundAnalysis') or {}
+        if (queued.get('status') != 'blocked' or queued.get('id') != progress.get('revision')
+                or queued.get('spareCleanupOwner') != descriptor['ownerId'] or queued.get('oscReadRetries', 0) >= 2):
+            return
+        queued.update(status='needs-analysis', oscReadRetries=queued.get('oscReadRetries', 0)+1)
+        queued.pop('error', None)
+        queued.pop('spareCleanupOwner', None)
+        deck = descriptor['deck']
+        self.update(rollingQueue={**self.state['rollingQueue'], 'status':'preparing'},
+                    backgroundAnalysis={**progress, 'status':'queued', 'deck':None, 'decks':[],
+                        'message':'Isolated spare verified. Resuming preparation of the same queue.',
+                        'spareCleanup':{'deck':deck, 'stage':'baseline-confirmed', 'status':'verified'}})
+        self.event('Isolated spare verified. Resuming preparation of the same queue.', 'analysis',
+                   deck=deck, stage='baseline-confirmed')
 
     def service_late_spare_load(self, client, seconds_available):
         """Try to settle one retained Load during a long, unheld playing window."""
@@ -1721,6 +1739,7 @@ class DJSession:
                         cleanupPending={**retained, 'analysis':remaining} if remaining else None)
             self.event(f'Deck {row["deck"]}: Late analysis load settled. The spare is available again.',
                        'analysis', deck=row['deck'], stage='late-load-settled')
+            self.reopen_queue_after_spare_cleanup(row)
             return True
 
     def service_background(self,client,seconds_available):
@@ -2044,7 +2063,11 @@ class DJSession:
             from afterhours.rolling_queue import failed_rolling_recording
             pinned = set(self.state.get('setPins', [])) | set(self.state['setlist'].get('lockedIds', []))
             replaceable = (not self.state.get('resumeBlocked') or self.quarantined_preparation_decks()) and failed_rolling_recording(queued, pinned=pinned)
-            if not staged and not (rolling and (not queued or replaceable)):
+            retained = (self.state.get('cleanupPending') or {}).get('analysis', [])
+            isolated = self.quarantined_preparation_decks() if queued.get('spareCleanupOwner') else ()
+            waiting_for_spare = queued.get('status') == 'blocked' and any(
+                row['ownerId'] == queued.get('spareCleanupOwner') and row['deck'] in isolated for row in retained)
+            if not staged and not (rolling and (not queued or replaceable or waiting_for_spare)):
                 return 0
             # Native console controls can temporarily omit duration during
             # background waveform work. Replay-verified analysis for this

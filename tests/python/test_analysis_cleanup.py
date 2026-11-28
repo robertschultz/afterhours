@@ -527,6 +527,42 @@ class DeferredSpareCleanupTests(unittest.TestCase):
         self.assertEqual(state['queuedUpdate']['status'], 'blocked')
         self.assertEqual(len(peer.commands), 2)
 
+    def test_late_load_confirmation_reopens_the_exact_blocked_queue(self):
+        s, peer, job = self.session, self.peer, self.job
+        job.requested_load, job.loaded = job.loaded, None
+        peer.values['deck 4 loaded'] = False
+        read = peer.query
+        losses = []
+
+        def lose_initial_read(script, kind=None):
+            if script == 'deck 4 get_deck' and len(losses) < 2:
+                losses.append(script)
+                raise OSCReplyTimeout('Spare reply timed out.')
+            return read(script, kind)
+
+        peer.query = lose_initial_read
+        s.service_background(peer, 25)
+        self.assertEqual(s.snapshot()['queuedUpdate']['spareCleanupOwner'], job.owner_id)
+        self.assertIsNone(s.deferred_spare_cleanup)
+        current = s.snapshot()['order'][0]
+        self.assertGreater(s.final_preparation_runway(current,0,{'position':60,'controls':{'durationMs':300000}}), 26)
+        for _ in range(2):
+            self.assertTrue(s.service_late_spare_load(peer, 30))
+        self.assertEqual(peer.commands, [])
+        self.assertEqual(s.snapshot()['queuedUpdate']['status'], 'blocked')
+        peer.values['deck 4 loaded'] = True
+        s.update(index=1)
+        for _ in range(2):
+            self.assertTrue(s.service_late_spare_load(peer, 30))
+        state = s.snapshot()
+        self.assertEqual(s.preparation_decks(), (4,))
+        self.assertEqual(state['queuedUpdate']['id'], job.revision)
+        self.assertEqual(state['queuedUpdate']['status'], 'needs-analysis')
+        self.assertEqual(state['queuedUpdate']['oscReadRetries'], 1)
+        self.assertTrue(peer.values['deck 1 play'])
+        self.assertTrue(all(command.startswith('deck 4 ') for command in peer.commands))
+        self.assertEqual(sum(command.endswith('deck 4 unload') for command in peer.commands), 1)
+
     def test_changed_or_stale_spare_is_not_restored(self):
         for reason in ('loaded', 'revision', 'ownership', 'expired', 'unknown', 'deck-c-changed'):
             with self.subTest(reason=reason):

@@ -157,10 +157,11 @@ class PreparationPool:
     def deferred_cleanup_owner(self):
         """Retain typed local proof only for the failed spare owned by this run."""
         for job in self.jobs:
+            load_pending = bool(job.cleanup_state.get('loadPending'))
+            unload_requested = bool(job.cleanup_state.get('unloadRequested'))
             if (job.deck == 4 and job.owned and getattr(job, 'cleanup_reply_timeout', False) is True
-                    and job.cleanup_state.get('unloadRequested')
                     and not job.cleanup_state.get('restoreRequested')
-                    and not job.cleanup_state.get('loadPending')):
+                    and load_pending != unload_requested):
                 return job.owner_id
         return None
 

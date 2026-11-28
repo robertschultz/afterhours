@@ -56,6 +56,12 @@ def folder_state(client):
     return {"id": identity(locator), "name": name}
 
 
+def selected_recording_id(client):
+    """Read the opaque catalog identity without asking for row metadata."""
+    locator = text_value(client.query("get_browsed_filepath", "text"))
+    return identity(locator) if locator else None
+
+
 def selection(client, include_details=False):
     folder = folder_state(client)
     locator = text_value(client.query("get_browsed_filepath", "text"))

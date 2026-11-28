@@ -157,7 +157,7 @@ class SessionTests(unittest.TestCase):
             elif 'top' in script:state['row']=0
         def settle(seconds):
             if state['pending']:state.update(row=min(1,state['row']+1),pending=False)
-        with patch('afterhours.vdj_session.folder_state',return_value={'id':'folder'}),patch('afterhours.vdj_session.selection',side_effect=lambda c:{'id':rows[state['row']]}),patch.object(s,'q',return_value=2),patch.object(s,'send',side_effect=send),patch.object(s,'sleep',side_effect=settle),patch.object(s,'wait_observed'),patch.object(s,'service_telemetry'):
+        with patch('afterhours.vdj_session.folder_state',return_value={'id':'folder'}),patch('afterhours.vdj_session.selected_recording_id',side_effect=lambda c:rows[state['row']]),patch.object(s,'q',return_value=2),patch.object(s,'send',side_effect=send),patch.object(s,'sleep',side_effect=settle),patch.object(s,'wait_observed'),patch.object(s,'service_telemetry'):
             s.select(None,track)
         self.assertEqual(s.positions['record']['position'],1)
 

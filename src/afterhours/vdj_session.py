@@ -18,7 +18,7 @@ import uuid
 
 from afterhours.dj_bridge import VirtualDJ, BridgeError, OSCReplyTimeout, as_bool
 from afterhours.track_metadata import musical_key
-from afterhours.vdj_catalog import (folder_state, selection, identity, load_selected, search_literal, count_value,
+from afterhours.vdj_catalog import (folder_state, selection, identity, selected_recording_id, load_selected, search_literal, count_value,
                          paused_load_target, load_exact_recording)
 from afterhours.native_recording import RECORDINGS
 from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, measured_bridge_loop, measured_recipe, transition_recipe
@@ -2363,19 +2363,25 @@ class DJSession:
         if position:
             self.send(client, f'browser_scroll +{position}')
         self.sleep(.1)
-        try:
-            selected = selection(client)
-        except BridgeError:
-            selected = None
-        if selected and selected['id'] == track['engine']['selection_id']:
+        def exact_row_selected():
+            try:
+                return selected_recording_id(client) == track['engine']['selection_id']
+            except BridgeError:
+                return False
+
+        def require_original_folder():
+            if folder_state(client)['id'] != self.folder['id']:
+                raise BridgeError('Catalog folder changed during recording lookup. No replacement was loaded.')
+
+        if exact_row_selected():
+            require_original_folder()
             return
 
         def scan(query, limit):
             # file_count is the currently displayed result count, not a proof
             # that the provider returned its complete catalog. Beatport can
             # cap a broad artist search at 100 recordings.
-            if folder_state(client)['id']!=self.folder['id']:
-                raise BridgeError('Catalog folder changed during recording lookup. No replacement was loaded.')
+            require_original_folder()
             try:visible=count_value(self.q(client,'file_count'))
             except BridgeError:visible=None
             self.send(client,"browser_window 'songs' & browser_scroll 'top'")
@@ -2383,13 +2389,9 @@ class DJSession:
             for position in range(min(limit,visible) if visible is not None else limit):
                 self.check()
                 self.service_telemetry(client)
-                if folder_state(client)['id'] != self.folder['id']:
-                    raise BridgeError('Catalog folder changed during recording lookup. No replacement was loaded.')
-                try:
-                    selected = selection(client)
-                except BridgeError:
-                    selected = None
-                if selected and selected['id'] == track['engine']['selection_id']:
+                require_original_folder()
+                if exact_row_selected():
+                    require_original_folder()
                     context.update(query=query,position=position)
                     return True
                 self.send(client, 'browser_scroll +1')
@@ -2405,13 +2407,11 @@ class DJSession:
         # costly artist walk. Versions with the same title are never substitutes:
         # only the original opaque recording identity can authorize Load.
         if title and title.casefold()!=original.casefold():
-            if folder_state(client)['id']!=self.folder['id']:
-                raise BridgeError('Catalog folder changed during recording lookup. No replacement was loaded.')
+            require_original_folder()
             self.send(client,'search '+search_literal(title))
             self.wait_observed(client,1.5)
             if scan(title,32):return
-            if folder_state(client)['id']!=self.folder['id']:
-                raise BridgeError('Catalog folder changed during recording lookup. No replacement was loaded.')
+            require_original_folder()
             self.send(client,'search '+search_literal(original))
             self.wait_observed(client,1.5)
         if scan(original,101):return

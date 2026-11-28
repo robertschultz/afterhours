@@ -113,6 +113,22 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertEqual(score['sampledSecondsByState'], {'searching':3, 'staged':3, 'committed':4,
                                                          'named-unverified':4, 'hidden':2})
 
+    def test_observed_variety_requires_a_contiguous_exact_recording_sequence(self):
+        def handoff(outgoing, incoming, artist, incoming_artist):
+            return {'verified':True, 'outgoingRecordingId':outgoing, 'incomingRecordingId':incoming,
+                    'outgoingArtist':artist, 'incomingArtist':incoming_artist}
+        rows = [handoff('one', 'two', 'A', 'A'), handoff('two', 'one', 'A', 'a'),
+                handoff('one', 'three', 'A', None)]
+        score = SCORER['observed_curatorial_variety'](rows)
+        self.assertEqual((score['recordingsPlayed'], score['distinctRecordings']), (4, 3))
+        self.assertEqual(score['extraPlaysByRecording'], {'one':1})
+        self.assertEqual((score['knownArtistCredits'], score['distinctArtistCredits']), (3, 1))
+        self.assertEqual(score['extraPlaysByArtistCredit'], {'a':2})
+        self.assertEqual(score['consecutiveRepeatedCreditPairs'], 2)
+        rows[1]['outgoingRecordingId'] = 'different'
+        self.assertIsNone(SCORER['observed_curatorial_variety'](rows))
+        self.assertIsNone(SCORER['observed_curatorial_variety']([{'verified': True}]))
+
     def test_judge_reports_abstention_and_order_swap_on_held_out_pairs(self):
         human = [{'reviewerId': 'one', 'choice': 'a'}, {'reviewerId': 'two', 'choice': 'a'}]
         base = {'briefId': 'house', 'dimension': 'transition-sound', 'humanLabels': human,

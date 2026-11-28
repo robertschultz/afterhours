@@ -251,6 +251,35 @@ def observed_up_next(browser, start):
     return result
 
 
+def observed_curatorial_variety(handoffs):
+    """Measure the exact verified recording sequence when identity evidence exists."""
+    if not handoffs or any(
+            row.get('verified') is not True or
+            not all(isinstance(row.get(key), str) and row[key] for key in ('outgoingRecordingId', 'incomingRecordingId'))
+            for row in handoffs):
+        return None
+    if any(previous['incomingRecordingId'] != current['outgoingRecordingId']
+           for previous, current in zip(handoffs, handoffs[1:])):
+        return None
+    first = handoffs[0]
+    track_ids = [first['outgoingRecordingId'], *(row['incomingRecordingId'] for row in handoffs)]
+    artist_credits = [first.get('outgoingArtist'), *(row.get('incomingArtist') for row in handoffs)]
+    normalized = [credit.strip().casefold() if isinstance(credit, str) and credit.strip() else None
+                  for credit in artist_credits]
+    recordings = Counter(track_ids)
+    artists = Counter(credit for credit in normalized if credit)
+    return {
+        'recordingsPlayed':len(track_ids),
+        'distinctRecordings':len(recordings),
+        'extraPlaysByRecording':{key: count-1 for key, count in sorted(recordings.items()) if count > 1},
+        'knownArtistCredits':sum(artists.values()),
+        'distinctArtistCredits':len(artists),
+        'extraPlaysByArtistCredit':{key: count-1 for key, count in sorted(artists.items()) if count > 1},
+        'consecutiveRepeatedCreditPairs':sum(bool(previous and previous == current)
+                                             for previous, current in zip(normalized, normalized[1:])),
+    }
+
+
 def read_observed_run(prefix):
     """Compare native handoff timing with independent master capture logs."""
     owner = json.loads(Path(f'{prefix}-owner.json').read_text())
@@ -324,6 +353,7 @@ def read_observed_run(prefix):
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
         'upNextOverlay':observed_up_next(browser, start),
+        'curatorialVariety':observed_curatorial_variety(handoffs),
         'masterCapturedSeconds':meter.get('capturedAudioSeconds'),
         'masterStartedAfterPlaybackSeconds':starts[0].get('afterStartSeconds'),
         'captureSequenceDiscontinuities':meter.get('sequenceDiscontinuities'),

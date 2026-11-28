@@ -124,6 +124,31 @@ class DiscoveryTests(unittest.TestCase):
             job.step(None);now[0]=26;job.step(None)
         self.assertTrue(job.done);self.assertIn('Keeping',s.snapshot()['catalogSearch']['message'])
 
+    def test_timed_search_archives_matches_without_using_their_full_quota(self):
+        session = DJSession(threading.Lock())
+        self.addCleanup(session.crate.close)
+        now = [0]
+        job = CatalogSearch(session, ['House'], '', '', 110, 140, clock=lambda:now[0])
+        job.rolling = job.reuse_matches = True
+        job.target = job.quota = 2
+        job.set_rolling_seed('', '', eligible=lambda row:row['genre'] == 'House' and row['id'] != 'played')
+        rows = [('played','House'), ('other','Dub'), ('new1','House'), ('new2','House')]
+        selections = [{'id':identifier, 'artist':'DJ', 'metadata':{
+            'id':identifier,'title':identifier,'artist':'DJ','genre':genre,'bpm':125}} for identifier, genre in rows]
+        with patch('afterhours.vdj_discovery.folder_state', return_value={'id':'folder'}), \
+             patch('afterhours.vdj_discovery.selection', side_effect=selections), patch.object(session, 'send'):
+            job.step(None)
+            now[0] = 2
+            job.step(None)
+            for _ in selections[:-1]:
+                job.step(None)
+                self.assertFalse(job.done)
+            job.step(None)
+        self.assertTrue(job.done)
+        self.assertEqual(job.seen, {identifier for identifier, _ in rows})
+        catalog = session.snapshot()['catalogSearch']
+        self.assertEqual((catalog['matched'], catalog['rollingProspects']), (4,2))
+
     def test_rolling_search_confirms_empty_rows_without_scrolling_and_accepts_late_results(self):
         late = {'id':'late','artist':'Fixture','metadata':{'id':'late','title':'Late result',
                                                          'artist':'Fixture','bpm':125}}

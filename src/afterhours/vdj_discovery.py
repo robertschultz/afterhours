@@ -19,6 +19,8 @@ class CatalogSearch:
         self.artist=[v.strip().casefold() for v in artist.split(';') if v.strip()]
         self.rolling_artist = frozenset()
         self.rolling_title = ''
+        self.rolling_eligible = None
+        self.rolling_prospects = 0
         self.genre=re.sub(r'[^a-z0-9]','',genre.casefold())
         self.bpm_min=bpm_min;self.bpm_max=bpm_max
         self.filters={'artist':artist,'genre':genre,'bpmMin':bpm_min,'bpmMax':bpm_max}
@@ -39,16 +41,18 @@ class CatalogSearch:
         self.seconds=25 if opening else 45
         self.quota=max(2,self.target//len(terms))
 
-    def set_rolling_seed(self, artist, title):
+    def set_rolling_seed(self, artist, title, *, eligible=None):
         """Keep native text hits tied to the artist or recording that seeded the search."""
         self.rolling_artist = credit(artist)
         self.rolling_title = normalized(title)
+        self.rolling_eligible = eligible
 
     def publish(self,status,message):
         self.session.update(catalogSearch={'status':status,'query':'; '.join(self.terms),
             **({'externalRequestId':self.external_request_id} if self.external_request_id else {}),
             'term':self.terms[min(self.term_index,len(self.terms)-1)],'filters':copy.deepcopy(self.filters),
             'examined':self.examined,'added':self.added,'matched':self.matched,'latest':self.latest,
+            **({'rollingProspects':self.rolling_prospects} if self.rolling_eligible else {}),
             'foundIds':sorted(self.seen)[:32],'message':message,'updated':time.time()})
         if self.external_finish and status in ('complete','error'):
             self.external_finish('confirmed' if status=='complete' else 'blocked',
@@ -58,7 +62,8 @@ class CatalogSearch:
     def finish(self,message=None):
         self.done=True
         self.publish('complete',message or f'{self.added} new recordings added to the crate.')
-        self.session.event(message or f'Crate search finished: {self.added} new recordings. Existing queue kept.','catalog')
+        detail = {'rollingProspects':self.rolling_prospects} if self.rolling_eligible else {}
+        self.session.event(message or f'Crate search finished: {self.added} new recordings. Existing queue kept.','catalog', **detail)
 
     def resume_search(self):
         # Preloading may use a different browser search on the same engine.
@@ -121,9 +126,11 @@ class CatalogSearch:
             if matches and track['id'] not in self.seen:
                 # Every considered recording survives in the archive even when
                 # its bounded planning pool already has 48 entries.
-                _,inserted=s.remember_record(track,source='discovery',query=term,position=self.position)
+                record,inserted=s.remember_record(track,source='discovery',query=term,position=self.position)
                 self.seen.add(track['id']);self.matched+=1
-                self.per_term+=int(inserted or self.reuse_matches)
+                if self.rolling_eligible is None or self.rolling_eligible(record):
+                    self.per_term+=int(inserted or self.reuse_matches)
+                    self.rolling_prospects+=int(self.rolling_eligible is not None)
                 self.added+=int(inserted)
                 if self.opening_query:
                     from afterhours.queue_planning import quick_opening
@@ -133,6 +140,8 @@ class CatalogSearch:
         self.publish('searching',f'{self.added} new recordings found. Existing queue kept.')
         self.position+=1
         progress=self.matched if self.reuse_matches else self.added
+        if self.rolling_eligible is not None:
+            progress=self.rolling_prospects
         if self.repeated>=2 or self.position>=self.max_rows or self.per_term>=self.quota or progress>=self.target:
             self.term_index+=1;self.position=0;self.per_term=0;self.repeated=0;self.last_id=None
             if self.term_index>=len(self.terms) or progress>=self.target:self.finish();return

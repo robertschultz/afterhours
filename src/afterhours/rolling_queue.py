@@ -476,7 +476,12 @@ class RollingQueue:
             job = session.catalog_job
             job.rolling = True
             if timed_set:
-                job.set_rolling_seed(artist, title)
+                matches_style = automatic_style_filter(style, order, state.get('candidates', []))
+                used = {row['id'] for row in order} | self.missed
+                used.update(row['trackId'] for row in state.get('recordingAvailability', []))
+                titles = {song_identity(row)[0] for row in order} | self.missed_titles
+                job.set_rolling_seed(artist, title, eligible=lambda row: row['id'] not in used
+                    and song_identity(row)[0] not in titles and matches_style(row))
                 if title and artist:
                     self.artist_expansion = (job, artist, style, direction)
                 job.reuse_matches = True

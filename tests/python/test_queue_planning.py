@@ -242,7 +242,13 @@ class QueuePlanningTests(unittest.TestCase):
             urgent, session = RollingQueue(), Mock()
             self.assertTrue(urgent.search(session, state, order, 'deep house', True))
             self.assertEqual(session.discover_more.call_args.args, ('deep house',))
-            session.catalog_job.set_rolling_seed.assert_called_once_with('', '')
+            seed = session.catalog_job.set_rolling_seed
+            seed.assert_called_once_with('', '', eligible=unittest.mock.ANY)
+            eligible = seed.call_args.kwargs['eligible']
+            self.assertFalse(eligible(order[0]))
+            self.assertFalse(eligible({**track('b'), 'title':order[0]['title'], 'genre':'Deep House'}))
+            self.assertFalse(eligible({**track('b'), 'genre':'Dub'}))
+            self.assertTrue(eligible({**track('b'), 'genre':'Deep House'}))
             self.assertTrue(urgent.search(session, state, order, 'deep house', True))
             self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
             regular = RollingQueue()
@@ -361,12 +367,13 @@ class QueuePlanningTests(unittest.TestCase):
                     discovery.hints.return_value = []
                     discovery.neighbors.return_value = []
                     self.assertTrue(roller.search(session, {'agentDirection':'house late set'}, order, 'house', True))
-                    session.catalog_job.set_rolling_seed.assert_called_once_with('Related Artist','Catalog Version')
+                    session.catalog_job.set_rolling_seed.assert_called_once_with('Related Artist','Catalog Version',
+                                                                                 eligible=unittest.mock.ANY)
                     session.catalog_job.done = True
                     session.catalog_job.seen = seen
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(searches, ['Related Artist Catalog Version', expected])
-                    session.catalog_job.set_rolling_seed.assert_called_once_with(*scope)
+                    session.catalog_job.set_rolling_seed.assert_called_once_with(*scope, eligible=unittest.mock.ANY)
 
     def test_rolling_search_recovers_from_exhausted_recent_collaboration_queries(self):
         order = [{**track('a'), 'artist':'Earlier Artist'},

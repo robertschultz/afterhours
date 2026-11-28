@@ -1206,7 +1206,7 @@ class DJSession:
 
     def plan(self, ids, seconds=30, excerpt_bars=16, max_tempo_shift=8, mix_style='phrase',
              source='planner', tempo_targets=None, _tempo_route=None, _archive_boundary=True, quick_blend_seconds=None,
-             *, queue_window=DEFAULT_QUEUE_WINDOW):
+             *, queue_window=DEFAULT_QUEUE_WINDOW, clear_direction=False):
         with self.lock:
             if self.state['active']:
                 raise ValueError('Wait for the current session operation to finish.')
@@ -1243,6 +1243,8 @@ class DJSession:
             if source=='operator':
                 sources.update({track:'operator' for i,track in enumerate(ids) if i>=len(previous) or previous[i]!=track})
             if _archive_boundary:self.archive_call('boundary')
+            if clear_direction:
+                self.state.pop('agentDirection', None)
             self.state.update(order=order, recoveryRemainder=[], secondsPerTrack=seconds, excerptBars=excerpt_bars,
                               queueWindow=queue_window,
                               setlist={**policy,'sourceById':sources},

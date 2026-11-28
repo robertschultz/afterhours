@@ -5,6 +5,7 @@ import json
 import threading
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from afterhours import server
@@ -41,6 +42,22 @@ class QueuePlanningHTTPTests(unittest.TestCase):
         committed=self.post('/api/set-session', {'action':'insert-track','trackId':'x'})
         self.assertEqual(preview['insertion'],committed['insertion'])
         self.assertEqual([track['id'] for track in committed['order']],['a','x','b'])
+
+    def test_new_manual_order_uses_its_own_genre_instead_of_previous_request(self):
+        self.session.update(agentDirection='Play gospel music')
+        request={'action':'plan','ids':['x','missing']}
+        with self.assertRaises(HTTPError) as rejected:
+            self.post('/api/set-session', request)
+        self.assertEqual(rejected.exception.code,409)
+        rejected.exception.close()
+        self.assertEqual(self.session.snapshot()['agentDirection'],'Play gospel music')
+
+        self.session.plan(['a','b'])
+        self.assertEqual(self.session.snapshot()['agentDirection'],'Play gospel music')
+        response=self.post('/api/set-session', {'action':'plan','ids':['x','b']})
+        self.assertEqual([track['id'] for track in response['order']],['x','b'])
+        self.assertFalse(response.get('agentDirection'))
+        self.assertFalse(self.session.snapshot().get('agentDirection'))
 
     def test_explicit_fresh_start_routes_to_the_authorized_agent_action(self):
         with patch.object(server.DJ_AGENT,'message',return_value={'status':'pending'}) as planner:

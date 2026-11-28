@@ -435,6 +435,7 @@ class Handler(RuntimeStaticHandler):
                     result = DJ_SESSION.discover(data.get('query'), data.get('artist',''),data.get('genre',''),data.get('bpmMin',40),data.get('bpmMax',300))
                 elif action == 'plan':
                     result = DJ_SESSION.plan(data.get('ids'), data.get('seconds',track_seconds()), data.get('excerptBars',16),data.get('maxTempoShift',8),data.get('mixStyle','phrase'),quick_blend_seconds=data.get('quickBlendSeconds'),
+                                             clear_direction=True,
                                              **({'queue_window':data['queueWindow']} if 'queueWindow' in data else {}))
                 elif action == 'start':
                     options={'rolling_queue':True} if data.get('rollingQueue') is True else {}

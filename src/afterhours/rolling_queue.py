@@ -160,9 +160,13 @@ class RollingQueue:
                                      activity=session.event, searched=self.searched)
         identified = {f"{lead['artist']} {lead['title']}": lead for lead in leads}
         if timed_set:
-            suggestions = DISCOVERY.hints(style, order)
+            suggestions = DISCOVERY.hints(style, order, searched=self.searched)
             terms = [f"{row['artist']} {row['title']}" for row in suggestions] + terms
             terms += [str(track.get('label') or '').strip() for track in reversed(order[-5:])]
+            if style == 'house' and not style_for(state.get('agentDirection')):
+                for related in ('deep house', 'tech house'):
+                    terms += [f"{row['artist']} {row['title']}"
+                              for row in DISCOVERY.hints(related, order, searched=self.searched)]
             terms += [str(tail.get('genre') or style).strip(), style]
         for term in (*identified, *terms):
             key = normalized(term)

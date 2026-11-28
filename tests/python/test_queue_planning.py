@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from afterhours import dj_agent, queue_planning
+from afterhours import dj_agent, dj_discovery, queue_planning
 from afterhours.agent_loop import Lookups
 from afterhours.rolling_queue import RollingQueue
 from afterhours.vdj_session import DJSession
@@ -97,6 +97,21 @@ class QueuePlanningTests(unittest.TestCase):
         self.session.update(candidates=rows+[track('c')])
         roller.tick(self.session, 20)
         self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+
+    def test_rolling_search_can_use_related_house_with_no_explicit_style(self):
+        discovery = dj_discovery.Discovery(clock=lambda: 1)
+        discovery.feeds['deep house'] = {'observedAt': 1, 'source': 'Test chart', 'rows': [
+            {'title': 'Related Recording', 'artist': 'Related Artist', 'percentile': 90},
+        ]}
+        order = [{**track('a'), 'artist': 'Opening Artist', 'genre': 'House'}]
+        with patch('afterhours.rolling_queue.DISCOVERY', discovery):
+            for direction, expected in (('', 'Related Artist Related Recording'), ('House only', 'House')):
+                with self.subTest(direction=direction):
+                    roller = RollingQueue()
+                    roller.searched.add('opening artist')
+                    session = Mock()
+                    self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
+                    self.assertEqual(session.discover_more.call_args.args, (expected,))
 
     def test_rolling_measured_set_uses_existing_background_verification(self):
         self.session.plan(['a','b'])

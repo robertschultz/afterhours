@@ -852,6 +852,33 @@ class SessionTests(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError,'Incoming deck changed'):s.match_tempo(None,track,2,127)
         self.assertEqual(len(sent),1)
 
+    def test_measured_cue_can_shortcut_only_matching_paused_metadata(self):
+        track={'id':'exact','title':'Fixture','bpm':128,'camelot':'12A','engineChecked':True,
+               'engine':{'selection_id':identity('fixture')}}
+        cue={'trackId':'exact','replayVerified':True,'recordingDuration':264.509}
+        for fixture, expected_reads in [('matched',2),('changed-key',4),
+                                        ('changed-duration',4),('other-recording-cue',4),('drifting-grid',5)]:
+            with self.subTest(fixture=fixture):
+                session=DJSession(threading.Lock())
+                actual_cue={**cue,'trackId':'other' if fixture=='other-recording-cue' else 'exact'}
+                native={'deck 2 loaded':True,'deck 2 play':False,'deck 2 get_filepath':'fixture',
+                        'deck 2 get_bpm absolute':128,'deck 2 get_firstbeat':0,
+                        'deck 2 get_key':'Am' if fixture=='changed-key' else 'C#m',
+                        'deck 2 get_time total absolute':268509 if fixture=='changed-duration' else 264509}
+                anchors=iter([0, 5, 5, 5, 5])
+                def read(_, command, kind=None):
+                    if fixture=='drifting-grid' and command=='deck 2 get_firstbeat':
+                        return next(anchors)
+                    return native[command]
+                with patch.object(session,'q',side_effect=read) as query, \
+                        patch.object(session,'send') as send, patch.object(session,'sleep'), \
+                        patch.object(session,'wait_observed'):
+                    prepared=session.analyze_deck(None,track,2,measured_cue=actual_cue)
+                self.assertEqual(prepared['nativeDuration'],native['deck 2 get_time total absolute']/1000)
+                self.assertEqual(sum(c.args[1]=='deck 2 get_bpm absolute' for c in query.call_args_list),expected_reads)
+                self.assertEqual([c.args[1] for c in send.call_args_list],
+                                 ['deck 2 master_tempo on','deck 2 goto_first_beat'])
+
     def test_half_time_analysis_changes_grid_without_starting_or_pitching_audio(self):
         s=DJSession(threading.Lock());path='fixture-track';source={'id':'a','title':'Fixture','bpm':165,'camelot':'11A','engine':{'selection_id':identity(path)}}
         s.update(candidates=[source]);bpm=[86.0];sent=[]

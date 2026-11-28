@@ -2601,7 +2601,7 @@ class DJSession:
                    firstIdentityMatched=current.get('id') == track_id)
         return confirmed
 
-    def analyze_deck(self, client, track, deck, clock=None):
+    def analyze_deck(self, client, track, deck, clock=None, *, measured_cue=None):
         self.availability.require_track(track)
         self.crate.upsert(track,source='analysis',analysis='attempted')
         clock=clock or time.monotonic
@@ -2621,6 +2621,15 @@ class DJSession:
         self.sleep(.15)
         deadline=clock()+15
         previous=None;stable=0
+        duration = None
+        # A measured cue belongs to this exact recording and will still be
+        # replayed on the incoming deck. Matching native metadata can settle
+        # sooner; a changed reading needs the full ordinary settling window.
+        expected_duration = (measured_cue or {}).get('recordingDuration')
+        compact = bool(track.get('engineChecked') and track.get('camelot')
+                       and (measured_cue or {}).get('replayVerified') is True
+                       and (measured_cue or {}).get('trackId') == track['id']
+                       and type(expected_duration) in (int, float) and math.isfinite(expected_duration))
         while clock()<deadline:
             bpm=number(self.q(client,f'deck {deck} get_bpm absolute'),40,300)
             key,camelot=musical_key(self.q(client,f'deck {deck} get_key','text'))
@@ -2629,9 +2638,19 @@ class DJSession:
             # Keep it bounded to one bar before zero at the minimum 40 BPM.
             first=number(self.q(client,f'deck {deck} get_firstbeat'),-6000,3_600_000)
             reading=(round(bpm,3),camelot,round(first))
+            if compact and previous is not None and reading != previous:
+                compact = False
             stable=stable+1 if reading==previous else 0;previous=reading
+            if compact:
+                compact = camelot == track['camelot'] and abs(bpm - track['bpm']) <= .15
+                if compact and stable >= 1:
+                    observed = number(self.q(client, f'deck {deck} get_time total absolute'), 1, 86_400_000) / 1000
+                    if abs(observed - expected_duration) <= .2:
+                        duration = observed
+                        break
+                    compact = False
             if stable>=3:break
-            self.wait_observed(client, .6)
+            self.wait_observed(client, .2 if compact else .6)
         else:raise NativeAnalysisUnsettled('Track analysis did not settle. No playback was started.')
         if 150<=track['bpm']<=190 and 75<=bpm<=95 and abs(bpm*2/track['bpm']-1)<=.08:
             # Correct a half-time grid, not the audio playback speed. This is a
@@ -2642,7 +2661,8 @@ class DJSession:
             bpm=number(self.q(client,f'deck {deck} get_bpm absolute'),40,300)
             if abs(bpm-original*2)>.05:raise BridgeError('Half-time grid correction was not confirmed.')
             self.event(f'{track["title"]}: half-time grid normalized from {original:.2f} to {bpm:.2f} BPM.','analysis')
-        duration = number(self.q(client, f'deck {deck} get_time total absolute'), 1, 86_400_000) / 1000
+        if duration is None:
+            duration = number(self.q(client, f'deck {deck} get_time total absolute'), 1, 86_400_000) / 1000
         if (as_bool(self.q(client, f'deck {deck} play', 'bool'))
                 or identity(str(self.q(client, f'deck {deck} get_filepath', 'text'))) != track['engine']['selection_id']):
             raise BridgeError('The recording changed before its loaded duration was verified.')
@@ -2655,7 +2675,8 @@ class DJSession:
         if checked is not None:
             if as_bool(self.q(client,f'deck {deck} play','bool')) or identity(str(self.q(client,f'deck {deck} get_filepath','text')))!=track['engine']['selection_id']:
                 raise BridgeError('The checked incoming recording changed. No playback was started.')
-        actual=checked if checked is not None else self.analyze_deck(client,track,deck)
+        cue_check = {'measured_cue':cue} if cue and cue.get('replayVerified') is True else {}
+        actual=checked if checked is not None else self.analyze_deck(client,track,deck,**cue_check)
         # A variable beat grid can refine the reported tempo as its playhead
         # moves. Small refinements do not invalidate the musical selection;
         # changed key, large revisions and the pitch bound still require a plan.

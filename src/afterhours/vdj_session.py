@@ -1962,9 +1962,14 @@ class DJSession:
                         pending['catalogMissId']=miss
                     if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:
                         pending['analysisMissId']=scan_miss
-                    early_miss = getattr(job, 'measured_fit_miss', None)
-                    if not cleanup_failed and early_miss and self.replaceable_rolling_pick(self.state, pending, early_miss):
-                        pending['measuredFitMissId'] = early_miss
+                    readback = getattr(job, 'measured_fit_miss', None)
+                    if not cleanup_failed and isinstance(readback, dict):
+                        early_miss = self.replaceable_rolling_pick(self.state, pending, readback['id'])
+                        if early_miss:
+                            pending['measuredFitMissId'] = early_miss
+                            self.state['candidates'] = [
+                                {**track, **readback} if track['id'] == early_miss else track
+                                for track in self.state['candidates']]
                     if fitting and not cleanup_failed and isinstance(exc, ValueError):
                         fit_miss = self.replaceable_fit_miss(self.state, pending, exc)
                         pinned = set(self.state.get('setPins', [])) | set(self.state['setlist'].get('lockedIds', []))

@@ -5,6 +5,7 @@ from afterhours import tempo_planner
 from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
 from afterhours.native_analysis import NativeAnalysisDatabaseUpdating
+from afterhours.preparation_pool import PreparationPool
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession
 
@@ -248,11 +249,22 @@ class BackgroundTests(unittest.TestCase):
              patch.object(job, 'read_evidence') as evidence, \
              patch('afterhours.background_analysis.scan_track') as scan:
             job.run()
-        self.assertEqual(job.measured_fit_miss, candidate['id'])
+        self.assertEqual(job.measured_fit_miss['id'], candidate['id'])
+        self.assertEqual(job.measured_fit_miss['bpm'], 107)
         self.assertIn('107 BPM', job.error)
         evidence.assert_not_called()
         scan.assert_not_called()
         self.assertEqual(session.snapshot()['index'], 0)
+        pool = PreparationPool(session, pending['id'], [candidate])
+        pool.remember_failure(job)
+        session.background_job = pool
+        session.service_background(Mock(), 25)
+        state = session.snapshot()
+        self.assertEqual(state['queuedUpdate']['measuredFitMissId'], candidate['id'])
+        measured = next(track for track in state['candidates'] if track['id'] == candidate['id'])
+        self.assertEqual(measured['bpm'], 107)
+        self.assertTrue(measured['engineChecked'])
+        self.assertEqual(state['order'], [planned, cued])
 
     def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
         self.verify_refill_audio_without_display_waveform(timed=False)

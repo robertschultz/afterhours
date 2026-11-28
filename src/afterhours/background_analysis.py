@@ -547,7 +547,8 @@ class BackgroundAnalysis:
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
                 if miss := self.session.automatic_refill_tempo_miss(self.revision, checked):
-                    self.measured_fit_miss = track['id']
+                    self.measured_fit_miss = {key:checked[key] for key in
+                        ('id','bpm','key','camelot','engineChecked','duration') if key in checked}
                     raise BridgeError(miss)
                 evidence=self.read_evidence(checked)
                 waveform_ready = not display_waveform or bool(evidence.get('energyMap')) and verified_waveform(

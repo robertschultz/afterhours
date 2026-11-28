@@ -276,12 +276,13 @@ class RollingQueue:
                 (eligible if matches_style(track) else unresolved).append(track)
             candidates = eligible
             upcoming = len(order) - state['index'] - 1
+            one_spare_pressure = timed_set and upcoming <= 2 and len(session.preparation_decks()) == 1
             if upcoming <= 4:
                 request_missing_house_evidence(style, candidates, unresolved, tail['bpm'], state.get('maxTempoShift', 8))
             # With two successors already committed, yield one catalog
             # search to broaden an operator-started queue that has become
             # dominated by one artist. The shorter buffer can still refill.
-            if (timed_set and upcoming >= 2 and slack >= 22
+            if (timed_set and not one_spare_pressure and upcoming >= 2 and slack >= 22
                     and not state.get('agentDirection') and candidates):
                 avoid = repeated_artists(order) | heavily_played_credits(order)
                 if avoid and not any(brings_new_artist(row, avoid) for row in candidates):
@@ -325,7 +326,7 @@ class RollingQueue:
             failed_songs = self.failed_scan_songs if not deferred else set()
             timed_ready = self.timed_ready_ids(state, candidates) if not deferred else set()
             advised = receipt = None
-            if not deferred and (timed_set or not quick):
+            if not one_spare_pressure and not deferred and (timed_set or not quick):
                 repeat = repeated_artists(order)
                 fresh = [row for row in candidates if not song_credit_keys(row) & failed_songs] or candidates
                 ready = [row for row in fresh if row['id'] in timed_ready]
@@ -340,9 +341,10 @@ class RollingQueue:
                 receipt = self.advisor.receipt
                 self.advisor.receipt = None
             picked = []
-            # A long final runway can start the next pair before the queue
-            # rebuilds. The first verified recording is published independently.
-            batch_slack = 16 if upcoming >= 2 else 23 if upcoming else 40
+            # With one spare and little runway, stage its next job now.
+            # The first result can publish while the same deck verifies the
+            # second, with no additional ranking or catalog round trip.
+            batch_slack = 16 if one_spare_pressure or upcoming >= 2 else 23 if upcoming else 40
             batch = 2 if timed_set and slack >= batch_slack else 1
             remaining = list(candidates)
             while remaining and len(picked) < batch:

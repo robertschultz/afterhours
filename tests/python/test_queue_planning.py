@@ -452,6 +452,21 @@ class QueuePlanningTests(unittest.TestCase):
         roller.tick(self.session, 25)
         self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['d','c'])
 
+    def test_one_spare_stages_two_last_slot_picks_without_waiting_for_the_advisor(self):
+        self.session.plan(['a', 'b'])
+        self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125},
+                            resumeBlocked=True, cleanupPending={'analysis':[{'deck':3,'selectionId':'unconfirmed'}]})
+        self.assertEqual(self.session.preparation_decks(), (4,))
+        roller = RollingQueue()
+        roller.advisor.advise = Mock(return_value=(None, True))
+        roller.tick(self.session, 27)
+        queued = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(len(queued['rollingTrackIds']), 2)
+        self.assertEqual(queued['protectedIds'], ['a', 'b'])
+        self.assertEqual(queued['status'], 'needs-analysis')
+        roller.advisor.advise.assert_not_called()
+
     def test_long_last_slot_can_stage_two_without_waiting_to_pick_again(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},

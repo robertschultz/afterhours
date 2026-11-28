@@ -2632,7 +2632,8 @@ class DJSession:
                     if current['id'] != track['id'] or not current['playing']:
                         raise BridgeError('A deck changed or was paused. Scheduling stopped for manual control.')
                     if tempo_row:
-                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1])
+                        control=self.tempo_ramp.tick(client,current,t['decks'][incoming-1],
+                            handoff_beat=goal if entry_cadence and not final else None)
                         self.update(tempoControl=control)
                     change = self.service_copilot(client, current, incoming, ready, target, window)
                     if change:

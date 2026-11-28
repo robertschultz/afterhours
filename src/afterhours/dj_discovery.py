@@ -16,6 +16,7 @@ LISTENBRAINZ = 'https://api.listenbrainz.org/1/'
 MUSICBRAINZ = 'https://musicbrainz.org/ws/2/artist'
 MUSICBRAINZ_RECORDINGS = 'https://musicbrainz.org/ws/2/recording'
 HOUSE_STYLES = ('house', 'deep house', 'tech house')
+SET_ARTIST_PREFERENCE_LIMIT = 6
 MAX_AGE = 3 * 86400
 FEED_ERRORS = (OSError, URLError, ValueError, KeyError, TypeError, AttributeError)
 
@@ -26,6 +27,15 @@ def normalized(value):
 
 def credit(value):
     return frozenset(normalized(name) for name in re.split(r'[,;]|\s+(?:&|feat\.?|ft\.?)\s+', str(value or ''), flags=re.I) if normalized(name))
+
+
+def artist_appearances(tracks):
+    return Counter(artist for track in tracks for artist in credit(track.get('artist')))
+
+
+def heavily_played_credits(tracks):
+    return {artist for artist, count in artist_appearances(tracks).items()
+            if count >= SET_ARTIST_PREFERENCE_LIMIT}
 
 
 def identity(title, artist):

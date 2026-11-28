@@ -285,6 +285,21 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertTrue(roller.search(session, {}, order, 'house', True))
         self.assertEqual(session.discover_more.call_args.args, ('Related Artist',))
 
+    def test_rolling_prefers_variety_after_an_artist_has_featured_across_the_set(self):
+        order = [{**track(str(i)), 'artist':'Resident DJ' if i < 6 else f'Guest {i}', 'genre':'House'}
+                 for i in range(9)]
+        repeat = {**track('resident'), 'artist':'Resident DJ & Collaborator', 'genre':'House'}
+        related = {**track('related'), 'artist':'Related Artist', 'genre':'House'}
+        self.session.update(candidates=[*order, repeat, related])
+        self.session.plan([row['id'] for row in order])
+        self.session.update(index=8,active=True,phase='playing',rollingQueue={'status':'ready'},
+                            entryCadence=[30,60],executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.live_matches.add('resident')
+        roller.advisor.enabled = False
+        roller.tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'], 'related')
+
     def test_rolling_exact_title_miss_broadens_once_to_the_same_credited_artist(self):
         order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
         hints = [{'artist':'Related Artist', 'title':'Catalog Version'},

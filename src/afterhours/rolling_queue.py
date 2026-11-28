@@ -6,6 +6,7 @@ from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, credit, identity, normalized, rank_candidates, set_slot, style_for
 from afterhours.dj_discovery import fits_faith_set
+from afterhours.dj_discovery import heavily_played_credits
 from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
@@ -213,7 +214,7 @@ class RollingQueue:
                     used = {row['id'] for row in staged} | self.missed
                     used.update(row['trackId'] for row in state.get('recordingAvailability', []))
                     titles = {song_identity(row)[0] for row in staged} | self.missed_titles
-                    repeated = repeated_artists(staged)
+                    repeated = repeated_artists(staged) | heavily_played_credits(staged)
                     supply = {title for row in state['candidates']
                               if row['id'] in self.live_matches and row['id'] not in used
                               and (title := song_identity(row)[0]) and title not in titles
@@ -314,7 +315,8 @@ class RollingQueue:
                 fresh = [row for row in candidates if not song_credit_keys(row) & failed_songs] or candidates
                 ready = [row for row in fresh if row['id'] in timed_ready]
                 fresh = ready or fresh
-                diverse = [row for row in fresh if brings_new_artist(row, repeat)] if repeat else []
+                avoid = repeat | heavily_played_credits(order)
+                diverse = [row for row in fresh if brings_new_artist(row, avoid)] if avoid else []
                 advised, waiting = self.advisor.advise(state,tail,diverse or fresh,facts,slack)
                 if waiting:
                     return
@@ -331,15 +333,15 @@ class RollingQueue:
             while remaining and len(picked) < batch:
                 if session.cancel.is_set():
                     return
-                repeat = repeated_artists(order + picked) if not deferred else set()
-                # Favor a different credited artist when the last two tracks
-                # share one. Keep the ranked repeats in reserve if every
+                avoid = (repeated_artists(order + picked) | heavily_played_credits(order + picked)
+                         if not deferred else set())
+                # Favor artists with room in the set. Keep repeats in reserve if every
                 # alternative fails the native queue and tempo checks.
                 slot = min(range(len(remaining)), key=lambda index: (
                     bool(failed_songs & song_credit_keys(remaining[index])),
                     bool(timed_ready and not picked and remaining[index]['id'] not in timed_ready),
-                    bool(repeat and not brings_new_artist(remaining[index], repeat)),
-                )) if failed_songs or timed_ready or repeat else 0
+                    bool(avoid and not brings_new_artist(remaining[index], avoid)),
+                )) if failed_songs or timed_ready or avoid else 0
                 track = remaining.pop(slot)
                 keys = song_credit_keys(track)
                 if keys & song_versions:
@@ -429,8 +431,8 @@ class RollingQueue:
                 # spelling. Give its credited artist one broader native search.
                 seeds.insert(0, (artist, artist, ''))
         self.artist_expansion = None
-        if repeat := repeated_artists(order):
-            seeds.sort(key=lambda seed: repeats_artist_query(seed[0], repeat))
+        if avoid := repeated_artists(order) | heavily_played_credits(order):
+            seeds.sort(key=lambda seed: repeats_artist_query(seed[0], avoid))
         for term, artist, title in seeds:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:

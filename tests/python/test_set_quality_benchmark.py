@@ -143,6 +143,27 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertEqual(score['handoffsWithBothGenres'], 1)
         self.assertEqual(score['genreHandoffs'], [{'fromGenre':'house', 'toGenre':'tech house', 'count':1}])
 
+    def test_stem_and_bass_exchange_requires_ordered_native_values(self):
+        def sample(outgoing, incoming, mode='stems'):
+            return {'leadControl':mode,
+                    'outgoing':dict.fromkeys(('eq_low_freq', 'stem Vocal', 'stem Instru'), outgoing),
+                    'incoming':dict.fromkeys(('eq_low_freq', 'stem Vocal', 'stem Instru'), incoming)}
+
+        opening, end = sample(.5, 0), sample(0, .5)
+        rows = [
+            {'verified':True, 'controlReadback':[opening, sample(.01, .02), end]},
+            {'verified':True, 'controlReadback':[opening, sample(.1, .2), end]},
+            {'verified':True, 'controlReadback':[end, opening]},
+            {'verified':True, 'controlReadback':[sample(.5, 0, 'frequency-eq'), sample(0, .5, 'frequency-eq')]},
+            {'verified':True, 'leadControl':['stems']},
+            {'verified':False, 'controlReadback':[opening, end]},
+        ]
+        result = SCORER['observed_mix_techniques'](rows)
+        self.assertEqual(result['bassEqReadback'],
+                         {'withReadback':4, 'verifiedExchange':2, 'withSampledOverlap':1})
+        for key in ('vocalStemReadback', 'instrumentStemReadback'):
+            self.assertEqual(result[key], {'withReadback':3, 'verifiedExchange':1, 'withSampledOverlap':1})
+
     def test_observed_mix_techniques_use_verified_deck_and_mixer_readbacks(self):
         out, incoming = 'Clearing outgoing bass and lead', 'Bringing in incoming bass'
         rows = [

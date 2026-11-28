@@ -280,6 +280,35 @@ def observed_curatorial_variety(handoffs):
     }
 
 
+def observed_control_exchange(handoffs, control, *, mode=None):
+    # Control readback measures mixer automation, not source separation quality.
+    result = dict(withReadback=0, verifiedExchange=0, withSampledOverlap=0)
+    for handoff in handoffs:
+        values = []
+        for row in handoff.get('controlReadback') or ():
+            if not isinstance(row, dict) or (mode and row.get('leadControl') != mode):
+                continue
+            outgoing, incoming = row.get('outgoing'), row.get('incoming')
+            if not isinstance(outgoing, dict) or not isinstance(incoming, dict):
+                continue
+            pair = outgoing.get(control), incoming.get(control)
+            if all(type(value) in (int, float) and isfinite(value) and 0 <= value <= 1 for value in pair):
+                values.append(pair)
+        if not values:
+            continue
+        result['withReadback'] += 1
+        overlap = any(outgoing > .03 and incoming > .03 for outgoing, incoming in values)
+        result['withSampledOverlap'] += overlap
+        if overlap:
+            continue
+        opening = next((index for index, (outgoing, incoming) in enumerate(values)
+                        if outgoing >= .45 and incoming <= .03), None)
+        if opening is not None and any(outgoing <= .03 and incoming >= .45
+                                       for outgoing, incoming in values[opening+1:]):
+            result['verifiedExchange'] += 1
+    return result
+
+
 def observed_mix_techniques(handoffs):
     rows = [row for row in handoffs if row.get('verified') is True]
     if not rows:
@@ -302,6 +331,9 @@ def observed_mix_techniques(handoffs):
         'withOrderedBassSwapPhases':sum(
             controls.index(outgoing) < controls.index(incoming) for controls in bass_swaps),
         'leadControlHandoffs':dict(sorted(modes.items())),
+        'bassEqReadback':observed_control_exchange(rows, 'eq_low_freq'),
+        'vocalStemReadback':observed_control_exchange(rows, 'stem Vocal', mode='stems'),
+        'instrumentStemReadback':observed_control_exchange(rows, 'stem Instru', mode='stems'),
         'loopHandoffs':len(loops),
         'loopWrappedAndReleased':sum(
             (row.get('loopWraps') or 0) > 0 and row.get('loopRelease') == 'released' for row in loops),

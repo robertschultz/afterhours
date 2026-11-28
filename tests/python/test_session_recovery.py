@@ -25,6 +25,23 @@ class RecoveryTests(unittest.TestCase):
                       telemetry={'decks':[{'playing':True}]},executionPlan={'applied':True})
         return source
 
+    def test_checkpoint_keeps_provider_punctuation_out_of_native_search(self):
+        source = session()
+        for bucket in ('candidates', 'order'):
+            source.state[bucket][0]['artist'] = 'Nat "King" Cole'
+            source.state[bucket][1]['artist'] = 'AC/DC'
+            source.state[bucket][2].update(artist='[]', title='Fallback title')
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionRecovery(Path(directory) / 'queue.json')
+            store.save(source)
+            target = session()
+            receipt = store.restore(target)
+        self.assertTrue(receipt['restored'])
+        self.assertEqual(target.state['order'], source.state['order'])
+        self.assertEqual([target.positions[t['id']]['query'] for t in target.state['order'][:3]],
+                         ['Nat King Cole', 'AC DC', 'Fallback title'])
+        self.assertFalse(target.state['active'])
+
     def test_long_checkpoint_restores_remaining_queue_and_auditable_history_without_authority(self):
         source=self.long_session();original=copy.deepcopy(source.state['order'])
         with tempfile.TemporaryDirectory() as directory:

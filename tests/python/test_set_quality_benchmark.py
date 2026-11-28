@@ -135,6 +135,7 @@ class SetQualityBenchmarkTests(unittest.TestCase):
                 'firstPlayingSampleSeconds':10, 'lastPlayingSampleSeconds':42, 'playingSamples':7,
                 'measuredPlayingSeconds':8, 'minimumCommittedSuccessors':0, 'medianCommittedSuccessors':0,
                 'secondsWithoutCommittedSuccessor':6, 'secondsWithoutCommittedOrStagedSuccessor':4,
+                'committedSuccessorCoverage':.25, 'longestWithoutCommittedSuccessorSeconds':4,
                 'longestWithoutCommittedOrStagedSuccessorSeconds':2,
             })
 
@@ -164,8 +165,14 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             score = SCORER['read_observed_run'](prefix)
             self.assertTrue(score['completeHour'])
             self.assertTrue(score['stopVerified'])
+            self.assertIsNone(score['transportPauseVerified'])
             self.assertEqual(score['observedSeconds'], 3600)
             self.assertEqual(score['upNextOverlay']['missingWhilePlayingSamples'], 0)
+            logs['hour'][-1].update(event='Stop transport verified', cleanupPending=True)
+            Path(f'{prefix}-hour.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in logs['hour']))
+            score = SCORER['read_observed_run'](prefix)
+            self.assertTrue(score['transportPauseVerified'])
+            self.assertFalse(score['stopVerified'])
 
     def test_observed_overlay_distinguishes_staged_committed_and_legacy_track_names(self):
         def change(second, visible, label, state=None):

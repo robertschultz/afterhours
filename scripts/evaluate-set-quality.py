@@ -433,20 +433,23 @@ def observed_queue_runway(path, owner, end):
     if not playing:
         return None
 
-    sampled = no_committed = no_pending_successor = longest_empty = empty_run = 0
+    sampled = no_committed = no_pending_successor = 0
+    empty_run = uncommitted_run = longest_empty = longest_uncommitted = 0
     for before, after in zip(rows, rows[1:]):
         span = after['at'] - before['at']
         # Never attribute a skipped poll, transition, or new recording to the
         # earlier reading. A separate browser log covers the blend itself.
         if (span > 5 or before['phase'] != 'playing' or after['phase'] != 'playing'
                 or before['index'] != after['index']):
-            empty_run = 0
+            empty_run = uncommitted_run = 0
             continue
         sampled += span
         if before['committedSuccessors']:
-            empty_run = 0
+            empty_run = uncommitted_run = 0
             continue
         no_committed += span
+        uncommitted_run += span
+        longest_uncommitted = max(longest_uncommitted, uncommitted_run)
         if before['stagedSuccessors']:
             empty_run = 0
             continue
@@ -462,6 +465,8 @@ def observed_queue_runway(path, owner, end):
         'minimumCommittedSuccessors':min(row['committedSuccessors'] for row in playing),
         'medianCommittedSuccessors':median(row['committedSuccessors'] for row in playing),
         'secondsWithoutCommittedSuccessor':round(no_committed, 3),
+        'committedSuccessorCoverage':round((sampled - no_committed) / sampled, 4) if sampled else None,
+        'longestWithoutCommittedSuccessorSeconds':round(longest_uncommitted, 3),
         'secondsWithoutCommittedOrStagedSuccessor':round(no_pending_successor, 3),
         'longestWithoutCommittedOrStagedSuccessorSeconds':round(longest_empty, 3),
     }
@@ -586,6 +591,8 @@ def read_observed_run(prefix):
         'completeHour':last['event'] == 'Endurance reached' and elapsed >= 3600
                        and verified == len(handoffs) == last['tracks']-1,
         'stopVerified':any(row.get('event') == 'Stop verified' for row in browser),
+        'transportPauseVerified':next((row['event'] == 'Stop transport verified' for row in reversed(browser)
+                                       if row.get('event') in ('Stop transport verified', 'Stop transport unconfirmed')), None),
         'verifiedHandoffs':verified,
         'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
         'cadenceSeconds':cadence,

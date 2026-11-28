@@ -355,6 +355,22 @@ def complete_background_queue(snapshot, order, measured, reason, protected, tran
         return result
 
 
+def has_recovery_bar(entry, verified_exits, target, bpm):
+    # Allow for a slow decode and the executor's two-bar lead time. Look for
+    # an actual verified four-bar blend within a phrase of that deadline.
+    earliest = entry + target + bpm * .75 + 8
+    latest = earliest + 16
+    for cue in verified_exits:
+        if cue.get('replayVerified') is not True:
+            continue
+        start = cue['exitBeat']
+        span = min(cue['endBeat'] - start, cue['maxBlendBeats'])
+        bar = start + 4 * max(0, math.ceil((earliest - start) / 4))
+        if bar <= latest and bar + 16 <= start + span + 1e-4:
+            return True
+    return False
+
+
 def _background_fit(snapshot, order, measured, reason, protected, transitions=None, tempo_targets=None, standing_style=None, cue_choices=None):
     """Keep the agent's selection; fit verified cues locally without a paid call.
 
@@ -407,6 +423,11 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                 best_error = min(map(cadence_error, candidates))
                 if math.isfinite(best_error):
                     candidates = [c for c in candidates if cadence_error(c) <= best_error + 4]
+                    if snapshot.get('rollingQueue') or snapshot.get('active'):
+                        recovery = [c for c in candidates if has_recovery_bar(
+                            c['entryBeat'], source['cueCandidates'], target, bpm)]
+                        if recovery:
+                            candidates = recovery
                     # Prefer a nearby alternative exit when the next load
                     # clears the exact target by only a few bars.
                     flexible = [c for c in candidates if any(4 <= beat-c['entryBeat']-target <= bpm/6 for beat in exits)]

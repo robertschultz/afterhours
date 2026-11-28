@@ -123,6 +123,37 @@ class CueTests(unittest.TestCase):
                 self.assertEqual(recipe['fadeBeats'],expected)
                 self.assertFalse(recipe['tonalOverlap'])
 
+    def test_rolling_cue_fit_prefers_a_real_recovery_bar_over_a_distant_outro(self):
+        rows, report, _ = fixture(2)
+        order = report['tracks']
+        report['targetBpm'] = 125
+        for track in order:
+            track['bpm'] = 125
+        measured = []
+        for offset in (0,16,32,48,64,80,96,400):
+            start = offset + 64
+            native = {'anchorBeat':0, 'offsetBeats':offset, 'entryBeat':offset,
+                      'entrySeconds':offset*60/125+.2, 'introEndSeconds':(offset+32)*60/125+.2,
+                      'exitBeat':start, 'exitSeconds':start*60/125+.2,
+                      'endBeat':start+32, 'endSeconds':(start+32)*60/125+.2}
+            cue = cp.candidate(order[0], rows, native,
+                               {'spanBeats':64,'blendBeats':32,'medianRmsDb':-14})
+            cue['replayVerified'] = True
+            cue['entry']['levelVariationDb'] = 0 if offset == 80 else 1
+            measured.append(cue)
+        order[0]['cueCandidates'] = measured
+        self.assertTrue(cp.has_recovery_bar(0, measured, 62.5, 125))
+        self.assertFalse(cp.has_recovery_bar(80, measured, 62.5, 125))
+        for rolling, expected_entry in ((False,80), (True,0)):
+            with self.subTest(rolling=rolling):
+                snapshot = {'analysis':report, 'mixStyle':'phrase', 'secondsPerTrack':30,
+                            'entryCadence':[30,60], 'rollingQueue':rolling,
+                            'executionPlan':{'orderIds':[], 'targetBpm':125},
+                            'aiReview':{'decision':'propose','secondsBetweenEntries':30,
+                                        'selections':[],'transitions':[]}}
+                result = cp.complete_background_queue(snapshot, order, [], 'Fit recovery around cadence.', 0)
+                self.assertEqual(result['executionPlan']['selections'][0]['entryBeat'], expected_entry)
+
     def test_timed_rhythm_windows_allow_four_bars_only_with_matching_signal(self):
         for loops, bright, stem_overlap, bass_gap, expected in (
             (True, False, 0, 0, 16), (False, False, 0, 0, 8),

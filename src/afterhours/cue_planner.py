@@ -438,22 +438,21 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                 bpm = report['targetBpm']
                 target = cadence[i % len(cadence)] * bpm / 60
                 exits = [c['exitBeat'] for c in candidates if c['maxBlendBeats'] >= 8]
-                if exits and snapshot.get('rollingQueue'):
-                    # The first eligible exit targets the cadence. Keep a
-                    # second measured exit available if discovery or decoding
-                    # needs most of the early track's runway.
-                    last_exit = max(exits)
-                    reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + bpm * .75]
-                    if not reserve:
-                        reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + 16]
-                    if reserve:
-                        candidates = reserve
                 def cadence_error(c):
                     return min((abs(exit_beat-c['entryBeat']-target) for exit_beat in exits
                                 if exit_beat-c['entryBeat'] >= 16), default=math.inf)
                 best_error = min(map(cadence_error, candidates))
                 if math.isfinite(best_error):
                     candidates = [c for c in candidates if cadence_error(c) <= best_error + 4]
+                    if snapshot.get('rollingQueue'):
+                        # Favor runway among cues that can already land near
+                        # the target. A much later exit is only a fallback.
+                        last_exit = max(exits)
+                        reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + bpm * .75]
+                        if not reserve:
+                            reserve = [c for c in candidates if last_exit - c['entryBeat'] >= target + 16]
+                        if reserve:
+                            candidates = reserve
                     if snapshot.get('rollingQueue') or snapshot.get('active'):
                         recovery = [c for c in candidates if has_recovery_bar(
                             c['entryBeat'], source['cueCandidates'], target, bpm)]

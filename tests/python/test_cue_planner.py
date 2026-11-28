@@ -123,6 +123,29 @@ class CueTests(unittest.TestCase):
                 self.assertEqual(recipe['fadeBeats'],expected)
                 self.assertFalse(recipe['tonalOverlap'])
 
+    def test_rolling_cue_fit_preserves_a_full_minute_when_a_shorter_cue_has_more_runway(self):
+        rows, report, _ = fixture(2,60)
+        order = report['tracks']
+        report['targetBpm'] = 128
+        for track in order:
+            track['bpm'] = 128
+
+        def measured(entry, span, blend):
+            return {**cp.candidate(order[1], rows, {
+                'anchorBeat':0, 'offsetBeats':entry, 'entryBeat':entry, 'entrySeconds':entry*60/128,
+                'introEndSeconds':(entry+blend)*60/128,
+                'exitBeat':entry+span, 'exitSeconds':(entry+span)*60/128,
+                'endBeat':entry+span+blend, 'endSeconds':(entry+span+blend)*60/128,
+            }, {'spanBeats':span,'blendBeats':blend,'medianRmsDb':-14}), 'replayVerified':True}
+
+        short, full = measured(0,64,32), measured(131,128,64)
+        order[1]['cueCandidates'] = [short, full]
+        snapshot = {'analysis':report,'mixStyle':'phrase','secondsPerTrack':60,'entryCadence':[30,60],
+                    'rollingQueue':{'status':'preparing'},'executionPlan':{'orderIds':[],'targetBpm':128},
+                    'aiReview':{'decision':'propose','secondsBetweenEntries':60,'selections':[],'transitions':[]}}
+        result = cp.complete_background_queue(snapshot,order,[],'Measured fit fixture.',0)
+        self.assertEqual(result['executionPlan']['selections'][1]['id'],full['id'])
+
     def test_rolling_cue_fit_prefers_a_real_recovery_bar_over_a_distant_outro(self):
         rows, report, _ = fixture(2)
         order = report['tracks']

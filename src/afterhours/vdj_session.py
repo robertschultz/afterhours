@@ -1427,10 +1427,39 @@ class DJSession:
             quick=s['mixStyle']=='quick'
             opening=old_plan.get('targetBpm')
             if quick and s['order']:opening=s.get('quickTargetBpm') or s['order'][0]['bpm']
-            order=validate_order(ids,s['candidates'],s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
-                                 frozen or None,opening if audible else None,fixed=quick,
-                                 history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [],
-                                 window_limit=s.get('queueWindow',DEFAULT_QUEUE_WINDOW))
+            def validate(candidates):
+                return validate_order(ids,candidates,s.get('maxTempoShift',8),s['secondsPerTrack'],tempo_targets,
+                                      frozen or None,opening if audible else None,fixed=quick,
+                                      history_prefix=[t['id'] for t in s['order'][:max(0,s['index'])]] if audible else [],
+                                      window_limit=s.get('queueWindow',DEFAULT_QUEUE_WINDOW))
+            corrected = {}
+            try:
+                order = validate(s['candidates'])
+            except TempoFitError:
+                existing = [track['id'] for track in s['order']]
+                cadence = s.get('entryCadence')
+                if (source != 'planner' or not s['active'] or not cadence or quick
+                        or not old_plan.get('applied') or ids[:len(existing)] != existing
+                        or not 1 <= len(ids) - len(existing) <= 2):
+                    raise
+                # Catalog tags can be wrong. Only use current replay-verified
+                # local measurements for the exact incoming recording and slot.
+                by_id = {row['id']:row for row in s['candidates']}
+                cache = VerifiedCues()
+                for index in range(len(existing), len(ids)):
+                    candidate = by_id[ids[index]]
+                    receipt = cache.read(candidate, cadence[index % len(cadence)], True)
+                    if receipt is None:
+                        continue
+                    bpm = receipt.get('bpm')
+                    if type(bpm) not in (int, float) or not 40 <= bpm <= 300:
+                        continue
+                    key, camelot = musical_key(receipt.get('camelot'))
+                    corrected[candidate['id']] = {**candidate, 'bpm':bpm, 'key':key, 'camelot':camelot,
+                                                   'duration':receipt['duration'], 'engineChecked':True}
+                if not corrected:
+                    raise
+                order = validate([corrected.get(row['id'], row) for row in s['candidates']])
             if source == 'planner':
                 require_faith_set(order, direction=s.get('agentDirection') if audible else '',
                                   existing={track['id'] for track in s['order']} if audible else (),
@@ -1457,6 +1486,8 @@ class DJSession:
                 'mixTransitions':copy.deepcopy(mix_transitions),'tempoTargets':copy.deepcopy(tempo_targets),
                 'cueChoices':copy.deepcopy(cue_choices) if cue_choices else None,
                 'standingStyle':copy.deepcopy(getattr(self,'standing_style',None))}
+            if corrected:
+                self.state['candidates'] = [corrected.get(row['id'], row) for row in self.state['candidates']]
             entries=len(((prepared or {}).get('cueChoices') or {}).get('applied',[]))
             self.state['message']=('Upcoming queue updated. The prepared change will join after the current handoff.'+
                 (f" The DJ chose where {entries} record{'s' if entries!=1 else ''} come{'s' if entries==1 else ''} in." if entries else '') if prepared else

@@ -656,6 +656,25 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in state['queuedUpdate']['tracks']], ['a','b','x'])
         self.assertEqual([row['id'] for row in state['timedContinuation']], ['d'])
 
+    def test_timed_append_recovers_a_stale_tempo_only_with_an_exact_slot_receipt(self):
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', entryCadence=[30,60],
+                            executionPlan={'targetBpm':125,'applied':True})
+        stale = track('stale', bpm=145)
+        self.session.update(candidates=self.tracks + [stale])
+        with patch('afterhours.vdj_session.VerifiedCues') as cache:
+            cache.return_value.read.return_value = None
+            with self.assertRaises(ValueError):
+                self.session.revise_queue(['a','b','stale'],source='planner')
+            self.assertIsNone(self.session.snapshot()['queuedUpdate'])
+            cache.return_value.read.return_value = {'bpm':124,'camelot':'8A','duration':230}
+            queued = self.session.revise_queue(['a','b','stale'],source='planner')['queuedUpdate']
+            cache.return_value.read.assert_called_with(stale,30,True)
+        self.assertEqual([row['id'] for row in queued['tracks']], ['a','b','stale'])
+        self.assertEqual(queued['tracks'][-1]['bpm'],124)
+        self.assertEqual(queued['protectedIds'], ['a','b'])
+        self.assertEqual(queued['status'], 'needs-analysis')
+
     def test_timed_refill_uses_measured_tempo_when_the_committed_runway_is_short(self):
         self.session.plan(['a','b'])
         self.session.state['candidates'].insert(0, {**track('untitled'), 'title':None})

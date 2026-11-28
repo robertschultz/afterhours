@@ -626,14 +626,17 @@ class DJSession:
         return verified_waveform(track_id.removeprefix('virtualdj:'),evidence.get('duration'),
                                  (evidence.get('energyMap') or {}).get('reportDigest'))
 
-    def restore(self, saved):
+    def restore(self, saved, *, checkpoint=False, keep_catalog=()):
         """Explicit local recovery of a crate. Never restore active transport."""
         if not isinstance(saved, dict):
             raise ValueError('Saved set must be a session object.')
         saved = saved.get('final', saved)
         candidates = saved.get('candidates') if isinstance(saved, dict) else None
-        if not isinstance(candidates, list) or not 2 <= len(candidates) <= 100:
-            raise ValueError('Saved set needs 2–100 catalog records.')
+        # Rolling checkpoints include an exact heard history in addition
+        # to the working catalog. An explicit import keeps its usual limit.
+        limit = WORKING_LIMIT + 256 if checkpoint else 100
+        if not isinstance(candidates, list) or not 2 <= len(candidates) <= limit:
+            raise ValueError(f'Saved set needs 2–{limit} catalog records.')
         positions, folders = {}, set()
         for track in candidates:
             if not isinstance(track, dict) or not isinstance(track.get('engine'), dict):
@@ -738,7 +741,7 @@ class DJSession:
                 pending=[source.get('cleanupPending') for source in (before,saved) if source.get('resumeBlocked')]
                 self.state.update(resumeBlocked=True,cleanupPending=merge_cleanup_pending(*pending))
             self.crate.remember(candidates, source='restored-set')
-            self._trim_candidates()
+            self._trim_candidates(preferred=keep_catalog)
             self.availability.restore(saved.get('recordingAvailability',[]))
             for field in ('query','artistFilter','genreFilter','bpmMin','bpmMax'):
                 if field in saved:

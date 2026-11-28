@@ -17,11 +17,11 @@ def session():
 
 
 class RecoveryTests(unittest.TestCase):
-    def long_session(self, index=24):
+    def long_session(self, index=24, size=28):
         source=session()
         tracks=[{'id':'virtualdj:'+identity('long-'+str(i)),'title':f'House record {i}','artist':'Fixture','bpm':125,
-                 'engine':{'selection_id':identity('long-'+str(i)),'folder_id':identity('long-folder')}} for i in range(32)]
-        source.update(candidates=tracks,order=tracks[:28],active=True,phase='playing',index=index,
+                 'engine':{'selection_id':identity('long-'+str(i)),'folder_id':identity('long-folder')}} for i in range(size+4)]
+        source.update(candidates=tracks,order=tracks[:size],active=True,phase='playing',index=index,
                       telemetry={'decks':[{'playing':True}]},executionPlan={'applied':True})
         return source
 
@@ -61,6 +61,27 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(state['queueWindow'], 20)
         self.assertNotIn('entryCadence', state)
         self.assertFalse(state['active'])
+
+    def test_long_checkpoint_can_recover_a_catalog_larger_than_an_explicit_import(self):
+        source = self.long_session(index=71, size=72)
+        remainder = source.state['order'][-1]['id']
+        extras = [{'id':'virtualdj:'+identity(f'extra-{i}'), 'title':f'Extra {i}', 'artist':'Fixture',
+                   'bpm':125, 'engine':{'selection_id':identity(f'extra-{i}'),
+                                         'folder_id':identity('long-folder')}} for i in range(100)]
+        source.update(candidates=source.state['candidates'] + extras, rollingQueue={'status':'ready'})
+        self.assertGreater(len(source.state['candidates']), 100)
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionRecovery(Path(directory) / 'queue.json')
+            store.save(source)
+            target = session()
+            receipt = store.restore(target)
+            self.assertEqual(receipt['status'], 'catalog-only')
+            self.assertEqual(len(target.state['recoveryHistory']), 71)
+            self.assertIn(remainder, [row['id'] for row in target.state['candidates']])
+            self.assertTrue(target.crate.get(extras[-1]['id']))
+            self.assertFalse(target.state['active'])
+            with self.assertRaisesRegex(ValueError, '2–100'):
+                session().restore(recovery_state(source))
 
     def test_final_remaining_record_survives_in_catalog_without_replaying_history(self):
         source=self.long_session(index=27)

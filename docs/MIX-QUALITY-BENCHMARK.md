@@ -73,6 +73,12 @@ Run the same scorer with `--observed ./private-run-prefix` for a browser enduran
 
 When present, the owner-matched runway log reports the fraction of sampled playing time with a committed successor and the longest observed interval without one. This denominator excludes blends, gaps in polling, and boundaries between tracks. Compare captures with similar observation coverage and use master audio to assess continuity independently. The stop check records fresh native pause separately from completed automation cleanup.
 
+`verifiedSoloQuietByRecording` points to low-level master windows entirely
+within a single recording between two verified handoffs, or before the first
+verified blend. Use the first reported set time to review that passage.
+Intervals without a verified end or a measured quiet-window length remain
+in the aggregate counts.
+
 The manifest excerpt is one row of a full set. The scorer reports timeline coverage, repeats, dwell, cadence, genre and energy. For archived live trials it reads `<prefix>-summary.json` and derives per-target timing from archived transition receipts or queue telemetry where available. It does not perform playback, download music, run the planner, or score audio by ear.
 
 The current endurance archives are execution baselines. They lack frozen reference set plans and blind listening labels. Add curated sets and listening judgments before claiming a mix-quality improvement.

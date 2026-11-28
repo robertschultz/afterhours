@@ -73,14 +73,15 @@ class SetQualityBenchmarkTests(unittest.TestCase):
                 {'event':'Endurance window','startedAt':1000},
                 {'event':'Endurance heartbeat','at':'1970-01-01T00:19:25+00:00','index':2,'phase':'playing'},
             ])
-            log('handoffs', [
+            handoffs = [
                 {'kind':'native-handoff','verified':True,'synced':True,'at':1045,'blendSeconds':4,
                  'schedulerReadback':{'scheduledFromBeat':64,'guardedFromBeat':72,
                                       'cadenceTargetBeat':60,'mixAtBeat':80,'scheduledBpm':120},
                  'entryIntervalSeconds':40,'targetIntervalSeconds':30,'deckReadyRelativeToTargetSeconds':5},
                 {'kind':'native-handoff','verified':True,'synced':True,'at':1109,'blendSeconds':8,
                  'entryIntervalSeconds':60,'targetIntervalSeconds':60,'deckReadyRelativeToTargetSeconds':-2},
-            ])
+            ]
+            log('handoffs', handoffs)
             master = [
                 {'event':'master-monitor-started','owner':'run','afterStartSeconds':.2},
                 {'event':'quiet-window','at':1041}, {'event':'quiet-window','at':1097},
@@ -113,6 +114,18 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             self.assertEqual(score['quietWindowsWithDuration'], 1)
             self.assertAlmostEqual(score['measuredQuietSecondsDuringBlend'], .03)
             self.assertIsNone(score['listeningVerdict'])
+            self.assertEqual(score['verifiedSoloQuietByRecording'], [])
+            handoffs[0].update(outgoingRecordingId='exact:a', incomingRecordingId='exact:b')
+            handoffs[1].update(outgoingRecordingId='exact:b', incomingRecordingId='exact:c',
+                               outgoing='Second recording')
+            log('handoffs', handoffs)
+            master[2:2] = [{'event':'quiet-window','at':1096.9,'windowSeconds':.05}]
+            master.insert(-1, {'event':'quiet-window','at':1115,'windowSeconds':.05})
+            log('master', master)
+            self.assertEqual(SCORER['read_observed_run'](prefix)['verifiedSoloQuietByRecording'], [{
+                'recordingId':'exact:b', 'title':'Second recording', 'firstQuietAtSetSeconds':96.85,
+                'windowCount':1, 'measuredQuietSeconds':.05,
+            }])
             master[0]['owner'] = 'different-run'
             log('master', master)
             with self.assertRaisesRegex(ValueError, 'does not match'):

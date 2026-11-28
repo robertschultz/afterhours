@@ -295,15 +295,18 @@ def observed_up_next(browser, start):
     return result
 
 
+def contiguous_recordings(handoffs):
+    return bool(handoffs) and all(
+        row.get('verified') is True and
+        all(isinstance(row.get(key), str) and row[key] for key in ('outgoingRecordingId', 'incomingRecordingId'))
+        for row in handoffs
+    ) and all(previous['incomingRecordingId'] == current['outgoingRecordingId']
+              for previous, current in zip(handoffs, handoffs[1:]))
+
+
 def observed_curatorial_variety(handoffs):
     """Measure the exact verified recording sequence when identity evidence exists."""
-    if not handoffs or any(
-            row.get('verified') is not True or
-            not all(isinstance(row.get(key), str) and row[key] for key in ('outgoingRecordingId', 'incomingRecordingId'))
-            for row in handoffs):
-        return None
-    if any(previous['incomingRecordingId'] != current['outgoingRecordingId']
-           for previous, current in zip(handoffs, handoffs[1:])):
+    if not contiguous_recordings(handoffs):
         return None
     first = handoffs[0]
     track_ids = [first['outgoingRecordingId'], *(row['incomingRecordingId'] for row in handoffs)]
@@ -490,6 +493,9 @@ def read_observed_run(prefix):
     previous_observation = entry = start
     intervals = []
     blends = []
+    solo_ranges = []
+    solo_start = start
+    exact_sequence = contiguous_recordings(handoffs)
     for index, row in enumerate(handoffs):
         observed = number(row['at'], 'native handoff observation', minimum=previous_observation)
         interval = number(row['entryIntervalSeconds'], 'native entry interval')
@@ -498,10 +504,14 @@ def read_observed_run(prefix):
             raise ValueError('Native handoff timing does not match the owned playback clock and cadence.')
         previous_observation = observed
         intervals.append(interval)
+        if exact_sequence and solo_start is not None and solo_start < entry:
+            solo_ranges.append((solo_start, entry, row))
+        solo_start = None
         if row.get('blendSeconds') is not None:
             # The audit timestamp is emitted after completion. Reconstruct the
             # blend start from measured entry intervals on the playback clock.
-            blends.append((entry, entry + number(row['blendSeconds'], 'blend length')))
+            solo_start = entry + number(row['blendSeconds'], 'blend length')
+            blends.append((entry, solo_start))
     timing = cadence_metrics(intervals, cadence)
     late_entries = []
     for target in timing:
@@ -551,6 +561,7 @@ def read_observed_run(prefix):
     quiet = [row for row in master if row.get('event') == 'quiet-window']
     quiet_during_blend = measured_windows = 0
     measured_blend_quiet = 0
+    solo_quiet = defaultdict(list)
     for row in quiet:
         end = number(row['at'], 'quiet window end')
         duration = row.get('windowSeconds')
@@ -568,6 +579,19 @@ def read_observed_run(prefix):
                 measured_blend_quiet += overlap_end - overlap_start
                 covered_until = overlap_end
         quiet_during_blend += covered_until > start_of_window
+        if covered_until == start_of_window:
+            for first, last, handoff in solo_ranges:
+                if first <= start_of_window and end <= last:
+                    solo_quiet[first].append((start_of_window, end, handoff))
+                    break
+    quiet_recordings = []
+    for windows in solo_quiet.values():
+        first, _, handoff = windows[0]
+        quiet_recordings.append({
+            'recordingId':handoff['outgoingRecordingId'], 'title':handoff.get('outgoing'),
+            'firstQuietAtSetSeconds':round(first - start, 3),
+            'windowCount':len(windows), 'measuredQuietSeconds':round(sum(end - begin for begin, end, _ in windows), 3),
+        })
     trial_end = next((idx for idx, row in enumerate(browser)
                       if row.get('event') in ('Endurance reached', 'Interrupted')), len(browser)-1)
     last = browser[trial_end]
@@ -611,6 +635,7 @@ def read_observed_run(prefix):
         'longestBelowMinus65Seconds':meter.get('longestBelowMinus65Seconds'),
         'quietWindowsDuringBlend':quiet_during_blend,
         'quietWindowsOutsideBlend':len(quiet)-quiet_during_blend,
+        'verifiedSoloQuietByRecording':quiet_recordings,
         'quietWindowsWithDuration':measured_windows,
         'measuredQuietSecondsDuringBlend':round(measured_blend_quiet, 3)
                                          if measured_windows else None,

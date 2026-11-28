@@ -2,6 +2,7 @@
 
 import argparse
 from collections import Counter, defaultdict
+from datetime import datetime
 from hashlib import sha256
 import json
 from math import isfinite, sqrt
@@ -216,6 +217,84 @@ def read_trial(prefix):
     }
 
 
+def read_observed_run(prefix):
+    """Compare native handoff timing with independent master capture logs."""
+    owner = json.loads(Path(f'{prefix}-owner.json').read_text())
+    start = number(owner['at'], 'playback start')
+    browser = list(json_lines(Path(f'{prefix}-hour.jsonl')))
+    windows = [row for row in browser if row.get('event') == 'Endurance window']
+    if len(windows) != 1 or windows[0].get('startedAt') != start:
+        raise ValueError('The browser log does not match the native playback owner.')
+    cadence = next((row.get('entryCadence') for row in browser
+                    if row.get('entryCadence')), None)
+    if not cadence:
+        raise ValueError('The browser log has no requested cadence.')
+    handoffs = [row for row in json_lines(Path(f'{prefix}-handoffs.jsonl'))
+                if row.get('kind') == 'native-handoff']
+    previous_observation = entry = start
+    intervals = []
+    blends = []
+    for index, row in enumerate(handoffs):
+        observed = number(row['at'], 'native handoff observation', minimum=previous_observation)
+        interval = number(row['entryIntervalSeconds'], 'native entry interval')
+        entry += interval
+        if entry > observed + .1 or row['targetIntervalSeconds'] != cadence[index % len(cadence)]:
+            raise ValueError('Native handoff timing does not match the owned playback clock and cadence.')
+        previous_observation = observed
+        intervals.append(interval)
+        if row.get('blendSeconds') is not None:
+            # The audit timestamp is emitted after completion. Reconstruct the
+            # blend start from measured entry intervals on the playback clock.
+            blends.append((entry, entry + number(row['blendSeconds'], 'blend length')))
+    timing = cadence_metrics(intervals, cadence)
+    for target in timing:
+        misses = dict.fromkeys(('readyAfterTarget', 'readyByTarget', 'readbackMissing'), 0)
+        on_target = 0
+        for row, interval in zip(handoffs, intervals):
+            if str(row['targetIntervalSeconds']) != target:
+                continue
+            if abs(interval - int(target)) <= 2:
+                on_target += 1
+                continue
+            ready = row.get('deckReadyRelativeToTargetSeconds')
+            if type(ready) not in (int, float) or not isfinite(ready):
+                misses['readbackMissing'] += 1
+            else:
+                misses['readyAfterTarget' if ready > 0 else 'readyByTarget'] += 1
+        timing[target].update(within2Seconds=on_target, missesOutside2Seconds=misses)
+
+    master = list(json_lines(Path(f'{prefix}-master.jsonl')))
+    starts = [row for row in master if row.get('event') == 'master-monitor-started']
+    if len(starts) != 1 or starts[0].get('owner') != owner['id']:
+        raise ValueError('The master capture does not match the native playback owner.')
+    meter = next((row for row in reversed(master) if 'capturedAudioSeconds' in row), {})
+    quiet = [row for row in master if row.get('event') == 'quiet-window']
+    quiet_during_blend = sum(any(first <= row['at'] <= last for first, last in blends) for row in quiet)
+    last = browser[-1]
+    elapsed = number(datetime.fromisoformat(last['at']).timestamp() - start, 'observed seconds')
+    verified = sum(row.get('verified') is True for row in handoffs)
+    return {
+        'trialId':prefix.name,
+        'scope':'observed-browser-native-and-master',
+        'outcome':last['event'],
+        'observedSeconds':round(elapsed, 3),
+        'completeHour':last['event'] == 'Endurance reached' and elapsed >= 3600
+                       and verified == len(handoffs) == last['tracks']-1,
+        'verifiedHandoffs':verified,
+        'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
+        'cadenceSeconds':cadence,
+        'timingByTarget':timing,
+        'masterCapturedSeconds':meter.get('capturedAudioSeconds'),
+        'masterStartedAfterPlaybackSeconds':starts[0].get('afterStartSeconds'),
+        'captureSequenceDiscontinuities':meter.get('sequenceDiscontinuities'),
+        'clippedSamples':meter.get('clippedSamples'),
+        'longestBelowMinus65Seconds':meter.get('longestBelowMinus65Seconds'),
+        'quietWindowsDuringBlend':quiet_during_blend,
+        'quietWindowsOutsideBlend':len(quiet)-quiet_during_blend,
+        'listeningVerdict':None,
+    }
+
+
 def review_choice(value):
     if value not in ('a', 'b', 'tie', None):
         raise ValueError(f'Invalid blind review choice: {value!r}')
@@ -299,13 +378,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan', type=Path, action='append', default=[], help='Sealed one-hour plan JSON')
     parser.add_argument('--trial', type=Path, action='append', default=[], help='Prefix of archived native trial files')
+    parser.add_argument('--observed', type=Path, action='append', default=[],
+                        help='Prefix of owned browser, native handoff, and master capture logs')
     parser.add_argument('--judgments', type=Path, action='append', default=[], help='Blinded human and judge comparison labels')
     args = parser.parse_args()
-    if not args.plan and not args.trial and not args.judgments:
-        parser.error('supply at least one --plan, --trial, or --judgments')
+    if not args.plan and not args.trial and not args.observed and not args.judgments:
+        parser.error('supply at least one --plan, --trial, --observed, or --judgments')
     try:
         plans = [read_plan(path) for path in args.plan]
-        trials = [read_trial(path) for path in args.trial]
+        trials = [read_trial(path) for path in args.trial] + [read_observed_run(path) for path in args.observed]
         judgments = [read_judgments(path) for path in args.judgments]
     except (OSError, TypeError, ValueError, KeyError, AttributeError) as exc:
         parser.error(str(exc))

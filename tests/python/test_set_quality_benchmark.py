@@ -62,6 +62,43 @@ class SetQualityBenchmarkTests(unittest.TestCase):
         self.assertIsNone(score['clippedSamplesThroughCaptureStop'])
         self.assertIsNone(score['listeningVerdict'])
 
+    def test_observed_run_classifies_timing_and_quiet_without_claiming_an_hour(self):
+        with TemporaryDirectory() as folder:
+            prefix = Path(folder) / 'run'
+            Path(f'{prefix}-owner.json').write_text(json.dumps({'id':'run','at':1000}))
+            def log(name, rows):
+                Path(f'{prefix}-{name}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            log('hour', [
+                {'event':'Typed timed opening requested','entryCadence':[30,60]},
+                {'event':'Endurance window','startedAt':1000},
+                {'event':'Endurance heartbeat','at':'1970-01-01T00:18:30+00:00'},
+            ])
+            log('handoffs', [
+                {'kind':'native-handoff','verified':True,'synced':True,'at':1045,'blendSeconds':4,
+                 'entryIntervalSeconds':40,'targetIntervalSeconds':30,'deckReadyRelativeToTargetSeconds':5},
+                {'kind':'native-handoff','verified':True,'synced':True,'at':1109,'blendSeconds':8,
+                 'entryIntervalSeconds':60,'targetIntervalSeconds':60,'deckReadyRelativeToTargetSeconds':-2},
+            ])
+            master = [
+                {'event':'master-monitor-started','owner':'run','afterStartSeconds':.2},
+                {'event':'quiet-window','at':1041}, {'event':'quiet-window','at':1097},
+                {'event':'master-heartbeat','capturedAudioSeconds':105,'sequenceDiscontinuities':0,
+                 'clippedSamples':0,'longestBelowMinus65Seconds':.2},
+            ]
+            log('master', master)
+            score = SCORER['read_observed_run'](prefix)
+            self.assertFalse(score['completeHour'])
+            self.assertEqual(score['verifiedHandoffs'], 2)
+            self.assertEqual(score['timingByTarget']['30']['missesOutside2Seconds']['readyAfterTarget'], 1)
+            self.assertEqual(score['timingByTarget']['60']['within2Seconds'], 1)
+            self.assertEqual(score['quietWindowsDuringBlend'], 1)
+            self.assertEqual(score['quietWindowsOutsideBlend'], 1)
+            self.assertIsNone(score['listeningVerdict'])
+            master[0]['owner'] = 'different-run'
+            log('master', master)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                SCORER['read_observed_run'](prefix)
+
     def test_judge_reports_abstention_and_order_swap_on_held_out_pairs(self):
         human = [{'reviewerId': 'one', 'choice': 'a'}, {'reviewerId': 'two', 'choice': 'a'}]
         base = {'briefId': 'house', 'dimension': 'transition-sound', 'humanLabels': human,

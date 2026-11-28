@@ -69,6 +69,8 @@ Each `--plan` file uses the following shape. Every track has a canonical recordi
 }
 ```
 
+Run the same scorer with `--observed ./private-run-prefix` for a browser endurance capture. It joins the owner record, browser heartbeat, native handoff, and independent master meter files. The report separates cadence misses with a late deck from misses with a deck ready by target, and counts quiet windows inside and outside the blend. A quiet window is a listening review point. Partial captures report their measured duration and remain partial.
+
 The manifest excerpt is one row of a full set. The scorer reports timeline coverage, repeats, dwell, cadence, genre and energy. For archived live trials it reads `<prefix>-summary.json` and derives per-target timing from archived transition receipts or queue telemetry where available. It does not perform playback, download music, run the planner, or score audio by ear.
 
 The current endurance archives are execution baselines. They lack frozen reference set plans and blind listening labels. Add curated sets and listening judgments before claiming a mix-quality improvement.

@@ -3,6 +3,7 @@ import copy
 import re
 import time
 from afterhours.dj_bridge import BridgeError
+from afterhours.dj_discovery import credit, normalized
 from afterhours.vdj_catalog import folder_state, selection, search_literal
 
 
@@ -22,6 +23,7 @@ class CatalogSearch:
         self.phase='begin';self.ready_at=0;self.deadline=None;self.done=False
         self.last_id=None;self.repeated=0
         self.latest=None
+        self.rolling_identity = None
         # A set opening can reuse its first matching records immediately.
         # An explicit import or expansion must dig beyond known archive rows.
         opening=not session.snapshot().get('order') and not recheck_missing
@@ -30,6 +32,23 @@ class CatalogSearch:
         self.max_rows=12 if opening else 30
         self.seconds=25 if opening else 45
         self.quota=max(2,self.target//len(terms))
+
+    def set_rolling_seed(self, artist, title, *, version=None, exact_credits=False, linked_provider_reference=None):
+        """Require a discovery lead to match the native recording's public metadata."""
+        self.rolling_identity = (credit(artist), normalized(title), normalized(version),
+                                 exact_credits, linked_provider_reference)
+
+    def matches_rolling_seed(self, track):
+        if self.rolling_identity is None:
+            return True
+        artists, title, version, exact_credits, linked = self.rolling_identity
+        catalog = track.get('catalog') or {}
+        if linked and catalog.get('provider') == linked[0] and catalog.get('track_id') != linked[1]:
+            return False
+        actual_artists = credit(track.get('artist'))
+        artist_matches = actual_artists == artists if exact_credits else bool(actual_artists & artists)
+        return (artist_matches and normalized(track.get('title')) == title
+                and (not version or normalized(track.get('remix')) == version))
 
     def publish(self,status,message):
         self.session.update(catalogSearch={'status':status,'query':'; '.join(self.terms),
@@ -87,6 +106,7 @@ class CatalogSearch:
             self.latest={key:str(track.get(key) or '')[:120] for key in ('title','artist')}
             if self.recheck_missing:self.session.availability.found_again(track['id'])
             matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
+            matches = matches and self.matches_rolling_seed(track)
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))
             matches=matches and type(bpm) in (int,float) and self.bpm_min<=bpm<=self.bpm_max
             matches=matches and not s.availability.blocked(track['id'])

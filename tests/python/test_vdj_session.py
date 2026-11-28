@@ -673,6 +673,7 @@ class SessionTests(unittest.TestCase):
             if key=='pitch_range':return .08
             if key=='pitch':return .5+(decks[deck-1]['bpm']/pool[int(decks[deck-1]['id'])]['bpm']-1)/.16
             return decks[deck-1]['playing'] if key=='play' else controls[deck][key]
+        preparation_suspensions = []
         class MeasuredJob:
             def __init__(self,session,revision,tracks,cache):
                 self.revision=revision;self.cache={};self.done=False;self.error=None;self.result=copy.deepcopy(full_report['tracks'][2:])
@@ -681,6 +682,8 @@ class SessionTests(unittest.TestCase):
                 self.done=(s.state['index']==1 and slack>=16
                            and (not late_background or decks[1]['beatPosition']>threshold))
             def close(self,c):pass
+            def set_suspended(self, suspended):
+                preparation_suspensions.append(suspended)
             def snapshot(self):return {'status':'analyzing','message':'Synthetic preparation','completed':0,'total':2}
         from afterhours.background_analysis import BackgroundAnalysis
         def launch(fn,phase):
@@ -743,6 +746,8 @@ class SessionTests(unittest.TestCase):
             self.assertLessEqual(result['transitions'][1]['timing']['endBeat'],224)
         else:
             self.assertEqual(actual,windows)
+        if background:
+            self.assertIn(True, preparation_suspensions)
         if late_background:
             self.assertEqual(result['transitions'][1]['timing']['basis'],'measured-continuation-exit')
         self.assertTrue(all(t['completedAt']-t['at']>=t['timing']['fadeBeats']*60/(t.get('tempoPlan',{}).get('toBpm',155))-.1 for t in result['transitions']))

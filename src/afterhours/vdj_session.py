@@ -2943,6 +2943,8 @@ class DJSession:
             cue_planner.verify_receipts(snapshot['analysis'])
         def ready(client,track,deck,target,index,override=None):
             nonlocal order,planned
+            if self.background_job:
+                self.background_job.set_suspended(True)
             if self.catalog_job and getattr(self.catalog_job,'rolling',False):
                 self.catalog_job.resume_search()
             selected = override or planned
@@ -3256,6 +3258,8 @@ class DJSession:
                                 t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
                                 revised_final=True;break
                     if self.snapshot()['copilot']['held']:
+                        if self.background_job:
+                            self.background_job.set_suspended(True)
                         # Current music continues. Do not invent a loop, seek,
                         # substitute cue, or implicit handoff when Hold expires.
                         self.sleep(.12)
@@ -3333,6 +3337,8 @@ class DJSession:
                                 if (self.state.get('queuedUpdate') or {}).get('status')=='ready':
                                     continue  # adopt an insertion received as the last window ended
                                 self.state['phase']='stopping'
+                        if self.background_job:
+                            self.background_job.set_suspended(True)
                         break
                     slack=max(slack,runway)
                     self.service_background(client,slack)

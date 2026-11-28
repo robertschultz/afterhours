@@ -85,8 +85,15 @@ class PreparationPool:
         self.osc_timeout_track_id=job.osc_timeout_track_id
         self.done=True
 
+    def set_suspended(self, suspended):
+        if self.suspended != suspended:
+            self.suspended = suspended
+            for job in self.jobs:
+                if not job.done:
+                    job.set_suspended(suspended)
+
     def step(self,client,seconds_available):
-        self.suspended=seconds_available<12
+        self.set_suspended(seconds_available < 12)
         if self.suspended or self.done or self.closed:return
         # A deck that joined the playing pair is no longer a spare.
         pair=getattr(self.session,'pair_decks',None) or ()

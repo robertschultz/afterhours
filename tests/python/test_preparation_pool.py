@@ -83,6 +83,22 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(timestamp, 0.0)
         job.step.assert_called_once()
 
+    def test_mix_reserve_pauses_both_native_analysis_clocks_without_osc(self):
+        client = Mock()
+        session = DJSession(threading.Lock())
+        with patch('afterhours.background_analysis.time.monotonic', return_value=0) as clock:
+            pool = PreparationPool(session, 'revision', [])
+            pool.jobs = [BackgroundAnalysis(session, 'revision', [], deck=deck) for deck in (3, 4)]
+            pool.set_suspended(False)
+            clock.return_value = 3
+            pool.step(client, 11)
+            clock.return_value = 35  # longer than the 15-second metadata deadline
+            self.assertEqual([job.clock() for job in pool.jobs], [3, 3])
+            pool.set_suspended(False)
+            clock.return_value = 38
+            self.assertEqual([job.clock() for job in pool.jobs], [6, 6])
+        self.assertEqual(client.mock_calls, [])
+
     def test_deck_d_has_the_same_isolation_guards_and_cannot_address_another_deck(self):
         peer=PoolPeer();s=DJSession(threading.Lock());job=BackgroundAnalysis(s,'rev',[],deck=4)
         job.acquire(peer);job.close(peer)
@@ -101,6 +117,7 @@ class PoolTests(unittest.TestCase):
             def step(j,c,seconds):calls.append((j.tracks[0]['id'],j.deck));j.serviced+=1
             def close(j,c):j.owned=False
             def invalidate_catalog(j):pass
+            def set_suspended(j, suspended):pass
         with patch('afterhours.preparation_pool.BackgroundAnalysis',Job):
             pool=PreparationPool(s,'rev',tracks)
             pool.step(peer,40);pool.step(peer,40)

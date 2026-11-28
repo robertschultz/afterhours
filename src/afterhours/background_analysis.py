@@ -332,11 +332,18 @@ class BackgroundAnalysis:
         # Foreground deck preparation owns catalog navigation during a handoff.
         # Re-select afterwards; never load whichever row it left selected.
         self.browser_epoch+=1
-    def clock(self):
+    def clock(self, *, suspended=None):
         with self.clock_lock:
-            now=time.monotonic()
-            if not self.suspended:self.active_time+=now-self.last_clock
-            self.last_clock=now;return self.active_time
+            now = time.monotonic()
+            if not self.suspended:
+                self.active_time += now - self.last_clock
+            self.last_clock = now
+            if suspended is not None:
+                self.suspended = suspended
+            return self.active_time
+
+    def set_suspended(self, suspended):
+        self.clock(suspended=suspended)
     def check(self):
         if self.cancelled.is_set():raise AnalysisCancelled()
         if time.monotonic()-self.started>900:raise BridgeError('Background preparation exceeded its time limit; the active set was kept.')
@@ -391,7 +398,7 @@ class BackgroundAnalysis:
             return
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
     def step(self,client,seconds_available):
-        self.clock();self.suspended=seconds_available<12
+        self.set_suspended(seconds_available < 12)
         if self.suspended or self.done:return
         if not self.tracks:
             self.done=True;self.status='complete';self.message='Reusing already verified recordings.';return

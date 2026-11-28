@@ -1450,6 +1450,53 @@ class DJSession:
             cue_choices=queued.get('cueChoices'))
         return tracks, prepared
 
+    def replaceable_fit_miss(self, state, queued, error):
+        """Identify only an uncommitted planner-owned miss in a rolling set."""
+        staged = queued.get('rollingTrackIds') or [queued.get('rollingTrackId')]
+        if (not state.get('rollingQueue') or not state['active'] or state['phase'] != 'playing'
+                or dj_settings.lead(state) != 'all' or state['copilot'].get('held')
+                or self.cancel.is_set() or not state['setlist'].get('allowReorder', True)):
+            return None
+        if isinstance(error, tempo_planner.TempoRouteError):
+            missed = error.track['id']
+        elif len(staged) == 1:
+            missed = staged[0]  # Existing one-record measured-fit recovery.
+        else:
+            return None
+        committed = [track['id'] for track in state['order']]
+        if len(staged) > 1 and (
+                [track['id'] for track in queued['tracks']] != committed + staged
+                or any(queued.get(key) for key in ('mixTransitions', 'tempoTargets', 'cueChoices', 'startId'))
+                or any(queued.get('sourceById', {}).get(tid) != 'planner' for tid in staged)):
+            return None
+        protected = (set(committed) | set(queued['protectedIds']) | set(state.get('setPins', []))
+                     | set(state['setlist'].get('lockedIds', [])) | {queued.get('startId')})
+        if (missed in staged and missed not in protected
+                and queued.get('sourceById', {}).get(missed) == 'planner'):
+            return missed
+        return None
+
+    def refit_rolling_batch(self, state, queued, measured, protected, error):
+        """Try one verified survivor from the failed, append-only two-record batch."""
+        missed = self.replaceable_fit_miss(state, queued, error)
+        staged = queued.get('rollingTrackIds') or []
+        if not missed or len(staged) != 2:
+            return None
+        retained = [track for track in queued['tracks'] if track['id'] != missed]
+        survivor = retained[-1]['id']
+        stable_positions = set(state.get('setPins', [])) | set(state['setlist'].get('lockedIds', []))
+        if staged[0] == missed and survivor in stable_positions:
+            return None
+        remaining_measurements = [row for row in measured if row['id'] != missed]
+        if not any(row['id'] == survivor for row in remaining_measurements):
+            return None
+        try:
+            selected, prepared = self.fit_background_tracks(state, queued, retained, remaining_measurements, protected)
+            cue_planner.verify_receipts(prepared['analysis'])
+        except (BridgeError, ValueError, OSError):
+            return None
+        return selected, prepared, missed
+
     def publish_prepared_prefix(self, job):
         with self.lock:
             state = self.snapshot()
@@ -1682,15 +1729,35 @@ class DJSession:
                 s=self.snapshot();q=s.get('queuedUpdate')
                 if not q or q['id']!=job.revision:return
                 protected=min(len(s['order']),max(len(q['protectedIds']),max(0,s['index'])+2))
-                fitting=True
-                checked_tracks, prepared = self.fit_background_tracks(s, q, q['tracks'], job.result, protected)
-                fitting=False
-                cue_planner.verify_receipts(prepared['analysis'])
+                fitting = True
+                skipped = None
+                try:
+                    checked_tracks, prepared = self.fit_background_tracks(s, q, q['tracks'], job.result, protected)
+                except tempo_planner.TempoRouteError as exc:
+                    recovered = self.refit_rolling_batch(s, q, job.result, protected, exc)
+                    if recovered is None:
+                        raise
+                    checked_tracks, prepared, skipped = recovered
+                fitting = False
+                if skipped is None:
+                    cue_planner.verify_receipts(prepared['analysis'])
+                self.check()
                 # snapshot() owns a deep copy. Publish its checked recording
                 # facts with the verified plan, or adoption keeps stale catalog
                 # tempo/key and the incoming-deck guard correctly stops playback.
-                self.state['queuedUpdate'].update(status='ready',prepared=prepared,tracks=checked_tracks)
-                self.state['queuedUpdate'].pop('error',None);self.state['queuedUpdate'].pop('failure',None)
+                pending = self.state['queuedUpdate']
+                pending.update(status='ready', prepared=prepared, tracks=checked_tracks)
+                for key in ('error', 'failure', 'partialTracks', 'partialPrepared'):
+                    pending.pop(key, None)
+                if skipped:
+                    pending.pop('rollingTrackIds')
+                    pending['rollingTrackId'] = checked_tracks[-1]['id']
+                    pending['sourceById'].pop(skipped, None)
+                    rejected = next(track for track in q['tracks'] if track['id'] == skipped)
+                    self.event(f"Skipped {rejected['title']} for this handoff because it could not join the measured tempo route. "
+                               f"{checked_tracks[-1]['title']} is verified to continue the set.",
+                               'queue-skipped', trackId=skipped, retainedTrackId=checked_tracks[-1]['id'],
+                               basis='verified-rolling-tempo-fit')
                 checked={t['id']:t for t in checked_tracks}
                 self.state['candidates']=[copy.deepcopy(checked.get(t['id'],t)) for t in self.state['candidates']]
                 self.event('Upcoming tracks verified. Local measured cue fitting is ready for the next safe handoff; no extra AI request.','queue-ready')
@@ -1719,8 +1786,13 @@ class DJSession:
                         pending['catalogMissId']=miss
                     if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:
                         pending['analysisMissId']=scan_miss
-                    if fitting and not cleanup_failed and isinstance(exc, ValueError) and len(staged_ids) == 1 and staged_ids[0]:
-                        pending['measuredFitMissId'] = staged_ids[0]
+                    if fitting and not cleanup_failed and isinstance(exc, ValueError):
+                        fit_miss = self.replaceable_fit_miss(self.state, pending, exc)
+                        pinned = set(self.state.get('setPins', [])) | set(self.state['setlist'].get('lockedIds', []))
+                        # Refill replaces the pending revision as a whole.
+                        # Keep it held if doing so would lose a protected pick.
+                        if fit_miss and not pinned.intersection(staged_ids):
+                            pending['measuredFitMissId'] = fit_miss
                     if failure:self.state['queuedUpdate']['failure']=failure
             self.update(backgroundAnalysis={**progress,'status':'blocked','message':str(exc)})
             self.event('Background preparation held: '+str(exc),'analysis')
@@ -1808,7 +1880,8 @@ class DJSession:
             rolling=(dj_settings.lead(self.state)=='all' and self.state['setlist']['allowReorder']
                      and (self.state.get('rollingQueue') or {}).get('status') in ('ready','preparing','searching','held'))
             from afterhours.rolling_queue import failed_rolling_recording
-            replaceable = (not self.state.get('resumeBlocked') or self.quarantined_preparation_decks()) and failed_rolling_recording(queued)
+            pinned = set(self.state.get('setPins', [])) | set(self.state['setlist'].get('lockedIds', []))
+            replaceable = (not self.state.get('resumeBlocked') or self.quarantined_preparation_decks()) and failed_rolling_recording(queued, pinned=pinned)
             if not staged and not (rolling and (not queued or replaceable)):
                 return 0
             # Native console controls can temporarily omit duration during

@@ -1,13 +1,15 @@
 """Fresh starts, insertion and planning deadlines against disposable sessions."""
 
+import copy
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from afterhours import dj_agent, dj_discovery, queue_planning
+from afterhours import ai_mix, cue_planner, dj_agent, dj_discovery, queue_planning, tempo_planner
 from afterhours.agent_loop import Lookups
 from afterhours.rolling_queue import RollingQueue
 from afterhours.vdj_session import DJSession
+from test_cue_planner import fixture
 from test_dj_agent import decision, settled
 
 
@@ -378,6 +380,104 @@ class QueuePlanningTests(unittest.TestCase):
             self.session.service_background(Mock(), 24)
         self.assertEqual(self.session.state['queuedUpdate']['measuredFitMissId'], second['id'])
         self.assertEqual([track['id'] for track in self.session.state['order']], ['a','b',first['id']])
+
+    def staged_measured_batch(self, missed, *, pin=None):
+        _, report, response = fixture()
+        tracks = [{key: t[key] for key in ('id', 'title', 'bpm', 'duration', 'camelot', 'genre', 'artist')}
+                  for t in report['tracks']]
+        measured = copy.deepcopy(report['tracks'][2:])
+        # Catalog estimates admitted both candidates. Native measurement
+        # proves one cannot join this actually frozen 155 BPM route.
+        measured[int(missed) - 2]['bpm'] = 143 if missed == '2' else 141
+        seed = {**report, 'tracks': report['tracks'][:2]}
+        seed['fingerprint'] = cue_planner.fingerprint(seed['tracks'])
+        review = ai_mix.validate_plan({**response, 'selections': response['selections'][:2],
+                                     'transitions': response['transitions'][:1]}, seed, 30)
+        plan = cue_planner.compile_plan(review, seed, tracks[:2], 30)
+        plan['applied'] = True
+        self.session.update(candidates=tracks, active=False)
+        self.session.plan(['0','1'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'preparing'},
+                            entryCadence=[60,30], executionPlan=plan, analysis=seed, aiReview=review,
+                            setPins=[pin] if pin else [])
+        self.session.revise_queue(['0','1','2','3'], source='planner', reason='Timed rolling pair.')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='2', rollingTrackIds=['2','3'])
+        self.session.background_job = Mock(revision=pending['id'], result=measured, done=True, error=None, cache={})
+        self.session.background_job.snapshot.return_value = {'message': 'Both recordings measured.'}
+        return plan, pending['id'], measured
+
+    def test_typed_two_record_fit_recovers_the_other_recording_on_verified_cues(self):
+        for missed, survivor in (('2', '3'), ('3', '2')):
+            with self.subTest(missed=missed):
+                plan, revision, measured = self.staged_measured_batch(missed)
+                state = self.session.snapshot()
+                with self.assertRaises(tempo_planner.TempoRouteError) as error:
+                    self.session.fit_background_tracks(state, state['queuedUpdate'],
+                                                       state['queuedUpdate']['tracks'], measured, 2)
+                self.assertEqual(error.exception.track['id'], missed)
+                client = Mock()
+                with patch('afterhours.cue_planner.verify_receipts') as verify:
+                    self.session.service_background(client, 24)
+                    pending = self.session.snapshot()['queuedUpdate']
+                    self.assertEqual(pending['protectedIds'], ['0','1'])
+                    self.assertEqual(pending['id'], revision)
+                    self.assertEqual(pending['status'], 'ready')
+                    self.assertEqual(pending['rollingTrackId'], survivor)
+                    self.assertEqual([t['id'] for t in pending['tracks']], ['0','1',survivor])
+                    verify.assert_called_once()
+                    self.session.update(index=1)
+                    self.assertGreater(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 16)
+                    order, applied = self.session.adopt_queue(1)
+                self.assertEqual([t['id'] for t in order], ['0','1',survivor])
+                self.assertEqual(applied['selections'][:2], plan['selections'])
+                self.assertEqual(applied['transitions'][0], plan['transitions'][0])
+                self.assertIsNone(self.session.state['queuedUpdate'])
+                client.send.assert_not_called()
+
+    def test_failed_survivor_verification_leaves_existing_plan_and_refill_runway(self):
+        original, revision, _ = self.staged_measured_batch('2')
+        with patch('afterhours.cue_planner.verify_receipts', side_effect=ValueError('Survivor digest drift')):
+            self.session.service_background(Mock(), 24)
+        state = self.session.snapshot()
+        self.assertEqual(state['executionPlan'], original)
+        self.assertEqual([track['id'] for track in state['order']], ['0','1'])
+        pending = state['queuedUpdate']
+        self.assertEqual(pending['id'], revision)
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertEqual(pending['measuredFitMissId'], '2')
+        self.assertGreater(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 16)
+        self.session.update(setPins=['3'])
+        RollingQueue().tick(self.session, 24)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+        self.assertEqual(self.session.final_preparation_runway({'id':'1'}, 1, {'position':60}), 0)
+
+    def test_operator_owned_sibling_is_not_removed_with_the_failed_revision(self):
+        _, revision, _ = self.staged_measured_batch('2')
+        self.session.state['queuedUpdate']['sourceById']['3'] = 'operator'
+        self.session.service_background(Mock(), 24)
+        pending = self.session.snapshot()['queuedUpdate']
+        self.assertEqual(pending['status'], 'blocked')
+        self.assertNotIn('measuredFitMissId', pending)
+        RollingQueue().tick(self.session, 24)
+        self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+
+    def test_pending_pins_and_unattributed_fit_failures_remain_held(self):
+        for pin in ('2', '3', None):
+            with self.subTest(pin=pin):
+                original, revision, _ = self.staged_measured_batch('2', pin=pin)
+                if pin:
+                    self.session.service_background(Mock(), 24)
+                else:
+                    with patch.object(self.session, 'fit_background_tracks', side_effect=ValueError('Unknown proof error')):
+                        self.session.service_background(Mock(), 24)
+                state = self.session.snapshot()
+                self.assertEqual(state['executionPlan'], original)
+                self.assertEqual(state['queuedUpdate']['status'], 'blocked')
+                self.assertNotIn('measuredFitMissId', state['queuedUpdate'])
+                RollingQueue().tick(self.session, 24)
+                self.assertEqual(self.session.state['queuedUpdate']['id'], revision)
+                self.assertEqual([track['id'] for track in self.session.state['queuedUpdate']['tracks']], ['0','1','2','3'])
 
     def test_agent_requests_insertion_and_executor_stages_existing_order(self):
         self.session.update(index=0, active=True, phase='playing',

@@ -44,12 +44,13 @@ def base_song_title(track):
     return ' '.join(without_article if len(without_article) >= 3 else words)
 
 
-def failed_rolling_recording(pending):
+def failed_rolling_recording(pending, *, pinned=()):
     if pending.get('status') != 'blocked':
         return None
     attempted = pending.get('rollingTrackIds') or [pending.get('rollingTrackId')]
     return next((pending[key] for key in ('catalogMissId','analysisMissId','measuredFitMissId')
-                 if pending.get(key) and pending[key] in attempted), None)
+                 if pending.get(key) and pending[key] in attempted
+                 and (key != 'measuredFitMissId' or not set(attempted).intersection(pinned))), None)
 
 
 class RollingQueue:
@@ -70,7 +71,8 @@ class RollingQueue:
                 return
             pending = state.get('queuedUpdate') or {}
             timed_set = bool(state.get('entryCadence'))
-            miss = failed_rolling_recording(pending)
+            pinned = set(state.get('setPins', [])) | set(state['setlist'].get('lockedIds', []))
+            miss = failed_rolling_recording(pending, pinned=pinned)
             if (miss and (not state.get('resumeBlocked') or session.quarantined_preparation_decks())
                     and not session.background_job):
                 self.missed.add(miss)

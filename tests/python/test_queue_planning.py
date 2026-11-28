@@ -249,6 +249,9 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertFalse(eligible({**track('b'), 'title':order[0]['title'], 'genre':'Deep House'}))
             self.assertFalse(eligible({**track('b'), 'genre':'Dub'}))
             self.assertTrue(eligible({**track('b'), 'genre':'Deep House'}))
+            self.assertTrue(eligible({**track('c'), 'title':'Latch', 'artist':'Disclosure', 'genre':'Deep House'}))
+            self.assertFalse(eligible({**track('d'), 'title':'Latch (Extended Mix)',
+                                       'artist':'Disclosure & Sam Smith', 'genre':'Deep House'}))
             self.assertTrue(urgent.search(session, state, order, 'deep house', True))
             self.assertEqual(session.discover_more.call_args.args, ('Opening Artist',))
             self.assertTrue(urgent.search(session, state, order, 'deep house', True))
@@ -618,6 +621,28 @@ class QueuePlanningTests(unittest.TestCase):
         roller.live_matches.update(('x','y'))
         roller.tick(self.session, 32)
         roller.search.assert_not_called()
+
+    def test_timed_lookahead_does_not_count_two_releases_of_the_same_song(self):
+        self.session.update(candidates=[
+            track('a'), track('b'), track('c'),
+            {**track('d'), 'title':'Latch', 'artist':'Disclosure'},
+            {**track('e'), 'title':'Latch (Extended Mix)', 'artist':'Disclosure & Sam Smith'},
+        ])
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+        self.session.revise_queue(['a','b','c'], source='planner')
+        pending = self.session.state['queuedUpdate']
+        pending.update(status='analyzing', rollingTrackId='c')
+        self.session.background_job = Mock(revision=pending['id'])
+        roller = RollingQueue()
+        roller.live_matches.update(('d','e'))
+        roller.search = Mock()
+
+        roller.tick(self.session, 32)
+
+        roller.search.assert_called_once_with(self.session, unittest.mock.ANY, pending['tracks'], '', True,
+                                              lookahead=True)
 
     def test_manual_timed_queue_makes_room_for_related_artists_before_another_repeat(self):
         rows = [{**track(tid), 'artist':'Resident DJ', 'genre':'House'} for tid in ('a','b','c','d')]

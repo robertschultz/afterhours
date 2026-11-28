@@ -115,6 +115,29 @@ def song_credit_keys(track):
     return {(base, artist) for artist in credit(track.get('artist'))} if base else set()
 
 
+
+def distinct_rolling_prospect(style, order, candidates, excluded, missed_titles, repeated=()):
+    """Count recordings that could fill distinct automatic queue slots."""
+    matches_style = automatic_style_filter(style, order, candidates)
+    used = {row['id'] for row in order} | excluded
+    titles = {song_identity(row)[0] for row in order} | missed_titles
+    versions = set().union(*(song_credit_keys(row) for row in order))
+
+    def accept(row):
+        title = song_identity(row)[0]
+        keys = song_credit_keys(row)
+        if (row['id'] in used or not title or title in titles or keys & versions
+                or continuous_mix_cut(row) or not matches_style(row)
+                or (repeated and not brings_new_artist(row, repeated))):
+            return False
+        used.add(row['id'])
+        titles.add(title)
+        versions.update(keys)
+        return True
+
+    return accept
+
+
 def repeated_artists(order):
     if len(order) < 2:
         return set()
@@ -216,16 +239,12 @@ class RollingQueue:
                         and (not catalog or catalog.done)):
                     staged = pending['tracks']
                     style = rolling_style(state, staged)
-                    matches_style = automatic_style_filter(style, staged, state['candidates'])
-                    used = {row['id'] for row in staged} | self.missed
-                    used.update(row['trackId'] for row in state.get('recordingAvailability', []))
-                    titles = {song_identity(row)[0] for row in staged} | self.missed_titles
+                    excluded = self.missed | {row['trackId'] for row in state.get('recordingAvailability', [])}
                     repeated = repeated_artists(staged) | heavily_played_credits(staged)
-                    supply = {title for row in state['candidates']
-                              if row['id'] in self.live_matches and row['id'] not in used
-                              and (title := song_identity(row)[0]) and title not in titles
-                              and matches_style(row) and (not repeated or brings_new_artist(row, repeated))}
-                    if len(supply) < 2:
+                    prospect = distinct_rolling_prospect(style, staged, state['candidates'], excluded,
+                                                         self.missed_titles, repeated)
+                    supply = sum(1 for row in state['candidates'] if row['id'] in self.live_matches and prospect(row))
+                    if supply < 2:
                         self.search(session, state, staged, style, timed_set, lookahead=True)
                 return
 
@@ -489,12 +508,10 @@ class RollingQueue:
             job = session.catalog_job
             job.rolling = True
             if timed_set:
-                matches_style = automatic_style_filter(style, order, state.get('candidates', []))
-                used = {row.get('id') for row in order} | self.missed
-                used.update(row['trackId'] for row in state.get('recordingAvailability', []))
-                titles = {song_identity(row)[0] for row in order} | self.missed_titles
-                job.set_rolling_seed(artist, title, eligible=lambda row: row['id'] not in used
-                    and song_identity(row)[0] not in titles and not continuous_mix_cut(row) and matches_style(row))
+                excluded = self.missed | {row['trackId'] for row in state.get('recordingAvailability', [])}
+                prospect = distinct_rolling_prospect(style, order, state.get('candidates', []),
+                                                     excluded, self.missed_titles)
+                job.set_rolling_seed(artist, title, eligible=prospect)
                 if title and artist:
                     self.artist_expansion = (job, artist, style, direction)
                 job.reuse_matches = True

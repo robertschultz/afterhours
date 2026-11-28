@@ -400,20 +400,32 @@ def read_observed_run(prefix):
             # blend start from measured entry intervals on the playback clock.
             blends.append((entry, entry + number(row['blendSeconds'], 'blend length')))
     timing = cadence_metrics(intervals, cadence)
+    late_entries = []
     for target in timing:
         misses = dict.fromkeys(('readyAfterTarget', 'readyByTarget', 'readbackMissing'), 0)
         on_target = 0
         for row, interval in zip(handoffs, intervals):
             if str(row['targetIntervalSeconds']) != target:
                 continue
-            if abs(interval - int(target)) <= 2:
+            error = interval - int(target)
+            if abs(error) <= 2:
                 on_target += 1
                 continue
             ready = row.get('deckReadyRelativeToTargetSeconds')
-            if type(ready) not in (int, float) or not isfinite(ready):
+            if type(ready) not in (int, float) or not isfinite(ready) or ready > error + .01:
+                ready = None
                 misses['readbackMissing'] += 1
             else:
                 misses['readyAfterTarget' if ready > 0 else 'readyByTarget'] += 1
+            if error > 5 and row.get('verified') is True:
+                deck_delay = max(0, ready) if ready is not None else None
+                late_entries.append({
+                    'outgoing':row.get('outgoing'), 'incoming':row.get('incoming'),
+                    'targetSeconds':int(target), 'secondsLate':round(error, 3),
+                    'secondsLateBeforeDeckReady':round(deck_delay, 3) if deck_delay is not None else None,
+                    'secondsLateAfterDeckReady':round(max(0, error - deck_delay), 3) if deck_delay is not None else None,
+                    'timingBasis':row.get('timingBasis'),
+                })
         timing[target].update(within2Seconds=on_target, missesOutside2Seconds=misses)
 
     master = list(json_lines(Path(f'{prefix}-master.jsonl')))
@@ -447,6 +459,7 @@ def read_observed_run(prefix):
         'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
+        'lateEntriesOutside5Seconds':sorted(late_entries, key=lambda row: -row['secondsLate']),
         'openEntryInterval':waiting,
         'upNextOverlay':observed_up_next(browser, start),
         'curatorialVariety':observed_curatorial_variety(handoffs),

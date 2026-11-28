@@ -322,6 +322,7 @@ class BackgroundAnalysis:
         self.cancelled=threading.Event();self.done=False;self.error=None;self.analysis_timed_out=False;self.result=[]
         self.catalog_miss=None
         self.analysis_miss=None
+        self.measured_fit_miss=None
         self.osc_reply_timeout=False
         self.osc_timeout_track_id=None
         self.cleanup_reply_timeout=False
@@ -545,6 +546,9 @@ class BackgroundAnalysis:
                         cue_planner.measured_rows(cached);self.result.append(cached);continue
                     except (ValueError,OSError):pass
                 checked=helper.analyze_deck(client,track,self.deck,clock=self.clock)
+                if miss := self.session.automatic_refill_tempo_miss(self.revision, checked):
+                    self.measured_fit_miss = track['id']
+                    raise BridgeError(miss)
                 evidence=self.read_evidence(checked)
                 waveform_ready = not display_waveform or bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])

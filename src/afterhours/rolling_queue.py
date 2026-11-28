@@ -10,6 +10,7 @@ from afterhours.queue_planning import finite, transition_cost
 from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
 from afterhours.set_research import hints as research_hints
+from afterhours.track_metadata import clean_text
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 from afterhours.verified_cues import VerifiedCues
 
@@ -95,7 +96,7 @@ def base_song_title(track):
     # Providers may include featured artists and release versions in the title.
     suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring|with)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
     bare_version = r'[\[(](?:extended|original|radio|vip|instrumental|a cappella|acapella|live)[\])]'
-    base = re.sub(r'(?:\s*(?:'+suffix+'|'+bare_version+r'))+\s*$', '', track['title'], flags=re.I)
+    base = re.sub(r'(?:\s*(?:'+suffix+'|'+bare_version+r'))+\s*$', '', clean_text(track.get('title')) or '', flags=re.I)
     base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
     words = normalized(base).split()
     without_article = [word for word in words if word != 'the']
@@ -255,6 +256,7 @@ class RollingQueue:
                           and track['id'] not in unavailable and track['id'] not in ids and track['id'] not in self.missed
                           # Continuous-mix cuts often duplicate the full
                           # recording and have a baked-in DJ transition.
+                          and clean_text(track.get('title'))
                           and not track['title'].strip().casefold().endswith((' [mixed]', ' (mixed)'))
                           and song_identity(track)[0] not in titles
                           and not song_credit_keys(track).intersection(song_versions)

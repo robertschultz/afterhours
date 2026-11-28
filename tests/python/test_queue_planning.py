@@ -551,6 +551,7 @@ class QueuePlanningTests(unittest.TestCase):
 
     def test_timed_refill_uses_measured_tempo_when_the_committed_runway_is_short(self):
         self.session.plan(['a','b'])
+        self.session.state['candidates'].insert(0, {**track('untitled'), 'title':None})
         self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
                             entryCadence=[30,60], executionPlan={
                                 'applied':True, 'targetBpm':125,

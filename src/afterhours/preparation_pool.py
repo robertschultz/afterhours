@@ -29,6 +29,7 @@ class PreparationPool:
         self.done=False;self.error=None;self.analysis_timed_out=False;self.suspended=True;self.slice=0;self.closed=False
         self.catalog_miss=None
         self.analysis_miss=None
+        self.measured_fit_miss=None
         self.osc_reply_timeout=False
         self.osc_timeout_track_id=None
         state = session.snapshot()
@@ -81,6 +82,7 @@ class PreparationPool:
         self.analysis_timed_out=job.analysis_timed_out
         self.catalog_miss=getattr(job,'catalog_miss',None)
         self.analysis_miss=getattr(job,'analysis_miss',None)
+        self.measured_fit_miss=getattr(job,'measured_fit_miss',None)
         self.osc_reply_timeout=getattr(job,'osc_reply_timeout',False)
         self.osc_timeout_track_id=job.osc_timeout_track_id
         self.done=True

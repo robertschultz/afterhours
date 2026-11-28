@@ -4,6 +4,7 @@ import re
 import time
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import credit, normalized
+from afterhours.track_metadata import clean_text
 from afterhours.vdj_catalog import folder_state, selection, search_literal
 
 
@@ -95,7 +96,8 @@ class CatalogSearch:
             track=selected['metadata'];bpm=track.get('bpm')
             self.latest={key:str(track.get(key) or '')[:120] for key in ('title','artist')}
             if self.recheck_missing:self.session.availability.found_again(track['id'])
-            matches=(not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
+            matches=bool(clean_text(track.get('title'))) and (
+                not self.artist or any(a in selected['artist'].casefold() for a in self.artist))
             matches = matches and (not self.rolling_artist or bool(self.rolling_artist & credit(selected['artist'])))
             matches = matches and (not self.rolling_title or self.rolling_title == normalized(track.get('title')))
             matches=matches and (not self.genre or self.genre in re.sub(r'[^a-z0-9]','',str(track.get('genre') or '').casefold()))

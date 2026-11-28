@@ -89,6 +89,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_rolling_seed_rejects_title_hits_and_matches_chart_recording(self):
         rows = [
+            ('untitled', None, 'Justice'),
             ('title-hit', 'Poetic Justice (feat. Drake)', 'Kendrick Lamar'),
             ('similar-credit', 'Neverender', 'Justice Crew'),
             ('other-recording', 'D.A.N.C.E.', 'Justice'),

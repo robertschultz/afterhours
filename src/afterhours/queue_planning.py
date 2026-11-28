@@ -8,6 +8,7 @@ from afterhours.dj_discovery import credit, normalized, style_for
 from afterhours.playback_requests import named_recording
 from afterhours.program_timeline import BeatTime
 from afterhours.stem_profiles import cue_pair
+from afterhours.track_metadata import clean_text
 from afterhours.vdj_mixing import transition_recipe
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, validate_order
 
@@ -39,7 +40,8 @@ def quick_opening(session, query, found, *, allow_spoken_spelling=False):
     title,artist=normalized(title),normalized(artist)
     blocked={item['trackId'] for item in session.get('recordingAvailability',[])}
     candidates=[row for row in session.get('candidates',[])
-                if row['id'] not in blocked and finite(row.get('bpm')) and row['bpm']>0]
+                if row['id'] not in blocked and clean_text(row.get('title'))
+                and finite(row.get('bpm')) and row['bpm']>0]
     live=[row for row in candidates if row['id'] in found]
     if allow_spoken_spelling and not title and len(wanted.split()) >= 2:
         # Accept a repeated-letter spelling from speech only after the native

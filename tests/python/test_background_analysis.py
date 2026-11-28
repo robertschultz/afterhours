@@ -1,6 +1,7 @@
 """Mailbox scheduling and deck isolation with simulated native replies only."""
 import queue,threading,time,unittest
 from unittest.mock import Mock,patch
+from afterhours import tempo_planner
 from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
 from afterhours.native_analysis import NativeAnalysisDatabaseUpdating
@@ -222,6 +223,36 @@ class BackgroundTests(unittest.TestCase):
 
     def test_timed_refill_still_verifies_audio_and_cues_without_display_waveform(self):
         self.verify_refill_audio_without_display_waveform(timed=True)
+
+    def test_incompatible_native_tempo_exits_before_scanning_the_automatic_pick(self):
+        planned = {'id':'playing', 'title':'Playing', 'bpm':125, 'camelot':'8A'}
+        cued = {**planned, 'id':'cued', 'title':'Cued'}
+        candidate = {'id':'virtualdj:'+'a'*64, 'title':'Next', 'bpm':125,
+                     'camelot':'8A', 'engine':{'selection_id':'a'*64}}
+        session = DJSession(threading.Lock())
+        session.update(candidates=[planned, cued, candidate])
+        session.plan([planned['id'], cued['id']])
+        session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                       entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125,
+                           'tempoSchedule':tempo_planner.estimate([planned, cued])})
+        session.revise_queue([planned['id'], cued['id'], candidate['id']], source='planner')
+        pending = session.state['queuedUpdate']
+        pending['rollingTrackId'] = candidate['id']
+        native = {**candidate, 'engineChecked':True, 'bpm':107}
+        self.assertIsNone(session.automatic_refill_tempo_miss(pending['id'], {**native, 'bpm':125}))
+        session.state['setPins'] = [candidate['id']]
+        self.assertIsNone(session.automatic_refill_tempo_miss(pending['id'], native))
+        session.state['setPins'] = []
+        job = BackgroundAnalysis(session,pending['id'],[candidate])
+        with patch.object(DJSession,'analyze_deck',return_value=native), \
+             patch.object(job, 'read_evidence') as evidence, \
+             patch('afterhours.background_analysis.scan_track') as scan:
+            job.run()
+        self.assertEqual(job.measured_fit_miss, candidate['id'])
+        self.assertIn('107 BPM', job.error)
+        evidence.assert_not_called()
+        scan.assert_not_called()
+        self.assertEqual(session.snapshot()['index'], 0)
 
     def test_ordinary_rolling_refill_skips_the_display_pass_without_skipping_cue_verification(self):
         self.verify_refill_audio_without_display_waveform(timed=False)

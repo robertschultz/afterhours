@@ -1489,6 +1489,32 @@ class DJSession:
             missed = staged[0] if len(staged) == 1 else None
         return self.replaceable_rolling_pick(state, queued, missed)
 
+    def automatic_refill_tempo_miss(self, revision, checked):
+        """Reject an isolated automatic pick once the exact native BPM is known."""
+        state = self.snapshot()
+        queued = state.get('queuedUpdate') or {}
+        order = [track['id'] for track in state['order']]
+        track_id = checked['id']
+        if (checked.get('engineChecked') is not True or queued.get('id') != revision
+                or not state.get('entryCadence') or not order
+                or queued.get('protectedIds') != order
+                or [track['id'] for track in queued['tracks']] != order + [track_id]
+                or not self.replaceable_rolling_pick(state, queued, track_id)):
+            return None
+        plan = state.get('executionPlan') or {}
+        route = plan.get('tempoSchedule') or []
+        if not plan.get('applied') or not route or route[-1].get('trackId') != order[-1]:
+            return None
+        try:
+            native = tempo_planner.finite(checked.get('bpm'), 40, 300)
+            target = tempo_planner.finite(route[-1].get('toBpm'), 40, 300)
+            limit = tempo_planner.finite(state.get('maxTempoShift', 8), 0, 8)
+        except ValueError:
+            return None
+        if not native*(1-limit/100)-1e-6 <= target <= native*(1+limit/100)+1e-6:
+            return str(TempoFitError(target, [checked], limit))
+        return None
+
     def replaceable_rolling_pick(self, state, queued, missed):
         """Check that an exact miss belongs to the uncommitted automatic tail."""
         staged = queued.get('rollingTrackIds') or [queued.get('rollingTrackId')]
@@ -1917,6 +1943,9 @@ class DJSession:
                         pending['catalogMissId']=miss
                     if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:
                         pending['analysisMissId']=scan_miss
+                    early_miss = getattr(job, 'measured_fit_miss', None)
+                    if not cleanup_failed and early_miss and self.replaceable_rolling_pick(self.state, pending, early_miss):
+                        pending['measuredFitMissId'] = early_miss
                     if fitting and not cleanup_failed and isinstance(exc, ValueError):
                         fit_miss = self.replaceable_fit_miss(self.state, pending, exc)
                         pinned = set(self.state.get('setPins', [])) | set(self.state['setlist'].get('lockedIds', []))

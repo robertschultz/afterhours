@@ -92,6 +92,10 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             self.assertEqual(score['timingByTarget']['30']['missesOutside2Seconds']['readyAfterTarget'], 1)
             self.assertEqual(score['timingByTarget']['30']['worstAbsoluteErrorSeconds'], 10)
             self.assertEqual(score['timingByTarget']['60']['within2Seconds'], 1)
+            self.assertEqual(score['lateEntriesOutside5Seconds'], [{
+                'outgoing':None, 'incoming':None, 'targetSeconds':30, 'secondsLate':10,
+                'secondsLateBeforeDeckReady':5, 'secondsLateAfterDeckReady':5, 'timingBasis':None,
+            }])
             self.assertEqual(score['openEntryInterval'], {'trackIndex':2,'elapsedSeconds':65,
                                                          'targetSeconds':30,'pastTargetSeconds':35})
             self.assertEqual(score['quietWindowsDuringBlend'], 1)

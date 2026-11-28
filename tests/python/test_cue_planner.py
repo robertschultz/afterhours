@@ -64,6 +64,16 @@ class CueTests(unittest.TestCase):
         self.assertLessEqual(len(timed['offsets']), 10)
         self.assertEqual(timed['spanBeats'], standard['spanBeats'])
 
+    def test_timed_cue_policy_spreads_recovery_checks_across_a_long_track(self):
+        rows, report, _ = fixture()
+        track = report['tracks'][0]
+        policy = cp.propose_offsets(track, rows, .2, 126, 126, 30, limit=10, timed=True)
+        offsets = policy['offsets']
+        latest = int(((track['duration']-.7)*126/60-policy['spanBeats']-policy['blendBeats'])//16)*16
+        self.assertEqual(offsets[:7], list(range(0, 112, 16)))
+        self.assertEqual(len(offsets), 10)
+        self.assertLessEqual(max(b-a for a,b in zip(offsets, offsets[1:]+[latest])), 192)
+
     def test_native_readbacks_cannot_move_into_silence_or_outside_track(self):
         rows,report,_=fixture();t=report['tracks'][0];native=t['cueCandidates'][0]
         policy={'spanBeats':64,'blendBeats':32,'medianRmsDb':-14}

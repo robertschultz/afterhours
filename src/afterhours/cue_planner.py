@@ -131,10 +131,27 @@ def propose_offsets(evidence, rows, anchor_seconds, bpm, target_bpm, seconds, li
         if len(ranked)>=min(early_count,limit):break
         if all(abs(offset-other)>=early_spacing for other in ranked):
             ranked.append(offset)
-    for _,offset in sorted(possibilities,reverse=True):
-        if len(ranked)>=limit:break
-        if all(abs(offset-other)>=32 for other in ranked):
-            ranked.append(offset)
+    if timed and ranked:
+        # Keep the early cues dense for normal cadence. Spend the remaining
+        # native checks splitting the widest gaps, so a late deck load need
+        # not wait minutes for the next verified exit. Use signal score to
+        # prefer a musically stronger window when coverage is comparable.
+        latest = possibilities[-1][1]
+        while len(ranked) < limit:
+            eligible = [(score, offset) for score, offset in possibilities
+                        if all(abs(offset-other)>=32 for other in ranked)]
+            if not eligible:
+                break
+            def recovery_rank(choice):
+                score, offset = choice
+                distance = min(abs(offset-other) for other in (*ranked, latest))
+                return distance // 16, score
+            ranked.append(max(eligible, key=recovery_rank)[1])
+    else:
+        for _,offset in sorted(possibilities,reverse=True):
+            if len(ranked)>=limit:break
+            if all(abs(offset-other)>=32 for other in ranked):
+                ranked.append(offset)
     return {'offsets':sorted(ranked), 'spanBeats':span, 'blendBeats':blend,
             'medianRmsDb':round(median,2)}
 

@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_session import DJSession, Cancelled, validate_order, number, search_terms, song_identity, segment_window
+from afterhours.vdj_session import DJSession, Cancelled, NativeStreamRejected, validate_order, number, search_terms, song_identity, segment_window
 from test_vdj_catalog import CatalogPeer
 from afterhours.vdj_catalog import load_selected
 from afterhours.vdj_catalog import identity
@@ -904,6 +904,25 @@ class SessionTests(unittest.TestCase):
             result=load_selected(peer,2,**peer.options())
         self.assertTrue(result['verified']);self.assertEqual(len(peer.sent),1)
         self.assertNotIn(' play',peer.sent[0].split(' : ')[-1])
+
+    def test_rejected_foreground_load_is_recoverable_only_for_the_paused_empty_or_exact_deck(self):
+        session = DJSession(threading.Lock())
+        session.folder = {'id':'catalog'}
+        track = {'engine':{'selection_id':identity('exact')}}
+        client = Mock()
+        for playing, loaded, position, expected in (
+                (False,False,'',NativeStreamRejected), (False,True,'exact',NativeStreamRejected),
+                (False,True,'another',BridgeError), (True,False,'',BridgeError)):
+            with self.subTest(playing=playing,loaded=loaded,position=position):
+                readings = {'deck 2 play':playing,'deck 2 loaded':loaded,
+                            'deck 2 get_filepath':position,'deck 2 deck_has_error':True}
+                client.query.side_effect = lambda script, kind=None: readings[script]
+                with patch.object(session,'locate_for_load',return_value=None),patch.object(session,'wait_observed'), \
+                        patch('afterhours.vdj_session.load_selected',return_value={'sent':True,'verified':False}) as load:
+                    with self.assertRaises(expected) as result:
+                        session.load(client,track,2)
+                self.assertIs(type(result.exception),expected)
+                load.assert_called_once()
 
     def test_nonfinite_engine_measurements_are_not_live_values(self):
         for value in (float('nan'),float('inf'),True,'',-1):

@@ -21,6 +21,7 @@ from afterhours.vdj_mixing import loop_cleanup_descriptor
 
 class AnalysisCancelled(Exception):pass
 class CatalogInterrupted(BridgeError):pass
+class SpareStreamRejected(BridgeError):pass
 
 PLUGIN_INFO=Path.home()/'Library/Application Support/VirtualDJ/PluginsMacArm/SoundEffect/Afterhours Analysis.bundle/Contents/Info.plist'
 
@@ -123,6 +124,17 @@ def cleanup_analysis_deck(client, descriptor):
         return (client.query(f'deck {deck} get_effect_name 1','text')==expected_effect and
                 not as_bool(client.query(f'deck {deck} effect_active 1','bool')))
     def isolated_identity():
+        # A failed owned Load can apply the host's automatic headphone cue
+        # even though the deck never loaded audio. Recover only that empty,
+        # muted, stopped deck while its original effect is still intact.
+        if row['loadPending'] and row['selectionId'] and not baseline['pfl']:
+            guard_deck(client,deck)
+            if (as_bool(client.query(f'deck {deck} pfl','bool')) and
+                    not as_bool(client.query(f'deck {deck} play','bool')) and
+                    float(client.query(f'deck {deck} volume'))==0 and
+                    not as_bool(client.query(f'deck {deck} loaded','bool')) and
+                    as_bool(client.query(f'deck {deck} deck_has_error','bool')) and effect_is_restored()):
+                client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : deck {deck} pfl off')
         guard_isolation(client,deck)
         loaded=as_bool(client.query(f'deck {deck} loaded','bool'))
         if loaded and (not row['selectionId'] or identity(str(client.query(f'deck {deck} get_filepath','text')))!=row['selectionId']):
@@ -138,6 +150,11 @@ def cleanup_analysis_deck(client, descriptor):
             if as_bool(client.query(f'deck {deck} loaded','bool')):
                 raise BridgeError(f'Analysis deck {deck} changed during cleanup; ownership was retained.')
             row['loadPending']=False;descriptor['loadPending']=False
+            # VirtualDJ retains its disk-error flag on an empty deck. Clear
+            # the failed selection before another Load can inherit that flag.
+            row['unloadRequested']=True;descriptor['unloadRequested']=True
+            client.send(f'deck {deck} play ? nothing : deck {deck} loaded ? nothing : '
+                        f'deck {deck} deck_has_error ? deck {deck} unload : nothing')
         return loaded
     def owned_empty():
         guard_deck(client, deck)
@@ -170,6 +187,8 @@ def cleanup_analysis_deck(client, descriptor):
         empty = owned_empty()
     if empty is None:
         raise BridgeError(f'Analysis deck {deck} unload was not confirmed; ownership was retained.')
+    if descriptor['unloadRequested'] and as_bool(client.query(f'deck {deck} deck_has_error','bool')):
+        raise BridgeError(f'Analysis deck {deck} still reports a load error after unload; ownership was retained.')
     if abs(empty[0]-baseline['volume']) < .00001 and empty[1] == baseline['pfl']:
         return
     descriptor['restoreRequested']=True
@@ -361,7 +380,12 @@ class BackgroundAnalysis:
                 # A streamed load can briefly occupy the host decoder. Retry
                 # only its bounded readbacks, never the uncertain Load action.
                 self.check();continue
-            if failed:raise BridgeError('Stream could not be prepared on the analysis deck.')
+            if failed:
+                message = 'Stream could not be prepared on the analysis deck.'
+                exact = track['engine']['selection_id']
+                if self.owned and self.requested_load == exact and sid in (None, exact):
+                    raise SpareStreamRejected(message)
+                raise BridgeError(message)
             if sid==track['engine']['selection_id']:
                 self.loaded=sid
                 self.request('isolate-loaded','',sid)
@@ -423,8 +447,9 @@ class BackgroundAnalysis:
         except Exception as exc:
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
-            if (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
-                    and self.owned and self.loaded==track['engine']['selection_id']):
+            exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))
+                                     and self.owned and self.loaded==track['engine']['selection_id'])
+            if isinstance(exc,SpareStreamRejected) or exact_analysis_failed:
                 self.analysis_miss=track['id']
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         finally:self.done=True

@@ -50,6 +50,10 @@ class RecordingLookupIncomplete(BridgeError):
     """Bounded provider results did not locate the saved identity; availability is unknown."""
 
 
+class NativeStreamRejected(BridgeError):
+    """VirtualDJ reported a rejected load on a paused playback deck."""
+
+
 class TrackMetadataChanged(BridgeError):
     def __init__(self, track):
         self.track=track
@@ -1719,6 +1723,10 @@ class DJSession:
                     omit(track,exc,PREVIEW_ONLY);continue
                 except RecordingUnavailable as exc:
                     omit(track,exc,'recording-unavailable');continue
+                except NativeStreamRejected as exc:
+                    if not entry_cadence:
+                        raise
+                    omit(track,exc,'native-stream-rejected');continue
                 evidence = track_analysis([checked_track])['tracks'][0]
                 waveform_ready = bool(evidence.get('energyMap')) and verified_waveform(
                     track['engine']['selection_id'],evidence['duration'],evidence['energyMap']['reportDigest'])
@@ -2084,13 +2092,19 @@ class DJSession:
         while time.monotonic() < until:
             self.wait_observed(client, .25)
             try:
-                if as_bool(self.q(client, f'deck {deck} deck_has_error', 'bool')):
-                    raise ValueError('VirtualDJ reports a streamed-track error.')
-                if (as_bool(self.q(client, f'deck {deck} loaded', 'bool')) and
-                        identity(str(self.q(client, f'deck {deck} get_filepath', 'text'))) == track['engine']['selection_id']):
-                    return
+                failed = as_bool(self.q(client, f'deck {deck} deck_has_error', 'bool'))
+                loaded = as_bool(self.q(client, f'deck {deck} loaded', 'bool'))
+                exact = loaded and identity(str(self.q(client, f'deck {deck} get_filepath', 'text'))) == track['engine']['selection_id']
+                paused = not failed or not as_bool(self.q(client, f'deck {deck} play', 'bool'))
             except BridgeError:
                 continue
+            if failed:
+                message = 'VirtualDJ reports a streamed-track error.'
+                if result.get('sent') is True and paused and (not loaded or exact):
+                    raise NativeStreamRejected(message)
+                raise BridgeError(message)
+            if exact:
+                return
         raise BridgeError('Track load remains unconfirmed. No repeat load or Play was sent.')
 
     def telemetry(self, client, observing=False, preloading=False, *, clock_only=False):
@@ -2379,6 +2393,36 @@ class DJSession:
         cue_planner.verify_receipts(prepared['analysis'])
         return order,prepared
 
+    def substitute_rejected_preload(self, index):
+        """Remove a rejected planner pick and refit the existing measured tail."""
+        with self.lock:
+            state = self.snapshot()
+            order = state['order']
+            rejected = order[index]
+            policy = state['setlist']
+            queued = state.get('queuedUpdate')
+            if (state['phase'] != 'playing' or index != state['index']+1 or not state.get('entryCadence')
+                    or not state.get('rollingQueue') or not policy['allowReorder'] or dj_settings.lead(state) != 'all'
+                    or policy.get('sourceById', {}).get(rejected['id']) == 'operator'
+                    or any(track['id'] in policy['lockedIds'] for track in order[index:])
+                    or (queued and not queued.get('rollingTrackId'))):
+                raise NativeStreamRejected('VirtualDJ reports a streamed-track error.')
+            retained = order[:index] + order[index+1:]
+            targets = state.get('tempoTargets')
+            if targets:
+                targets = [row for row in targets if row['trackId'] != rejected['id']]
+            reason = f"{rejected['title']} was rejected by VirtualDJ. Keeping the playing track and refitting the remaining queue."
+            prepared = cue_planner.complete_background_queue(state,retained,[],reason,index,tempo_targets=targets)
+            cue_planner.verify_receipts(prepared['analysis'])
+            plan = prepared['executionPlan']
+            plan['applied'] = True
+            self.availability.record(rejected['id'],'native-stream-rejected',reason)
+            policy['sourceById'].pop(rejected['id'], None)
+            self.update(order=retained,setlist=policy,queuedUpdate=None,tempoTargets=targets,
+                        rollingQueue={'status':'ready'},mixPlans=plan['transitions'],**prepared)
+            self.event(reason,'queue-skipped',trackId=rejected['id'])
+            return retained,plan
+
     def refresh_preparing_queue(self, order):
         """Refit cues after a native key update without rescanning unchanged candidates."""
         with self.lock:
@@ -2522,6 +2566,14 @@ class DJSession:
                 self.refresh_preparing_queue(revised)
                 order,planned=revised,newplan
                 self.event(f"{track['title']}: native key refined; upcoming handoff recalculated locally.",'analysis')
+        def preload_following(client,deck,target,index):
+            nonlocal order,planned
+            try:
+                ready(client,order[index],deck,target,index)
+            except NativeStreamRejected:
+                order,planned = self.substitute_rejected_preload(index)
+                if index < len(order):
+                    ready(client,order[index],deck,target,index)
         def work(client):
             nonlocal order,planned
             self.update(rollingQueue={'status': 'ready'} if rolling else None,
@@ -2805,8 +2857,10 @@ class DJSession:
                         if revised:
                             order,planned=revised
                             if final and index+1<len(order):
-                                ready(client,order[index+1],incoming,target,index+1)
-                                t=self.telemetry(client);entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
+                                preload_following(client,incoming,target,index+1)
+                                t=self.telemetry(client)
+                                if index+1<len(order):
+                                    entries[incoming]=round(t['decks'][incoming-1]['beatPosition'])
                                 return_to_verified_exit=bool(planned)
                                 revised_final=True;break
                     if rolling:rolling.tick(self,slack)
@@ -2937,7 +2991,7 @@ class DJSession:
                     if not self.tempo_ramp:self.tempo_ramp=tempo_planner.TempoRamp(self.q,self.send,self.event)
                     self.tempo_ramp.arm(order[index+1],active,planned['tempoSchedule'][index+1],planned['selections'][index+1]['entryBeat'])
                 if index+2 < len(order):
-                    ready(client, order[index+2], nxt(active), target,index+2)
+                    preload_following(client,nxt(active),target,index+2)
                 t = self.telemetry(client)
                 if index+2 < len(order):
                     entries[nxt(active)] = round(t['decks'][nxt(active)-1]['beatPosition'])

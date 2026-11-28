@@ -15,7 +15,7 @@ import threading
 import time
 from afterhours.dj_bridge import BridgeError
 
-LIFETIMES = {'recording-unavailable': 900, 'limited-decoded-audio': 3600}
+LIFETIMES = {'recording-unavailable': 900, 'limited-decoded-audio': 3600, 'native-stream-rejected': 900}
 PREVIEW_ONLY = 'provider-preview-only'
 LEGACY_BOUNDED_SEARCH_REASON = 'The exact recording is no longer available in the search results. No replacement was loaded.'
 

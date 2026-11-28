@@ -1,7 +1,7 @@
 """Mailbox scheduling and deck isolation with simulated native replies only."""
 import queue,threading,time,unittest
 from unittest.mock import Mock,patch
-from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,guard_deck,guard_isolation,allowed
+from afterhours.background_analysis import BackgroundAnalysis,MailboxClient,AnalysisCancelled,SpareStreamRejected,guard_deck,guard_isolation,allowed
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_catalog import identity
 from afterhours.vdj_session import DJSession
@@ -9,7 +9,7 @@ from afterhours.vdj_session import DJSession
 class Peer:
     def __init__(self):
         self.commands=[];self.queries=[];self.values={'get_decks':4,'deck 3 get_deck':3,
-            'deck 3 loaded':False,'deck 3 play':False,'deck 3 volume':1,'deck 3 pfl':False,
+            'deck 3 loaded':False,'deck 3 play':False,'deck 3 volume':1,'deck 3 pfl':False,'deck 3 deck_has_error':False,
             'deck 3 get_effect_name 1':'Flanger','deck 3 effect_active 1':False,'deck 3 get_filepath':'test'}
     def query(self,s,k=None):self.queries.append(s);return self.values[s]
     def send(self,s):
@@ -120,6 +120,26 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual([call[0] for call in sent],['load','isolate-loaded'])
         self.assertEqual(sent[0][0],'load')
         self.assertEqual(job.loaded,track['engine']['selection_id'])
+    def test_native_stream_rejection_is_exact_and_never_replays_load(self):
+        expected = identity('test')
+        for loaded, path, error in ((False,'',SpareStreamRejected), (True,'operator',BridgeError)):
+            with self.subTest(loaded=loaded,path=path):
+                peer = Peer()
+                job = self.job()
+                job.acquire(peer)
+                peer.values.update({'deck 3 deck_has_error':True,'deck 3 loaded':loaded,
+                                    'deck 3 get_filepath':path})
+                helper = Mock()
+                helper.folder = {'id':'current-scope'}
+                helper.locate_for_load.return_value = None
+                job.wait = Mock()
+                job.requested_load = expected
+                job.request = Mock()
+                with self.assertRaises(error) as failed:
+                    job.load(helper,peer,{'engine':{'selection_id':expected}},3)
+                self.assertIs(type(failed.exception),error)
+                job.request.assert_called_once()
+
     def test_empty_work_list_reuses_evidence_without_reserving_deck(self):
         peer=Peer();job=BackgroundAnalysis(DJSession(threading.Lock()),'rev',[]);job.step(peer,40)
         self.assertTrue(job.done);self.assertFalse(peer.commands);self.assertFalse(peer.queries)

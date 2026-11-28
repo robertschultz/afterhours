@@ -42,7 +42,9 @@ class CleanupPeer(Peer):
         if guard and self.values[f'deck {guard[1]} play']:return
         for deck in (1,2,3,4):
             if f'deck {deck} pause' in script:self.values[f'deck {deck} play']=False
-            if f'deck {deck} unload' in script and deck not in self.ignore_unload:self.values[f'deck {deck} loaded']=False
+            if f'deck {deck} unload' in script and deck not in self.ignore_unload:
+                self.values[f'deck {deck} loaded']=False
+                self.values[f'deck {deck} deck_has_error']=False
             found=re.search(rf'deck {deck} volume ([0-9.]+)%',script)
             if found:
                 self.values[f'deck {deck} volume']=float(found[1])/100
@@ -87,6 +89,7 @@ class AnalysisCleanupTests(unittest.TestCase):
                 cleanup_analysis_deck(peer, descriptor)
                 self.assertFalse(peer.values['deck 3 pfl'])
                 self.assertFalse(peer.values['deck 3 loaded'])
+                self.assertFalse(peer.values['deck 3 deck_has_error'])
                 self.assertEqual(peer.values['deck 3 volume'], descriptor['baseline']['volume'])
                 self.assertTrue(descriptor['restoreRequested'])
 
@@ -99,6 +102,39 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertFalse(s.state['resumeBlocked']);self.assertIsNone(s.state['cleanupPending'])
         self.assertFalse(p.values['deck 3 loaded']);self.assertEqual(p.values['deck 3 volume'],1)
         self.assertTrue(all('deck 3' in c and 'deck 1' not in c and 'deck 2' not in c for c in p.commands))
+
+    def test_failed_owned_load_can_clear_native_headphone_cue(self):
+        for error in (False, True):
+            with self.subTest(error=error):
+                _, peer, job = self.owned()
+                job.requested_load = job.loaded
+                job.loaded = None
+                peer.values.update({'deck 3 loaded':False,'deck 3 pfl':True,'deck 3 deck_has_error':error})
+                descriptor = job.cleanup_descriptors()[0]
+                if not error:
+                    with self.assertRaises(BridgeError):
+                        cleanup_analysis_deck(peer,descriptor)
+                    self.assertEqual(peer.commands,[])
+                    continue
+                cleanup_analysis_deck(peer,descriptor)
+                self.assertFalse(descriptor['loadPending'])
+                self.assertFalse(peer.values['deck 3 pfl'])
+                self.assertFalse(peer.values['deck 3 deck_has_error'])
+                self.assertEqual(peer.values['deck 3 volume'],1)
+                self.assertTrue(all('deck 3' in command for command in peer.commands))
+                self.assertEqual(sum(command.count('deck 3 unload') for command in peer.commands),1)
+
+    def test_failed_owned_load_keeps_spare_when_disk_error_does_not_clear(self):
+        _, peer, job = self.owned()
+        job.requested_load = job.loaded
+        job.loaded = None
+        peer.values.update({'deck 3 loaded':False,'deck 3 deck_has_error':True})
+        peer.ignore_unload.add(3)
+        descriptor = job.cleanup_descriptors()[0]
+        with self.assertRaisesRegex(BridgeError,'still reports a load error'):
+            cleanup_analysis_deck(peer,descriptor)
+        self.assertTrue(descriptor['unloadRequested'])
+        self.assertEqual(peer.values['deck 3 volume'],0)
 
     def test_unconfirmed_unload_is_an_error_with_a_recoverable_descriptor(self):
         s,p,j=self.owned();p.ignore_unload.add(3)

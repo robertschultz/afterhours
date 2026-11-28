@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 from afterhours.dj_bridge import BridgeError
 from afterhours.vdj_discovery import CatalogSearch
-from afterhours.vdj_session import DJSession
+from afterhours.vdj_session import DJSession,NativeStreamRejected
 from test_cue_planner import fixture
 from afterhours import ai_mix
 from afterhours import cue_planner
@@ -129,6 +129,29 @@ class QueueRevisionTests(unittest.TestCase):
     def transitions(self,ids):
         return [{'fromId':a,'toId':b,'technique':'short-handoff','blendBeats':8,'reason':'A shorter restrained lead handoff.'}
                 for a,b in zip(ids,ids[1:])]
+
+    def test_rejected_preload_refits_the_measured_tail_without_touching_transport(self):
+        s,original = self.prepared()
+        s.update(index=1,entryCadence=[60,30],rollingQueue={'status':'preparing'},
+                 queuedUpdate={'rollingTrackId':'future','tracks':s.state['order']})
+        with patch('afterhours.cue_planner.verify_receipts'),patch.object(s,'send') as send:
+            order,plan = s.substitute_rejected_preload(2)
+        self.assertEqual([row['id'] for row in order],['0','1','3'])
+        self.assertEqual(plan['selections'][:2],original['selections'][:2])
+        self.assertEqual(plan['orderIds'],['0','1','3'])
+        self.assertTrue(plan['applied'])
+        self.assertEqual(s.state['index'],1)
+        self.assertIsNone(s.state['queuedUpdate'])
+        send.assert_not_called()
+
+    def test_rejected_preload_keeps_operator_queue_intact(self):
+        s,_ = self.prepared()
+        pending = {'tracks':s.state['order']}
+        s.update(index=1,entryCadence=[60,30],rollingQueue={'status':'preparing'},queuedUpdate=pending)
+        with self.assertRaises(NativeStreamRejected):
+            s.substitute_rejected_preload(2)
+        self.assertIs(s.state['queuedUpdate'],pending)
+        self.assertEqual([row['id'] for row in s.state['order']],['0','1','2','3'])
 
     def test_prepared_future_order_waits_for_handoff_and_keeps_armed_transition(self):
         s,original=self.prepared();ids=['0','1','3','2']

@@ -50,4 +50,7 @@ It records confirmed transitions, beat phase, loop release and mixer readbacks.
 Supply `--provider apple-music` to require Apple Music for every heard recording
 or `--provider-sequence beatport,apple-music,beatport,beatport,apple-music`
 to validate a mixed opening. Provider checks use the exact recordings confirmed
-by the handoffs. The verifier leaves the set playing after observation.
+by contiguous handoff receipts. The report includes the observed sequence and
+requires fresh native signal on each recording. Start observation with the set
+to measure the whole run, including the first and last intervals. The verifier
+leaves the set playing after observation.

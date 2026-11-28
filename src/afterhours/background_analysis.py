@@ -568,7 +568,15 @@ class BackgroundAnalysis:
                     # Rolling playback still needs verified features and
                     # replayed cues. Build display waveforms off air.
                     end=next((p['seconds'] for p in evidence['points'] if p['label']=='realEnd'),None)
-                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,timeout=SPARE_SCAN_TIMEOUT,deck=self.deck,isolated=True)
+                    def can_replace_stalled():
+                        live = self.session.snapshot()
+                        pending = live.get('queuedUpdate') or {}
+                        return (pending.get('id') == self.revision
+                                and bool(self.session.replaceable_rolling_pick(live, pending, track['id'])))
+
+                    scan_track(client,checked,end,check=self.check,wait=self.wait,clock=self.clock,
+                               timeout=SPARE_SCAN_TIMEOUT, deck=self.deck,isolated=True,
+                               can_replace_stalled=can_replace_stalled if timed else None)
                     evidence=self.read_evidence(checked)
                     if display_waveform:
                         self.message='Preparing waveform · '+track['title']

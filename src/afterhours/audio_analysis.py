@@ -23,10 +23,18 @@ PLUGIN = 'Afterhours Analysis'
 MAX_SCAN_SECONDS = 1200
 PAUSED_SCAN_TIMEOUT = 40
 SPARE_SCAN_TIMEOUT = 120
+STALLED_GAP_GRACE_SECONDS = 10
+STALLED_GAP_MIN_PASSES = 3
 
 
 class AudioAnalysisTimeout(BridgeError):
     pass
+
+
+class InteriorBufferGap(ValueError):
+    def __init__(self, digest):
+        super().__init__('An interior zero-filled region needs verification before analysis can be used.')
+        self.digest = digest
 
 
 def bounded(value, low, high):
@@ -106,11 +114,12 @@ def validate_scan(data, sound_end):
         raise ValueError('The audio scan does not cover the whole track.')
     if last_signal < sound_end-2:
         raise ValueError('The buffer is still silent before the native end-of-sound marker.')
+    feature_digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
     if longest_interior_zero > 4:
-        raise ValueError('An interior zero-filled region needs verification before analysis can be used.')
+        raise InteriorBufferGap(feature_digest)
     return {'lastSignalSeconds': round(last_signal, 6),
             'longestInteriorZeroSeconds': round(longest_interior_zero, 6),
-            'featureDigest': hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()}
+            'featureDigest': feature_digest}
 
 
 def restore_effect(client, deck, previous, wait=time.sleep, clock=time.monotonic):
@@ -133,7 +142,8 @@ def restore_effect(client, deck, previous, wait=time.sleep, clock=time.monotonic
 
 
 def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
-               root=REPORTS, clock=time.monotonic, timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None):
+               root=REPORTS, clock=time.monotonic, timeout=PAUSED_SCAN_TIMEOUT, deck=1, isolated=None,
+               can_replace_stalled=None):
     """One bounded scan operation. The caller owns the OSC connection lock.
 
     An isolated deck is a spare one held paused, at zero volume and off the
@@ -168,6 +178,8 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
     last = None
     last_time = None
     last_reason = 'Waiting for a fresh buffer scan.'
+    gap_digest = gap_since = None
+    gap_passes = 0
     try:
         client.send(f'deck {deck} effect_select 1 "{PLUGIN}"')
         until = clock()+3
@@ -218,7 +230,19 @@ def scan_track(client, track, sound_end, check=lambda: None, wait=time.sleep,
                 details = validate_scan(data, sound_end)
             except ValueError as exc:
                 last, last_time, last_reason = None, None, str(exc)
+                if isinstance(exc, InteriorBufferGap) and can_replace_stalled:
+                    now = clock()
+                    if gap_digest != exc.digest:
+                        gap_digest, gap_since, gap_passes = exc.digest, now, 0
+                    gap_passes += 1
+                    if (gap_passes >= STALLED_GAP_MIN_PASSES
+                            and now - gap_since >= STALLED_GAP_GRACE_SECONDS and can_replace_stalled()):
+                        raise AudioAnalysisTimeout('Audio analysis remains unverified: '+last_reason
+                                                   +' Repeated scans returned the same incomplete audio.')
+                else:
+                    gap_digest, gap_since, gap_passes = None, None, 0
             else:
+                gap_digest, gap_since, gap_passes = None, None, 0
                 digest = details['featureDigest']
                 if digest == last and clock()-last_time >= 1:
                     guard()

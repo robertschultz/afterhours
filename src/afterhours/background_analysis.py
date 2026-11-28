@@ -307,6 +307,7 @@ class BackgroundAnalysis:
         self.catalog_miss=None
         self.analysis_miss=None
         self.osc_reply_timeout=False
+        self.osc_timeout_track_id=None
         self.cleanup_reply_timeout=False
         self.status='queued';self.message='Upcoming recordings waiting for background analysis.'
         self.thread=None;self.owned=False;self.loaded=None;self.baseline=None
@@ -553,6 +554,8 @@ class BackgroundAnalysis:
             self.status='blocked';self.error=str(exc);self.message=str(exc)
         except Exception as exc:
             self.osc_reply_timeout=isinstance(exc,OSCReplyTimeout)
+            if self.osc_reply_timeout:
+                self.osc_timeout_track_id=track['id']
             if isinstance(exc,RecordingLookupIncomplete):self.catalog_miss=track['id']
             self.analysis_timed_out=isinstance(exc,AudioAnalysisTimeout)
             exact_analysis_failed = (isinstance(exc,(NativeAnalysisUnsettled,AudioAnalysisTimeout))

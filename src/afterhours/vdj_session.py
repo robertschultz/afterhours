@@ -1860,6 +1860,18 @@ class DJSession:
                                 and rejected not in staged_ids):
                             staged_ids = [tid for tid in staged_ids if tid] + [rejected]
                             pending['rollingTrackIds'] = staged_ids
+                    # Once verified cleanup and two retries are exhausted, let
+                    # rolling selection replace the specific timed-out pick.
+                    # An unattributed timeout or a protected revision stays held.
+                    timeout_track = getattr(job, 'osc_timeout_track_id', None)
+                    if (not cleanup_failed and self.state.get('rollingQueue')
+                            and pending.get('oscReadRetries', 0) >= 2
+                            and timeout_track and timeout_track in staged_ids
+                            and not protected_ids.intersection(staged_ids)
+                            and pending.get('sourceById', {}).get(timeout_track) == 'planner'):
+                        pending['analysisMissId'] = timeout_track
+                        self.event('Spare-deck replies timed out after two retries. Replacing the affected recording.',
+                                   'analysis', trackId=timeout_track)
                     if not cleanup_failed and miss and miss in staged_ids:
                         pending['catalogMissId']=miss
                     if (not cleanup_failed or quarantined) and scan_miss and scan_miss in staged_ids:

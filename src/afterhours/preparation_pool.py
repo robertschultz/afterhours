@@ -30,6 +30,7 @@ class PreparationPool:
         self.catalog_miss=None
         self.analysis_miss=None
         self.osc_reply_timeout=False
+        self.osc_timeout_track_id=None
         state = session.snapshot()
         self.timed = bool(state.get('entryCadence'))
         verified = VerifiedCues() if self.timed or state.get('rollingQueue') else None
@@ -80,6 +81,7 @@ class PreparationPool:
         self.catalog_miss=getattr(job,'catalog_miss',None)
         self.analysis_miss=getattr(job,'analysis_miss',None)
         self.osc_reply_timeout=getattr(job,'osc_reply_timeout',False)
+        self.osc_timeout_track_id=job.osc_timeout_track_id
         self.done=True
 
     def step(self,client,seconds_available):

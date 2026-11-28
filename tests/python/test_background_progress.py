@@ -112,4 +112,34 @@ class BackgroundProgressTests(unittest.TestCase):
 
 
 
+    def test_exhausted_rolling_read_timeout_only_replaces_an_attributed_safe_pick(self):
+        tracks = [{'id': str(i), 'title': str(i)} for i in range(4)]
+        for scoped_id, locked, from_planner, replace in (
+            ('3', [], True, True), (None, [], True, False),
+            ('3', ['3'], True, False), ('3', ['2'], True, False),
+            ('3', [], False, False),
+        ):
+            with self.subTest(scoped_id=scoped_id, locked=locked, from_planner=from_planner):
+                s = DJSession(threading.Lock())
+                s.update(order=tracks[:2], active=True, phase='playing',
+                         rollingQueue={'status': 'preparing'},
+                         queuedUpdate={'id': 'refill', 'status': 'analyzing', 'tracks': tracks,
+                                       'protectedIds': ['0', '1'], 'oscReadRetries': 2,
+                                       'rollingTrackId': '2', 'rollingTrackIds': ['2', '3'],
+                                       'sourceById': {'2': 'planner', '3': 'planner' if from_planner else 'operator'}})
+                s.state['setlist']['lockedIds'] = locked
+                s.state['copilot']['mode'] = 'leading'
+                job = Mock(revision='refill', cache={}, analysis_miss=None, catalog_miss=None,
+                           osc_timeout_track_id=scoped_id)
+                job.step.side_effect = OSCReplyTimeout('Spare-deck OSC packet timed out.')
+                job.snapshot.return_value = {'message': 'Preparing a measured refill.', 'decks': []}
+                s.background_job = job
+                s.service_background(None, 20)
+                job.close.assert_called_once()
+                pending = s.state['queuedUpdate']
+                self.assertEqual(pending['status'], 'blocked')
+                self.assertEqual(pending.get('analysisMissId'), '3' if replace else None)
+                self.assertEqual(s.state['order'], tracks[:2])
+
+
 if __name__=='__main__':unittest.main()

@@ -3759,8 +3759,16 @@ class DJSession:
                         'current':None,'library':[],'session':s['id'],'sessionPhase':s['phase'],
                         'clock':{'bpm':None,'playing':False,'sampledAtUnixMs':now*1000},'updated':now}
             return None
-        deck = t['decks'][0 if t['crossfader'] < .5 else 1]
+        dominant_side = 0 if t['crossfader'] < .5 else 1
+        deck = t['decks'][dominant_side]
         available=[d for d in t['decks'] if d.get('loaded') is not False and not d.get('unavailable')]
+        if len(t['decks']) > 2:
+            # The two active decks can be any adjacent pair in the rotation.
+            # Only a playing deck assigned to the dominant side can replace
+            # the A/B default. Prefer full transport over a spare-deck read.
+            audible = [d for d in available if d.get('playing')
+                       and deck_rotation.crossfader_end(d['deck']) == dominant_side]
+            deck = min(audible, key=lambda d: bool(d.get('standby')), default=deck)
         # A paused, completed set keeps its last recording as the program.
         # Moving the hardware crossfader alone cannot resurrect an older track
         # or a next-track countdown. New manual loads still use observed decks.

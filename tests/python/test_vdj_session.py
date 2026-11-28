@@ -1090,6 +1090,32 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(s.program()['current'],'b')
             self.assertEqual(s.program()['transitionInSeconds'],70)
 
+    def test_four_deck_program_follows_the_dominant_side_through_each_handoff(self):
+        session = DJSession(threading.Lock())
+        order = [{'id': letter, 'title': letter.upper()} for letter in 'abcde']
+        next_by_id = {track['id']: following for track, following in zip(order, order[1:])}
+        decks = [{'deck': number, 'id': row['id'], 'playing': False, 'bpm': 118 + number,
+                  'beatPosition': 20 + number, 'position': 10 + number}
+                 for number, row in enumerate(order[:4], 1)]
+        for outgoing, incoming in ((2, 3), (3, 4), (4, 1)):
+            for row in decks:
+                row['playing'] = row['deck'] in (outgoing, incoming)
+            if incoming == 1:
+                decks[0]['id'] = 'e'
+            session.update(order=order, active=True, phase='mixing', index=outgoing - 1)
+            for dominant in (outgoing, incoming):
+                with self.subTest(outgoing=outgoing, incoming=incoming, dominant=dominant):
+                    row = decks[dominant - 1]
+                    session.update(telemetry={'decks': decks, 'crossfader': .25 if dominant % 2 else .75,
+                                              'sampledAt': 100})
+                    with patch('afterhours.vdj_session.time.time', return_value=101):
+                        program = session.program()
+                    self.assertEqual(program['current'], row['id'])
+                    self.assertTrue(program['playing'])
+                    self.assertEqual(program['clock']['beatPosition'], row['beatPosition'])
+                    self.assertEqual(program['positionSeconds'], row['position'])
+                    self.assertEqual(program['nextTrack'], next_by_id.get(row['id']))
+
     def test_completed_program_does_not_switch_tracks_when_only_crossfader_moves(self):
         s=DJSession(threading.Lock())
         decks=[{'id':'a','playing':False,'loaded':True},{'id':'b','playing':False,'loaded':True}]

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from afterhours import set_research
+from afterhours.rolling_queue import RollingQueue
 
 
 CATALOG_TRACK = {
@@ -44,3 +45,20 @@ class SetResearchTests(unittest.TestCase):
             self.assertEqual(set_research.hints('house', set_order, (), now=105 + set_research.TTL), [])
             self.assertEqual(set_research.hints('house', set_order + [CATALOG_TRACK], (), now=105), [])
             self.assertEqual(set_research.hints('house', set_order, {'the martinez brothers h2daizzo'}, now=105), [])
+
+    def test_rolling_queue_sends_research_lead_to_native_catalog_discovery(self):
+        hint = {**CATALOG_TRACK, 'artist': 'Saison', 'title': 'Deliver You',
+                'source_url':'https://www.beatport.com/track/t/17951821', 'version':'Extended Mix'}
+        with tempfile.TemporaryDirectory() as root, patch('afterhours.set_research.data_root', return_value=Path(root)), \
+                patch('afterhours.set_research.time.time', return_value=105), \
+                patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+            path = Path(root) / 'set-research.json'
+            path.write_text(json.dumps({'style':'house', 'anchor':'Dom Dolla', 'researched_at':100,
+                                        'candidates':[hint]}))
+            discovery.hints.return_value = []
+            discovery.neighbors.return_value = []
+            session = Mock()
+            order = [{'artist':'Dom Dolla & Go Freek', 'title':'Define', 'bpm':122}]
+            self.assertTrue(RollingQueue().search(session, {}, order, 'house', True))
+        session.discover_more.assert_called_once_with('Saison Deliver You', bpm_min=122*.90, bpm_max=122*1.11)
+        session.revise_queue.assert_not_called()

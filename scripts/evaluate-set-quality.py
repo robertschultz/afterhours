@@ -616,15 +616,28 @@ def read_observed_run(prefix):
         if covered_until == start_of_window:
             for first, last, handoff in solo_ranges:
                 if first <= start_of_window and end <= last:
-                    solo_quiet[first].append((start_of_window, end, handoff))
+                    solo_quiet[first].append((start_of_window, end, handoff, row.get('consecutive')))
                     break
     quiet_recordings = []
     for windows in solo_quiet.values():
-        first, _, handoff = windows[0]
+        first, _, handoff, _ = windows[0]
+        longest = quiet_streak = 0
+        previous_count = None
+        for begin, end, _, count in windows:
+            if type(count) is not int or count < 1:
+                previous_count, quiet_streak = None, 0
+                continue
+            if previous_count is None or count != previous_count + 1:
+                quiet_streak = 0
+            quiet_streak += end - begin
+            longest = max(longest, quiet_streak)
+            previous_count = count
         quiet_recordings.append({
             'recordingId':handoff['outgoingRecordingId'], 'title':handoff.get('outgoing'),
             'firstQuietAtSetSeconds':round(first - start, 3),
-            'windowCount':len(windows), 'measuredQuietSeconds':round(sum(end - begin for begin, end, _ in windows), 3),
+            'windowCount':len(windows),
+            'measuredQuietSeconds':round(sum(end - begin for begin, end, _, _ in windows), 3),
+            'longestConsecutiveQuietSeconds':round(longest, 3) if longest else None,
         })
     trial_end = next((idx for idx, row in enumerate(browser)
                       if row.get('event') in ('Endurance reached', 'Interrupted')), len(browser)-1)

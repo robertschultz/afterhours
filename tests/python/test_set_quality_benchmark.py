@@ -119,12 +119,16 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             handoffs[1].update(outgoingRecordingId='exact:b', incomingRecordingId='exact:c',
                                outgoing='Second recording')
             log('handoffs', handoffs)
-            master[2:2] = [{'event':'quiet-window','at':1096.9,'windowSeconds':.05}]
+            master[2:2] = [
+                {'event':'quiet-window','at':1095,'windowSeconds':.05,'consecutive':1},
+                {'event':'quiet-window','at':1095.053,'windowSeconds':.05,'consecutive':2},
+                {'event':'quiet-window','at':1096.9,'windowSeconds':.05,'consecutive':1},
+            ]
             master.insert(-1, {'event':'quiet-window','at':1115,'windowSeconds':.05})
             log('master', master)
             self.assertEqual(SCORER['read_observed_run'](prefix)['verifiedSoloQuietByRecording'], [{
-                'recordingId':'exact:b', 'title':'Second recording', 'firstQuietAtSetSeconds':96.85,
-                'windowCount':1, 'measuredQuietSeconds':.05,
+                'recordingId':'exact:b', 'title':'Second recording', 'firstQuietAtSetSeconds':94.95,
+                'windowCount':3, 'measuredQuietSeconds':.15, 'longestConsecutiveQuietSeconds':.1,
             }])
             self.assertEqual(SCORER['read_observed_run'](prefix)['earlyEntriesOutside5Seconds'], [])
             handoffs[1].update(entryIntervalSeconds=48, deckReadyRelativeToTargetSeconds=-18,

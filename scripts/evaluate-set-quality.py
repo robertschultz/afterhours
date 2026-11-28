@@ -369,6 +369,60 @@ def observed_genre_timing(handoffs, intervals):
     }
 
 
+def observed_queue_runway(path, owner, end):
+    if not path.is_file():
+        return None
+    rows = []
+    previous_at = owner['at']
+    for row in json_lines(path):
+        if (row.get('owner'), row.get('startedAt')) != (owner['id'], owner['at']):
+            raise ValueError('Queue runway sampling changed playback owner.')
+        at = number(row['at'], 'queue runway observation', minimum=previous_at)
+        if at > end:
+            break
+        previous_at = at
+        for field in ('index', 'committedSuccessors', 'stagedSuccessors'):
+            if type(row.get(field)) is not int or row[field] < 0:
+                raise ValueError('Invalid queue runway reading.')
+        rows.append(row)
+    playing = [row for row in rows if row['phase'] == 'playing']
+    if not playing:
+        return None
+
+    sampled = no_committed = no_pending_successor = longest_empty = empty_run = 0
+    for before, after in zip(rows, rows[1:]):
+        span = after['at'] - before['at']
+        # Never attribute a skipped poll, transition, or new recording to the
+        # earlier reading. A separate browser log covers the blend itself.
+        if (span > 5 or before['phase'] != 'playing' or after['phase'] != 'playing'
+                or before['index'] != after['index']):
+            empty_run = 0
+            continue
+        sampled += span
+        if before['committedSuccessors']:
+            empty_run = 0
+            continue
+        no_committed += span
+        if before['stagedSuccessors']:
+            empty_run = 0
+            continue
+        no_pending_successor += span
+        empty_run += span
+        longest_empty = max(longest_empty, empty_run)
+
+    return {
+        'firstPlayingSampleSeconds':round(playing[0]['at'] - owner['at'], 3),
+        'lastPlayingSampleSeconds':round(playing[-1]['at'] - owner['at'], 3),
+        'playingSamples':len(playing),
+        'measuredPlayingSeconds':round(sampled, 3),
+        'minimumCommittedSuccessors':min(row['committedSuccessors'] for row in playing),
+        'medianCommittedSuccessors':median(row['committedSuccessors'] for row in playing),
+        'secondsWithoutCommittedSuccessor':round(no_committed, 3),
+        'secondsWithoutCommittedOrStagedSuccessor':round(no_pending_successor, 3),
+        'longestWithoutCommittedOrStagedSuccessorSeconds':round(longest_empty, 3),
+    }
+
+
 def read_observed_run(prefix):
     """Compare native handoff timing with independent master capture logs."""
     owner = json.loads(Path(f'{prefix}-owner.json').read_text())
@@ -495,6 +549,7 @@ def read_observed_run(prefix):
         'lateEntriesOutside5Seconds':sorted(late_entries, key=lambda row: -row['secondsLate']),
         'openEntryInterval':waiting,
         'upNextOverlay':observed_up_next(browser[:trial_end+1], start),
+        'queueRunway':observed_queue_runway(Path(f'{prefix}-runway.jsonl'), owner, start + elapsed),
         'curatorialVariety':observed_curatorial_variety(handoffs),
         'genreTiming':observed_genre_timing(handoffs, intervals),
         'mixTechniques':observed_mix_techniques(handoffs),

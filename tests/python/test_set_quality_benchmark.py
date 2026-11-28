@@ -118,6 +118,26 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 SCORER['read_observed_run'](prefix)
 
+    def test_queue_runway_excludes_blends_gaps_and_reports_real_uncommitted_time(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / 'runway.jsonl'
+            owner = {'id':'run', 'at':1000}
+            rows = [dict(owner='run', startedAt=1000, at=1000+second,
+                         committedSuccessors=committed, stagedSuccessors=staged,
+                         phase=phase, index=index) for second,committed,staged,phase,index in (
+                            (10,0,0,'playing',0), (12,0,1,'playing',0),
+                            (14,1,0,'playing',0), (16,1,0,'playing',0),
+                            (18,1,0,'mixing',0), (20,0,0,'playing',1),
+                            (40,0,0,'playing',1), (42,0,0,'playing',1), (50,0,0,'playing',1),
+                         )]
+            path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            self.assertEqual(SCORER['observed_queue_runway'](path, owner, 1045), {
+                'firstPlayingSampleSeconds':10, 'lastPlayingSampleSeconds':42, 'playingSamples':7,
+                'measuredPlayingSeconds':8, 'minimumCommittedSuccessors':0, 'medianCommittedSuccessors':0,
+                'secondsWithoutCommittedSuccessor':6, 'secondsWithoutCommittedOrStagedSuccessor':4,
+                'longestWithoutCommittedOrStagedSuccessorSeconds':2,
+            })
+
     def test_endurance_observation_is_separate_from_verified_cleanup_stop(self):
         with TemporaryDirectory() as folder:
             prefix = Path(folder) / 'run'

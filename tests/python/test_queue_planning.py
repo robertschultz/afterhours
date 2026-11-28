@@ -77,17 +77,19 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'], 'new')
 
     def test_rolling_avoids_repeating_the_same_song_with_a_different_feature_credit(self):
-        rows = [
-            {**track('a'), 'title':'Latch', 'artist':'Disclosure, Sam Smith'},
-            track('b'),
-            {**track('alternate'), 'title':'Latch (feat. Sam Smith)', 'artist':'Disclosure'},
-            track('new'),
-        ]
-        self.session.update(candidates=rows)
-        self.session.plan(['a','b'],mix_style='quick')
-        self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
-        RollingQueue().tick(self.session,25)
-        self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
+        for suffix in ('feat. Sam Smith','with Sam Smith'):
+            with self.subTest(suffix=suffix):
+                rows = [
+                    {**track('a'), 'title':'Latch', 'artist':'Disclosure, Sam Smith'},
+                    track('b'),
+                    {**track('alternate'), 'title':f'Latch ({suffix})', 'artist':'Disclosure'},
+                    track('new'),
+                ]
+                self.session.update(candidates=rows,active=False)
+                self.session.plan(['a','b'],mix_style='quick')
+                self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'})
+                RollingQueue().tick(self.session,25)
+                self.assertEqual(self.session.snapshot()['queuedUpdate']['tracks'][-1]['id'],'new')
 
     def test_rolling_avoids_a_catalog_title_variant_with_a_missing_article(self):
         rows = [

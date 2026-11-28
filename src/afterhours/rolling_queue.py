@@ -31,7 +31,7 @@ def fits_style(track, style):
 
 def base_song_title(track):
     # Providers may include featured artists and release versions in the title.
-    suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
+    suffix = r'[\[(](?:(?:feat\.?|ft\.?|featuring|with)\s+[^\])]+|[^\])]*(?:mix|version|edit|dub|remaster|rework)[^\])]*)[\])]'
     base = re.sub(r'(?:\s*'+suffix+r')+\s*$', '', track['title'], flags=re.I)
     base = re.sub(r'\s+(?:feat\.|ft\.|featuring)\s+\S.*$', '', base, flags=re.I)
     words = normalized(base).split()

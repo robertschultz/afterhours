@@ -73,6 +73,28 @@ class PoolTests(unittest.TestCase):
             self.assertIsNone(cache.compatible_timed_bpm(track, 45, 124, 8))
             self.assertIsNone(cache.compatible_timed_bpm({**track,'bpm':125}, 30, 124, 8))
 
+    def test_verified_alternate_reuses_only_the_replayed_shorter_cues(self):
+        track = {'id':'virtualdj:'+'c'*64, 'bpm':122, 'camelot':'8A', 'engineChecked':True}
+        shorter = {'id':'short-replayed', 'preparedForSeconds':30, 'replayVerified':True}
+        unverified = {'id':'short-unverified', 'preparedForSeconds':30, 'replayVerified':False}
+        longer = {'id':'long-replayed', 'replayVerified':True}
+        measurement = {**track, 'preparationSeconds':60, 'timedPreparation':True,
+                       'cueCandidates':[longer,shorter,unverified]}
+        with TemporaryDirectory() as temporary:
+            cache = VerifiedCues(Path(temporary))
+            cache.evidence.valid = Mock(return_value=True)
+            cache.write(measurement)
+            self.assertEqual(cache.read(track,60,True), measurement)
+            self.assertEqual(cache.read(track,30,True)['cueCandidates'], [shorter])
+            self.assertIsNone(cache.read(track,45,True))
+            preferred = {**measurement, 'preparationSeconds':30,
+                         'cueCandidates':[shorter, {**shorter,'id':'another-short'}]}
+            cache.write(preferred)
+            cache.write(measurement)
+            self.assertEqual(cache.read(track,30,True), preferred)
+            cache.evidence.valid.return_value = False
+            self.assertIsNone(cache.read(track,30,True))
+
     def test_rolling_pool_can_prepare_a_current_cached_cue_without_a_spare_load(self):
         session = DJSession(threading.Lock())
         candidate = {'id':'virtualdj:'+'a'*64,'title':'Fixture'}

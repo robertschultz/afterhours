@@ -2456,6 +2456,8 @@ class DJSession:
                 result.append(cue)
             if sparse_primary:
                 if result:
+                    for cue in result:
+                        cue['preparedForSeconds'] = alternate_seconds
                     self.event(f'{track["title"]}: verified additional shorter cues for queue recovery.',
                                'analysis',trackId=track['id'])
                 return [*sparse_primary, *result]

@@ -140,6 +140,8 @@ class NativeCueAnchorTests(unittest.TestCase):
                 self.assertEqual([call.kwargs['limit'] for call in probes.call_args_list], [10, 3])
                 self.assertEqual(cues[0]['spanBeats'], 128)
                 self.assertEqual([cue['spanBeats'] for cue in cues[1:]], [64]*3 if short_positions else [])
+                self.assertNotIn('preparedForSeconds', cues[0])
+                self.assertEqual([cue['preparedForSeconds'] for cue in cues[1:]], [30]*3 if short_positions else [])
                 self.assertTrue(all(cue['replayVerified'] for cue in cues))
                 self.assertTrue(all(command.startswith('deck 3 goto') for command in peer.commands))
 

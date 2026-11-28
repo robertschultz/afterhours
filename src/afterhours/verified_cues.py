@@ -83,7 +83,27 @@ class VerifiedCues:
             seconds = measurement.get('preparationSeconds')
             if type(seconds) is not int or not 30 <= seconds <= 180:
                 return
-        path = self.path(track_id, timed_seconds=seconds)
+        self._write_slot(self.path(track_id, timed_seconds=seconds), measurement)
+        if seconds is None:
+            return
+        # A batch may have actually replayed shorter fallback windows while
+        # the same recording was paused on a spare. Keep that proof for the
+        # shorter slot, even if a queue repair moves this recording later.
+        alternates = {}
+        for cue in measurement.get('cueCandidates') or []:
+            alternate = cue.get('preparedForSeconds')
+            if type(alternate) is int and 30 <= alternate < seconds and cue.get('replayVerified') is True:
+                alternates.setdefault(alternate, []).append(cue)
+        for alternate, cues in alternates.items():
+            variant = {**measurement, 'preparationSeconds': alternate, 'cueCandidates': cues}
+            if not self.evidence.valid(variant):
+                continue
+            existing = self.read({**measurement, 'engineChecked': True}, alternate, True)
+            if existing and len(existing['cueCandidates']) >= len(cues):
+                continue
+            self._write_slot(self.path(track_id, timed_seconds=alternate), variant)
+
+    def _write_slot(self, path, measurement):
         try:
             if self.root.is_symlink() or path.is_symlink():
                 return

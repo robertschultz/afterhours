@@ -225,6 +225,37 @@ class AnalysisCleanupTests(unittest.TestCase):
         self.assertEqual(p.values['deck 3 volume'],1)
         self.assertFalse(any(re.search(r'\b(load|play_sync|pause)\b',c) for c in p.commands))
 
+    def test_live_late_load_only_recovers_after_the_exact_spare_is_confirmed(self):
+        s, p, j = self.owned()
+        j.loaded = None
+        j.requested_load = identity('test')
+        p.values['deck 3 loaded'] = False
+        p.values['deck 1 play'] = True
+        s.update(active=True, phase='playing', rollingQueue={'status':'ready'}, index=0)
+        s.remember_cleanup_failure('background', j)
+
+        self.assertFalse(s.service_late_spare_load(p, 25))
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(p.commands, [])
+        self.assertFalse(s.service_late_spare_load(p, 30))
+
+        s.update(index=1)
+        p.values['deck 3 loaded'] = True
+        p.values['deck 3 get_filepath'] = 'another recording'
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertTrue(s.state['resumeBlocked'])
+        self.assertEqual(p.commands, [])
+
+        s.update(index=2)
+        p.values['deck 3 get_filepath'] = 'test'
+        self.assertTrue(s.service_late_spare_load(p, 30))
+        self.assertFalse(s.state['resumeBlocked'])
+        self.assertTrue(p.values['deck 1 play'])
+        self.assertFalse(p.values['deck 3 loaded'])
+        self.assertEqual(p.values['deck 3 volume'], 1)
+        self.assertTrue(all(command.startswith('deck 3 ') for command in p.commands))
+
     def test_pool_keeps_only_failed_children_and_reports_the_actual_deck(self):
         s,p,c=self.owned();_,_,d=self.owned(4,p,s)
         pool=PreparationPool(s,'rev',[]);pool.jobs=[c,d]

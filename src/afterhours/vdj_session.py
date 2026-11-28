@@ -223,6 +223,7 @@ class DJSession:
         self.dig_clock = time.monotonic
         self.background_job = None
         self.deferred_spare_cleanup = None
+        self.late_spare_attempt = None
         self.analysis_cache = {}
         self.tempo_ramp = None
         self.copilot_requests = {}
@@ -1600,12 +1601,64 @@ class DJSession:
             self.event('Isolated spare verified. Resuming preparation of the same queue.', 'analysis',
                        deck=4, stage='baseline-confirmed')
 
+    def service_late_spare_load(self, client, seconds_available):
+        """Try to settle one retained Load during a long, unheld playing window."""
+        if seconds_available < 26:
+            return False
+        with self.lock:
+            state = self.state
+            control = state['copilot']
+            if (self.cancel.is_set() or not state['active'] or state['phase'] != 'playing'
+                    or not state.get('rollingQueue') or dj_settings.lead(state) != 'all'
+                    or control.get('held') or (control.get('command') or {}).get('status') == 'pending'):
+                return False
+            quarantine = self.quarantined_preparation_decks()
+            retained = state.get('cleanupPending') or {}
+            descriptors = retained.get('analysis', [])
+            row = next((item for item in descriptors if item['deck'] in quarantine
+                        and item['loadPending'] and item['selectionId']), None)
+            if row is None:
+                return False
+            attempt = (state['id'], state['index'], row['ownerId'])
+            if attempt == self.late_spare_attempt:
+                return False
+            self.late_spare_attempt = attempt
+            deadline = time.monotonic() + 1.25
+
+            def check():
+                if self.cancel.is_set() or time.monotonic() >= deadline:
+                    raise BridgeError('The late spare verification window ended.')
+
+            class BoundedSpare:
+                def query(self, script, kind=None):
+                    check()
+                    return client.query(script, kind)
+
+                def send(self, script):
+                    check()
+                    return client.send(script)
+
+            try:
+                cleanup_analysis_deck(BoundedSpare(), row)
+            except (BridgeError, OSError, ValueError):
+                # The cleanup helper advances retained request flags before writes.
+                # Keep that exact ownership state for explicit stopped recovery.
+                return True
+            remaining = [item for item in descriptors if item is not row]
+            self.update(resumeBlocked=bool(remaining),
+                        cleanupPending={**retained, 'analysis':remaining} if remaining else None)
+            self.event(f'Deck {row["deck"]}: Late analysis load settled. The spare is available again.',
+                       'analysis', deck=row['deck'], stage='late-load-settled')
+            return True
+
     def service_background(self,client,seconds_available):
         """One bounded analysis slice between clock reads, never during a mix."""
         q=self.snapshot().get('queuedUpdate');job=self.background_job
         if self.deferred_spare_cleanup is not None:
             self.service_deferred_spare_cleanup(client, seconds_available)
             return  # Do not combine deferred readback and new preparation in one slice.
+        if self.service_late_spare_load(client, seconds_available):
+            return
         if job and (not q or job.revision!=q['id']):
             if seconds_available<12:return
             self.analysis_cache.update(job.cache)

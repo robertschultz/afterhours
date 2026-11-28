@@ -66,6 +66,14 @@ class VerifiedCues:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
 
+    def compatible_timed_bpm(self, track, seconds, target_bpm, max_pitch):
+        measurement = self.read(track, seconds, True)
+        bpm = measurement.get('bpm') if measurement else None
+        if (type(bpm) in (int, float) and math.isfinite(bpm) and 40 <= bpm <= 300
+                and abs(target_bpm / bpm - 1) * 100 <= max_pitch + .0001):
+            return bpm
+        return None
+
     def write(self, measurement):
         track_id = measurement.get('id')
         if not exact_id(track_id):

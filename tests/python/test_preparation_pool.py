@@ -68,6 +68,10 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(cache.read(track, 30, True), measured(30, True))
             self.assertEqual(cache.read(track, 60, False), measured(60, False))
             self.assertIsNone(cache.read(track, 45, True))
+            self.assertEqual(cache.compatible_timed_bpm(track, 30, 124, 8), 122)
+            self.assertIsNone(cache.compatible_timed_bpm(track, 30, 140, 8))
+            self.assertIsNone(cache.compatible_timed_bpm(track, 45, 124, 8))
+            self.assertIsNone(cache.compatible_timed_bpm({**track,'bpm':125}, 30, 124, 8))
 
     def test_rolling_pool_can_prepare_a_current_cached_cue_without_a_spare_load(self):
         session = DJSession(threading.Lock())

@@ -42,6 +42,20 @@ class RollingAdvisorTests(unittest.TestCase):
         self.assertEqual(pick.call_count, 1)
 
     @patch('afterhours.rolling_advisor.request_pick', return_value='2')
+    def test_timed_advice_prefers_compatible_cached_cues_using_the_append_slot(self, pick):
+        state = {**self.state, 'order':[{'id':'first'},self.tail], 'entryCadence':[30,60],
+                 'executionPlan':{'tempoSchedule':[{'trackId':'tail','toBpm':127}]}}
+        with patch('afterhours.rolling_advisor.VerifiedCues') as cache:
+            cache.return_value.compatible_timed_bpm.side_effect = [None, 128]
+            self.assertEqual(self.advisor.advise(state,self.tail,self.candidates,{},40),(None,True))
+        cache.return_value.compatible_timed_bpm.assert_any_call(self.candidates[1],30,127,8)
+        payload = pick.call_args.args[0]
+        self.assertEqual(payload['nextEntrySeconds'], 30)
+        self.assertNotIn('cachedEntryBpm', payload['choices'][0])
+        self.assertEqual(payload['choices'][1]['cachedEntryBpm'], 128)
+        self.assertNotIn('native-', repr(payload))
+
+    @patch('afterhours.rolling_advisor.request_pick', return_value='2')
     def test_advice_for_an_old_queue_index_is_never_reused(self, pick):
         self.advisor.advise(self.state, self.tail, self.candidates, {}, 40)
         self.assertFalse(self.advisor.pending.is_set())

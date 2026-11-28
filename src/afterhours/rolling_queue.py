@@ -165,6 +165,7 @@ class RollingQueue:
                 ranked = {t['id']: t for t in candidates}
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
+            advised = receipt = None
             if not deferred and (timed_set or not quick):
                 advised, waiting = self.advisor.advise(state,tail,candidates,facts,slack)
                 if waiting:
@@ -173,15 +174,6 @@ class RollingQueue:
                     candidates.sort(key=lambda row: row['id'] != advised)
                 receipt = self.advisor.receipt
                 self.advisor.receipt = None
-                if receipt:
-                    description = {
-                        'selected': 'GPT-6.2 Sol ranked a shortlisted candidate first.',
-                        'no-pick': 'GPT-6.2 Sol left the local track ranking in place.',
-                        'error': 'GPT-6.2 Sol advice was unavailable. Using the local track ranking.',
-                        'deadline': 'GPT-6.2 Sol did not return before the preparation deadline. Using the local track ranking.',
-                        'stale': 'The shortlisted recording changed. Using the current local track ranking.',
-                    }[receipt]
-                    session.event(description, 'queue', trackId=advised, model=MODEL, outcome=receipt)
             picked = []
             # A second isolated deck can work ahead while the immediate
             # incoming recording is being verified. With less runway, start
@@ -199,6 +191,18 @@ class RollingQueue:
                 picked.append(track)
                 if len(picked) >= batch:
                     break
+            if receipt:
+                description = {
+                    'selected': 'GPT-6.2 Sol ranked a shortlisted candidate first.',
+                    'no-pick': 'GPT-6.2 Sol left the local track ranking in place.',
+                    'error': 'GPT-6.2 Sol advice was unavailable. Using the local track ranking.',
+                    'deadline': 'GPT-6.2 Sol did not return before the preparation deadline. Using the local track ranking.',
+                    'stale': 'The shortlisted recording changed. Using the current local track ranking.',
+                }[receipt['outcome']]
+                accepted = advised is not None and any(track['id'] == advised for track in picked)
+                session.event(description, 'queue', trackId=advised, model=MODEL, **receipt,
+                              acceptedForPreparation=accepted,
+                              queueRevisionId=session.state['queuedUpdate']['id'] if accepted else None)
             if picked:
                 selected = [t['id'] for t in picked]
                 queued = session.state['queuedUpdate']

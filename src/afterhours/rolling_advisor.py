@@ -59,7 +59,17 @@ class RollingAdvisor:
         self.result = None
         self.outcome = None
         self.receipt = None
+        self.offered_ids = ()
+        self.stem_covered_ids = ()
         self.pending = threading.Event()
+
+    def record_receipt(self, outcome, eligible_ids):
+        self.receipt = {
+            'outcome': outcome,
+            'shortlistTrackIds': list(self.offered_ids),
+            'stemCoveredTrackIds': list(self.stem_covered_ids),
+            'localFirstTrackId': eligible_ids[0],
+        }
 
     def advise(self, state, tail, candidates, facts, slack):
         """Return an exact eligible ID, or briefly defer while sufficient runway remains."""
@@ -74,12 +84,12 @@ class RollingAdvisor:
         if self.context == context:
             if not self.pending.is_set():
                 chosen = self.result if self.result in ids else None
-                self.receipt = 'selected' if chosen else self.outcome or 'stale'
+                self.record_receipt('selected' if chosen else self.outcome or 'stale', ids)
                 self.context = None
                 return chosen, False
             if slack >= 24 and now - self.sent_at < WAIT_SECONDS:
                 return None, True
-            self.receipt = 'deadline'
+            self.record_receipt('deadline', ids)
             self.context = None
             return None, False
         if self.pending.is_set() or slack<30 or self.calls>=MAX_CALLS or now-self.sent_at<MIN_INTERVAL:
@@ -101,6 +111,8 @@ class RollingAdvisor:
         self.context=context
         self.result = None
         self.outcome = None
+        self.offered_ids = ids
+        self.stem_covered_ids = tuple(track_id for track_id in ids if facts.get(track_id, {}).get('stemFit'))
         self.pending.set()
 
         def run():

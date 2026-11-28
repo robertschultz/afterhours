@@ -1,10 +1,12 @@
 """Exercise live shortlist advice without submitting provider requests."""
 import os
 import unittest
-from unittest.mock import patch
-from threading import Thread
+from unittest.mock import Mock, patch
+from threading import Lock, Thread
 
 from afterhours import rolling_advisor
+from afterhours.rolling_queue import RollingQueue
+from afterhours.vdj_session import DJSession
 
 
 class RollingAdvisorTests(unittest.TestCase):
@@ -32,6 +34,10 @@ class RollingAdvisorTests(unittest.TestCase):
         self.assertNotIn('native-', repr(payload))
         self.assertEqual(payload['choices'][1]['stems'], facts['native-two']['stemFit'])
         self.assertEqual(self.advisor.advise(self.state, self.tail, self.candidates, facts, 40), ('native-two', False))
+        self.assertEqual(self.advisor.receipt, {'outcome':'selected',
+                                                'shortlistTrackIds':['native-one','native-two'],
+                                                'stemCoveredTrackIds':['native-two'],
+                                                'localFirstTrackId':'native-one'})
         self.assertEqual(pick.call_count, 1)
 
     @patch('afterhours.rolling_advisor.request_pick', return_value='2')
@@ -49,3 +55,28 @@ class RollingAdvisorTests(unittest.TestCase):
         self.advisor.advise(self.state, self.tail, self.candidates, {}, 40)
         self.assertFalse(self.advisor.pending.is_set())
         self.assertEqual(self.advisor.advise(self.state, self.tail, self.candidates, {}, 22), (None, False))
+
+    @patch('afterhours.rolling_advisor.request_pick', return_value='2')
+    def test_ranked_track_and_queue_acceptance_are_distinct(self, _):
+        for bpm, accepted in ((125, True), (200, False)):
+            with self.subTest(accepted=accepted):
+                session = DJSession(Lock(), client_factory=Mock(side_effect=AssertionError('No native connection')))
+                tracks = [{'id': key, 'title': key.upper(), 'bpm': 125, 'camelot': '8A'}
+                          for key in ('a','b','local','advised')]
+                tracks[-1]['bpm'] = bpm
+                session.update(candidates=tracks)
+                session.plan(['a','b'])
+                session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                               entryCadence=[60,30], executionPlan={'applied':True,'targetBpm':125})
+                roller = RollingQueue()
+                roller.advisor.enabled = True
+                roller.tick(session, 40)
+                self.assertIsNone(session.snapshot()['queuedUpdate'])
+                roller.tick(session, 40)
+                snapshot = session.snapshot()
+                event = next(event for event in snapshot['events'] if event.get('model') == rolling_advisor.MODEL)
+                self.assertEqual(event['trackId'], 'advised')
+                self.assertEqual(event['localFirstTrackId'], 'local')
+                self.assertEqual(event['acceptedForPreparation'], accepted)
+                self.assertEqual(event['queueRevisionId'], snapshot['queuedUpdate']['id'] if accepted else None)
+                self.assertEqual(snapshot['index'], 0)

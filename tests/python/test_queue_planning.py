@@ -110,7 +110,8 @@ class QueuePlanningTests(unittest.TestCase):
         rows = [
             {**track('a'), 'genre':'Classic Rock'},
             {**track('b'), 'genre':'Classic Rock'},
-            {**track('house'), 'genre':'House'},
+            {**track('house', '2A', 127), 'genre':'House'},
+            {**track('alternative'), 'genre':'Alternative'},
             {**track('rock'), 'genre':'Rock'},
         ]
         self.session.update(candidates=rows)

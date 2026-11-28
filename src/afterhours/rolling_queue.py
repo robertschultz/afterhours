@@ -18,7 +18,8 @@ from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 STYLE_GROUPS = (
     frozenset(('house', 'deep house', 'tech house', 'techno', 'disco', 'dance', 'electronic')),
     frozenset(('soul', 'funk', 'r&b', 'gospel', 'hip hop')),
-    frozenset(('rock', 'pop', 'funk', 'soul')),
+    frozenset(('rock', 'pop', 'funk', 'soul', 'alternative')),
+    frozenset(('dance', 'electronic', 'indie dance')),
 )
 HOUSE_STYLES = frozenset(('house', 'deep house', 'tech house'))
 
@@ -163,11 +164,12 @@ class RollingQueue:
             tail = order[-1]
             DISCOVERY.neighbors(tail.get('artist'))
             artists = [normalized(track.get('artist')) for track in order[-2:]]
-            genre = normalized(tail.get('genre'))
+            genre = style_for(tail.get('genre')) or normalized(tail.get('genre'))
 
             def score(candidate):
                 candidate_artist = normalized(candidate.get('artist'))
-                same_genre = bool(genre and genre == normalized(candidate.get('genre')))
+                candidate_genre = style_for(candidate.get('genre')) or normalized(candidate.get('genre'))
+                same_genre = bool(genre and genre == candidate_genre)
                 relationship = 0 if candidate_artist in artists else 1.5
                 repetition = 2 if len(set(artists)) == 1 and candidate_artist in artists else 0
                 return (transition_cost(tail, candidate, {}) + relationship + repetition

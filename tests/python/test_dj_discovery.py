@@ -40,6 +40,9 @@ class DiscoveryTests(unittest.TestCase):
     def test_non_house_genres_keep_their_own_ranking(self):
         self.assertEqual(dj_discovery.style_for('Play Christian pop'), 'gospel')
         self.assertEqual(dj_discovery.style_for('Classic Rock'), 'rock')
+        self.assertEqual(dj_discovery.style_for('Alternative'), 'alternative')
+        self.assertEqual(dj_discovery.style_for('Alternative Rock'), 'rock')
+        self.assertEqual(dj_discovery.style_for('Indie Dance'), 'indie dance')
         self.assertEqual(dj_discovery.style_for('R&B'), 'r&b')
         self.assertEqual(dj_discovery.style_for('Hip-Hop/Rap'), 'hip hop')
         pick = lambda row: (0, 0)

@@ -99,6 +99,20 @@ class SetQualityBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'does not match'):
                 SCORER['read_observed_run'](prefix)
 
+    def test_observed_overlay_distinguishes_staged_committed_and_legacy_track_names(self):
+        def change(second, visible, label, state=None):
+            return {'event':'Up Next overlay changed', 'at':f'1970-01-01T00:00:{second:02}+00:00',
+                    'visible':visible, 'label':label, 'state':state}
+        rows = [change(4, True, 'Finding a track'), change(7, True, 'One', 'staged'),
+                change(10, True, 'One', 'committed'), change(14, True, 'Two'),
+                change(18, False, ''), {'event':'Endurance reached', 'at':'1970-01-01T00:00:20+00:00',
+                                        'missingNextSamples':1}]
+        score = SCORER['observed_up_next'](rows, 1)
+        self.assertEqual(score['firstSampleAfterStartSeconds'], 3)
+        self.assertEqual(score['missingWhilePlayingSamples'], 1)
+        self.assertEqual(score['sampledSecondsByState'], {'searching':3, 'staged':3, 'committed':4,
+                                                         'named-unverified':4, 'hidden':2})
+
     def test_judge_reports_abstention_and_order_swap_on_held_out_pairs(self):
         human = [{'reviewerId': 'one', 'choice': 'a'}, {'reviewerId': 'two', 'choice': 'a'}]
         base = {'briefId': 'house', 'dimension': 'transition-sound', 'humanLabels': human,

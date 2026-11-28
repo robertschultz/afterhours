@@ -217,6 +217,40 @@ def read_trial(prefix):
     }
 
 
+def observed_up_next(browser, start):
+    """Summarize sampled display states, keeping legacy named tracks unverified."""
+    legacy = {'Preparing the next track':'preparing', 'Finding a track':'searching',
+              'Awaiting next track':'awaiting', 'Track preparation stalled':'stalled',
+              'No compatible track found':'no-match', 'End of queue':'ended'}
+    valid = {*legacy.values(), 'committed', 'staged'}
+    changes = []
+    for row in browser:
+        if row.get('event') != 'Up Next overlay changed':
+            continue
+        at = datetime.fromisoformat(row['at']).timestamp()
+        if not row.get('visible'):
+            state = 'hidden'
+        elif row.get('state') in valid:
+            state = row['state']
+        else:
+            state = legacy.get(row.get('label'), 'named-unverified')
+        previous = changes[-1][0] if changes else start
+        changes.append((number(at, 'Up Next observation', minimum=previous), state))
+    if not changes:
+        return None
+    end = datetime.fromisoformat(browser[-1]['at']).timestamp()
+    seconds = Counter()
+    for (at, state), (following, _) in zip(changes, [*changes[1:], (end, None)]):
+        seconds[state] += number(following-at, 'Up Next observed duration')
+    result = {
+        'firstSampleAfterStartSeconds':round(changes[0][0]-start, 3),
+        'sampledSecondsByState':{state:round(duration, 3) for state, duration in sorted(seconds.items())},
+    }
+    if browser[-1].get('event') == 'Endurance reached':
+        result['missingWhilePlayingSamples'] = browser[-1].get('missingNextSamples')
+    return result
+
+
 def read_observed_run(prefix):
     """Compare native handoff timing with independent master capture logs."""
     owner = json.loads(Path(f'{prefix}-owner.json').read_text())
@@ -289,6 +323,7 @@ def read_observed_run(prefix):
         'syncedHandoffs':sum(row.get('synced') is True for row in handoffs),
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
+        'upNextOverlay':observed_up_next(browser, start),
         'masterCapturedSeconds':meter.get('capturedAudioSeconds'),
         'masterStartedAfterPlaybackSeconds':starts[0].get('afterStartSeconds'),
         'captureSequenceDiscontinuities':meter.get('sequenceDiscontinuities'),

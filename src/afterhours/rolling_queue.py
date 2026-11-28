@@ -6,6 +6,7 @@ from afterhours import dj_settings
 from afterhours.dj_bridge import BridgeError
 from afterhours.dj_discovery import DISCOVERY, credit, normalized, rank_candidates, set_slot, style_for
 from afterhours.queue_planning import finite, transition_cost
+from afterhours.rolling_advisor import MODEL, RollingAdvisor
 from afterhours.stem_profiles import candidate_fit
 from afterhours.vdj_session import DEFAULT_QUEUE_WINDOW, song_identity
 
@@ -52,6 +53,7 @@ def failed_rolling_recording(pending):
 
 class RollingQueue:
     def __init__(self):
+        self.advisor = RollingAdvisor()
         self.searched = set()
         self.missed = set()
         self.live_matches = set()
@@ -162,6 +164,14 @@ class RollingQueue:
                 ranked = {t['id']: t for t in candidates}
                 requested = [ranked[t['id']] for t in deferred if t['id'] in ranked]
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
+            if not deferred and (timed_set or not quick):
+                advised, waiting = self.advisor.advise(state,tail,candidates,facts,slack)
+                if waiting:
+                    return
+                if advised:
+                    candidates.sort(key=lambda row: row['id']!=advised)
+                    session.event('GPT-6.2 Sol ranked a shortlisted candidate first; native preparation follows.',
+                                  'queue',trackId=advised,model=MODEL)
             picked = []
             # A second isolated deck can work ahead while the immediate
             # incoming recording is being verified. With less runway, start

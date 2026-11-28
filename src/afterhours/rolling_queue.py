@@ -291,7 +291,7 @@ class RollingQueue:
                             return
                     elif slack >= 26 and (not catalog or catalog.done):
                         self.artist_search_index = state['index']
-                        if self.search(session, state, order, style, timed_set, lookahead=True):
+                        if self.search(session, state, order, style, timed_set, lookahead=True, artist_variety=True):
                             return
             # With a short buffer, prepare an eligible previously searched
             # recording now. Live discovery can resume once its deck is loaded.
@@ -415,7 +415,7 @@ class RollingQueue:
             if not self.search(session, state, order, style, timed_set) and state['rollingQueue'].get('status') != 'held':
                 session.update(rollingQueue={'status': 'held'})
 
-    def search(self, session, state, order, style, timed_set, *, lookahead=False):
+    def search(self, session, state, order, style, timed_set, *, lookahead=False, artist_variety=False):
         tail = order[-1]
         recent = list(reversed(order[-8:]))
         artists = [str(track.get('artist') or '').strip() for track in recent[:3]]
@@ -425,7 +425,13 @@ class RollingQueue:
             suggestions += DISCOVERY.hints(style, order, searched=self.searched)
             seeds = [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
                      for row in suggestions] + seeds
-            seeds += [(name, name, '') for name in DISCOVERY.neighbors(tail.get('artist'))]
+            neighbors = [(name, name, '') for name in DISCOVERY.neighbors(tail.get('artist'))]
+            if artist_variety:
+                # Search an adjacent artist's catalog before betting this
+                # lookahead slot on one exact title or release spelling.
+                seeds = neighbors + seeds
+            else:
+                seeds += neighbors
             seeds += [(str(track.get('label') or '').strip(), '', '') for track in reversed(order[-5:])]
             if style == 'house' and not style_for(state.get('agentDirection')):
                 for related in ('deep house', 'tech house'):

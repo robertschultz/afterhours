@@ -318,6 +318,21 @@ class QueuePlanningTests(unittest.TestCase):
         roller.tick(self.session, 25)
         self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackId'], 'related')
 
+    def test_variety_lookahead_searches_a_related_artist_before_one_exact_title(self):
+        order = [{**track(tid), 'artist':artist, 'genre':'House'} for tid, artist in
+                 (('a','Resident DJ'), ('b','Resident DJ & Guest'))]
+        hint = {'artist':'Different Artist', 'title':'Specific Release'}
+        for variety, query in ((False, 'Different Artist Specific Release'), (True, 'Related Artist')):
+            with self.subTest(artist_variety=variety):
+                session = Mock()
+                with patch('afterhours.rolling_queue.research_hints', return_value=[hint]), \
+                     patch('afterhours.rolling_queue.DISCOVERY') as facts:
+                    facts.hints.return_value = []
+                    facts.neighbors.return_value = ['Resident DJ', 'Related Artist']
+                    self.assertTrue(RollingQueue().search(session, {}, order, 'house', True,
+                                                         lookahead=True, artist_variety=variety))
+                self.assertEqual(session.discover_more.call_args.args, (query,))
+
     def test_rolling_exact_title_miss_broadens_once_to_the_same_credited_artist(self):
         order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
         hints = [{'artist':'Related Artist', 'title':'Catalog Version'},
@@ -588,7 +603,7 @@ class QueuePlanningTests(unittest.TestCase):
         roller.search = Mock(return_value=True)
         roller.tick(self.session, 32)
         roller.search.assert_called_once_with(self.session, unittest.mock.ANY, self.session.state['order'],
-                                              'house', True, lookahead=True)
+                                              'house', True, lookahead=True, artist_variety=True)
         self.assertIsNone(self.session.state['queuedUpdate'])
         self.session.catalog_job = Mock(done=False, rolling=True, seen=set())
         roller.tick(self.session, 28)

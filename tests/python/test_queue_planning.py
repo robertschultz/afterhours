@@ -231,7 +231,7 @@ class QueuePlanningTests(unittest.TestCase):
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(session.discover_more.call_args.args, (expected,))
 
-    def test_low_runway_searches_the_current_style_before_narrow_leads_once(self):
+    def test_low_runway_searches_the_style_and_artist_before_one_exact_release(self):
         order = [{**track('a'), 'artist':'Opening Artist', 'genre':'Deep House'}]
         state = {'active':True, 'index':0, 'agentDirection':'Deep house'}
         hints = [{'artist':'Related Artist', 'title':'Exact Release'}]
@@ -250,10 +250,31 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertFalse(eligible({**track('b'), 'genre':'Dub'}))
             self.assertTrue(eligible({**track('b'), 'genre':'Deep House'}))
             self.assertTrue(urgent.search(session, state, order, 'deep house', True))
+            self.assertEqual(session.discover_more.call_args.args, ('Opening Artist',))
+            self.assertTrue(urgent.search(session, state, order, 'deep house', True))
             self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
             regular = RollingQueue()
             self.assertTrue(regular.search(session, state, order, 'deep house', True, lookahead=True))
             self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
+
+    def test_low_runway_expands_an_inferred_style_without_overriding_explicit_direction(self):
+        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
+        for direction, next_terms in (
+            ('', ['house','deep house','tech house']),
+            ('House only', ['house','Related Artist','Opening Artist']),
+            ('Christian music', ['gospel','Contemporary Christian','Christian pop']),
+        ):
+            with self.subTest(direction=direction):
+                roller, session = RollingQueue(), Mock()
+                state = {'active':True,'index':0,'agentDirection':direction}
+                style = 'gospel' if direction == 'Christian music' else 'house'
+                with patch('afterhours.rolling_queue.research_hints', return_value=[]), \
+                     patch('afterhours.rolling_queue.DISCOVERY') as discovery:
+                    discovery.hints.return_value = []
+                    discovery.neighbors.return_value = ['Related Artist']
+                    for _ in next_terms:
+                        self.assertTrue(roller.search(session, state, order, style, True))
+                self.assertEqual([call.args[0] for call in session.discover_more.call_args_list], next_terms)
 
     def test_rolling_breaks_a_repeated_artist_run_without_risking_the_next_track(self):
         for alternate_bpm, selected in [(125,'x'),(190,'c')]:

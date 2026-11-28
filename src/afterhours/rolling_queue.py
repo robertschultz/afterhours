@@ -425,13 +425,13 @@ class RollingQueue:
             suggestions += DISCOVERY.hints(style, order, searched=self.searched)
             seeds = [(f"{row['artist']} {row['title']}", row['artist'], row['title'])
                      for row in suggestions] + seeds
-            neighbors = [(name, name, '') for name in DISCOVERY.neighbors(tail.get('artist'))]
+            adjacent_artists = [(name, name, '') for name in DISCOVERY.neighbors(tail.get('artist'))]
             if artist_variety:
                 # Search an adjacent artist's catalog before betting this
                 # lookahead slot on one exact title or release spelling.
-                seeds = neighbors + seeds
+                seeds = adjacent_artists + seeds
             else:
-                seeds += neighbors
+                seeds += adjacent_artists
             seeds += [(str(track.get('label') or '').strip(), '', '') for track in reversed(order[-5:])]
             if style == 'house' and not style_for(state.get('agentDirection')):
                 for related in ('deep house', 'tech house'):
@@ -460,9 +460,17 @@ class RollingQueue:
             seeds.sort(key=lambda seed: repeats_artist_query(seed[0], avoid))
         if (timed_set and not lookahead and style and state.get('active')
                 and 0 <= len(order) - state.get('index', -1) - 1 <= 1):
-            # Seek several compatible prospects in one pass when the buffer
-            # is nearly empty. Normal lookahead still follows exact leads.
-            seeds.insert(0, (style, '', ''))
+            # A near-empty queue needs several prospects. Search the style
+            # and related artist catalogs before trying individual releases.
+            nearby_styles = []
+            if style == 'house' and not style_for(direction):
+                nearby_styles = ['deep house', 'tech house']
+            elif style == 'gospel':
+                nearby_styles = ['Contemporary Christian', 'Christian pop']
+            broad = [(name, '', '') for name in [style, *nearby_styles]]
+            broad.extend(seed for seed in adjacent_artists if not repeats_artist_query(seed[0], avoid))
+            broad.extend(seed for seed in seeds if seed[1] and not seed[2])
+            seeds = broad + seeds
         for term, artist, title in seeds:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:

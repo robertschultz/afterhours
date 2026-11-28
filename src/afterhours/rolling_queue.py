@@ -487,8 +487,9 @@ class RollingQueue:
             # A near-empty queue needs several prospects. Search the style
             # and related artist catalogs before trying individual releases.
             nearby_styles = []
-            if style == 'house' and not style_for(direction):
-                nearby_styles = ['deep house', 'tech house']
+            if style in HOUSE_STYLES and not style_for(direction):
+                nearby_styles = [neighbor for neighbor in ('house', 'deep house', 'tech house')
+                                 if neighbor != style]
             elif style == 'gospel':
                 nearby_styles = ['Contemporary Christian', 'Christian pop']
             broad = [(name, '', '') for name in [style, *nearby_styles]]

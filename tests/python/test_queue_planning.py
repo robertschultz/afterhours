@@ -261,16 +261,18 @@ class QueuePlanningTests(unittest.TestCase):
             self.assertEqual(session.discover_more.call_args.args, ('Related Artist Exact Release',))
 
     def test_low_runway_expands_an_inferred_style_without_overriding_explicit_direction(self):
-        order = [{**track('a'), 'artist':'Opening Artist', 'genre':'House'}]
-        for direction, next_terms in (
-            ('', ['house','deep house','tech house']),
-            ('House only', ['house','Related Artist','Opening Artist']),
-            ('Christian music', ['gospel','Contemporary Christian','Christian pop']),
+        for style, direction, next_terms in (
+            ('house', '', ['house','deep house','tech house']),
+            ('deep house', '', ['deep house','house','tech house']),
+            ('tech house', '', ['tech house','house','deep house']),
+            ('house', 'House only', ['house','Related Artist','Opening Artist']),
+            ('deep house', 'Deep house', ['deep house','Related Artist','Opening Artist']),
+            ('gospel', 'Christian music', ['gospel','Contemporary Christian','Christian pop']),
         ):
-            with self.subTest(direction=direction):
+            with self.subTest(style=style, direction=direction):
                 roller, session = RollingQueue(), Mock()
+                order = [{**track('a'), 'artist':'Opening Artist', 'genre':style}]
                 state = {'active':True,'index':0,'agentDirection':direction}
-                style = 'gospel' if direction == 'Christian music' else 'house'
                 with patch('afterhours.rolling_queue.research_hints', return_value=[]), \
                      patch('afterhours.rolling_queue.DISCOVERY') as discovery:
                     discovery.hints.return_value = []

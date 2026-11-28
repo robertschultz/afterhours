@@ -11,7 +11,7 @@ import statistics
 from afterhours import tempo_planner
 
 from afterhours.audio_analysis import read_scan
-from afterhours.vdj_mixing import transition_recipe
+from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
 
 
 VERSION = 'afterhours.cues.v1'
@@ -63,6 +63,24 @@ def window_stats(rows, start, end):
             'crestDb': round(sum(r['crestDb']*w for r,w in selected)/weight, 2),
             'levelVariationDb': round(statistics.pstdev(r['rmsDb'] for r,_ in selected), 2),
             'silentFraction': round(sum(w for r,w in selected if r['rmsDb'] < -55)/weight, 3)}
+
+
+def loop_bridge_beats(rows, native):
+    """Look for a stable one- or two-bar rhythm bed at the native exit."""
+    start, end = native['exitSeconds'], native['endSeconds']
+    span = native['endBeat'] - native['exitBeat']
+    for beats in (8, 4):
+        if span < 2 * beats:
+            continue
+        middle = start + (end - start) * beats / (2 * span)
+        finish = 2 * middle - start
+        a, b = window_stats(rows, start, middle), window_stats(rows, middle, finish)
+        if (max(a['silentFraction'], b['silentFraction']) == 0
+                and max(a['levelVariationDb'], b['levelVariationDb']) <= 2
+                and abs(a['rmsDb'] - b['rmsDb']) <= 1.5
+                and abs(a['bassDb'] - b['bassDb']) <= 2.5):
+            return beats
+    return None
 
 
 def excerpt_beats(seconds, target_bpm):
@@ -141,6 +159,7 @@ def candidate(evidence, rows, native, policy):
             'entry':a,'exit':b,'body':body,
             'exitChangeDb':round(b['rmsDb']-before['rmsDb'],2),
             'exitBassChangeDb':round(b['bassDb']-before['bassDb'],2),
+            'loopBridgeBeats':loop_bridge_beats(rows,native),
             'gridSource':'VirtualDJ paused seek and readback',
             'phraseConfidence':'estimated','vocals':'unknown'}
 
@@ -381,8 +400,10 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                     candidates=reserve or [min(usable,key=lambda c:c['exitSeconds'])]
             def cost(c):
                 before=cues[-1]['exit'] if cues else c['entry']
+                bands=window_pair_evidence(cues[-1],c) if cues else {}
                 return (abs(c['entry']['rmsDb']-before['rmsDb']) + .4*abs(c['entry']['bassDb']-before['bassDb'])
-                        + c['entry']['levelVariationDb'] + c['entry']['silentFraction']*100)
+                        + c['entry']['levelVariationDb'] + c['entry']['silentFraction']*100
+                        + .25*abs(bands.get('highDb',0)) + 2*bool(bands.get('sharedBrightHighs')))
             cue=min(candidates,key=cost)
             previous={'trackId':track['id'],'candidateId':cue['id'],
                 'reason':'Local measured cue fit: stable entrance, similar level and controlled bass overlap; vocals remain unknown.'}
@@ -400,15 +421,19 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         outgoing, incoming = cues[i]['exit'], cues[i+1]['entry']
         level_gap = abs(outgoing['rmsDb'] - incoming['rmsDb'])
         bass_gap = abs(outgoing['bassDb'] - incoming['bassDb'])
+        bands = window_pair_evidence(cues[i], cues[i+1])
         gradual = recipe['harmonicCompatible'] and level_gap <= 4 and bass_gap <= 6
         use_long_blend = (gradual and snapshot['secondsPerTrack'] > 30
-                          and recipe['genreFamily'] in ('house', 'techno', 'dnb'))
+                          and recipe['genreFamily'] in ('house', 'techno', 'dnb')
+                          and not bands.get('sharedBrightHighs'))
         choices = (8, 16, 32) if use_long_blend else (8, 16)
         reason_detail = f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
         if snapshot.get('entryCadence'):
             choices = (8, 16) if gradual else (8,)
         elif not gradual and (level_gap > 6 or bass_gap > 8):
             choices = (8,)
+        if bands.get('sharedBrightHighs'):
+            reason_detail += ' Shorter overlap avoids stacking strongly measured highs.'
         beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
         technique = 'bass-swap' if beats==32 else 'restrained-bass-swap'

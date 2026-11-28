@@ -97,11 +97,13 @@ class CueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'missed'):cp.execution_window(cue,126,32)
 
     def test_measured_music_fit_controls_blend_length(self):
-        for bass_gap, expected in ((0,32),(10,8)):
-            with self.subTest(bass_gap=bass_gap):
+        for bass_gap, bright, expected in ((0,False,32),(0,True,16),(10,False,8)):
+            with self.subTest(bass_gap=bass_gap,bright=bright):
                 _,report,_=fixture(2,60)
                 order=report['tracks']
                 order[1]['cueCandidates'][0]['entry']['bassDb']+=bass_gap
+                for cue in (order[0]['cueCandidates'][0]['exit'], order[1]['cueCandidates'][0]['entry']):
+                    cue['highDb']=cue['rmsDb']-(8 if bright else 24)
                 snapshot={'analysis':report,'mixStyle':'phrase','secondsPerTrack':60,
                           'executionPlan':{'orderIds':[],'targetBpm':155},
                           'aiReview':{'decision':'propose','secondsBetweenEntries':60,'selections':[],'transitions':[]}}
@@ -109,6 +111,15 @@ class CueTests(unittest.TestCase):
                 recipe=result['executionPlan']['transitions'][0]
                 self.assertEqual(recipe['fadeBeats'],expected)
                 self.assertFalse(recipe['tonalOverlap'])
+
+    def test_loop_bridge_rejects_a_level_or_bass_jump_at_the_exit(self):
+        rows=[{'seconds':.5*i,'duration':.5,'rmsDb':-15,'lowDb':-19,
+               'highDb':-26,'crestDb':8} for i in range(16)]
+        cue={'exitSeconds':0,'endSeconds':8,'exitBeat':128,'endBeat':144}
+        self.assertEqual(cp.loop_bridge_beats(rows,cue),8)
+        for row in rows[1:]:
+            row['lowDb']=-30
+        self.assertIsNone(cp.loop_bridge_beats(rows,cue))
 
     def test_compatible_keys_do_not_override_unknown_lead_guard_or_rewrite_ai_response(self):
         _,report,response=fixture();response['transitions'][0]['technique']='bass-swap'

@@ -32,7 +32,7 @@ from afterhours.queue_eligibility import preview_tail, QueueEligibilityHeld, ski
 from afterhours.planner_journal import PlannerJournal, comparison
 from afterhours import conversation_feed
 from afterhours import catalog_browser
-from afterhours import agent_loop
+from afterhours import agent_loop, booth_primitives
 from afterhours import dj_settings, dj_discovery
 from afterhours import set_plan
 from afterhours import learned_preferences
@@ -76,6 +76,7 @@ LOOKUP_ROOM_ROWS = 4
 STR = {'type':'string'}
 SCHEMA = ai_mix.obj({
     'reply':STR, 'direction':STR,
+    'boothControl':{'type':['string','null'],'enum':[None,*booth_primitives.CONTROL_HELP]},
     'playbackAction':{'anyOf':[{'type':'null'},ai_mix.obj({'requestId':STR,'action':{'type':'string','enum':['start-now']}})]},
     'sessionScope':{'anyOf':[{'type':'null'},ai_mix.obj({'mode':{'type':'string','enum':['ongoing','finite','clarify']},'message':STR})]},
     'sessionPlan':prompt_plan.SCHEMA,
@@ -467,6 +468,8 @@ def planning_request(packet, lookups=None, transcript=None):
         music['catalog']=[{k:v for k,v in track.items() if v is not None} for track in music['catalog']]
     schema=copy.deepcopy(SCHEMA)
     operator_turn=packet.get('reason')=='operator message'
+    controls=packet.get('boothControls') or {}
+    schema['properties']['boothControl']={'type':['string','null'],'enum':[None,*controls]} if controls else {'type':'null'}
     handoff_allowed=operator_turn and bool(packet.get('mentionedAgents'))
     performance_allowed=operator_turn and (packet.get('performanceContext') or {}).get('ready') is True
     if not handoff_allowed:schema['properties']['handoff']={'type':'null'}
@@ -500,6 +503,9 @@ def planning_request(packet, lookups=None, transcript=None):
                 (POLL_INSTRUCTIONS if packet.get('crowdPolicy',{}).get('canOffer') else '')+
                 ('\nFor one requested addition use trackInsertion with its supplied trackId and leave other actions empty. The engine places it.' if packet.get('canInsertTrack') else '')+
                 ('\nPrefer openers outside recentOpeningIds unless explicitly requested.' if music.get('recentOpeningIds') else '')+
+                ('\nFor a direct request to control the next handoff or set a blend preference, select one boothControl from boothControls. '
+                 'Leave all other action fields empty. Use null for questions, future timing, negation, preferences or ambiguity. '
+                 'The engine returns the actual control receipt.' if controls else '')+
                 (agent_loop.DIGEST_INSTRUCTIONS if packet.get('lookups') else '')+
                 (CUE_INSTRUCTIONS if packet.get('mixWindows') else ''))
     body={'model':ai_mix.model_policy()[0],'store':False,'service_tier':'default',
@@ -723,9 +729,13 @@ def evaluate(packet, opener=urlopen, lookups=None, on_step=None, allowed=None, s
 
 def validate_decision(result, session):
     # Older saved proposals and local fixtures predate performance directions.
-    if isinstance(result,dict):result={'playbackAction':None,'sessionScope':None,'sessionPlan':None,'performance':None,'handoff':None,'deferredTracks':None,'tempoTargets':None,'selectionReview':None,'requestVerdicts':None,'crowdChoice':None,'cueChoices':None,'trackInsertion':None,**result}
+    if isinstance(result,dict):result={'playbackAction':None,'sessionScope':None,'sessionPlan':None,'performance':None,'handoff':None,'deferredTracks':None,'tempoTargets':None,'selectionReview':None,'requestVerdicts':None,'crowdChoice':None,'cueChoices':None,'trackInsertion':None,'boothControl':None,**result}
     if not isinstance(result,dict) or set(result)!=set(SCHEMA['properties']):
         raise ValueError('AI direction has an invalid format.')
+    control=result['boothControl']
+    if control is not None and (not isinstance(control,str) or control not in booth_primitives.CONTROL_HELP
+            or any(result[k] for k in result if k not in ('boothControl','reply','direction','reason'))):
+        raise ValueError('A booth control must be offered and cannot be combined with another action.')
     insertion=result['trackInsertion']
     conflicting=('trackIds','search','mixTransitions','tempoTargets','cueChoices','selectionReview',
                  'crowdChoice','sessionScope','sessionPlan','playbackAction','handoff','performance')
@@ -1934,6 +1944,8 @@ class DJAgent:
                     if value['reason']:row['preferenceReason']=value['reason']
             packet['music']['catalog']=working_rows[:32]
             packet['canInsertTrack']=bool(queued and not mixing_only and not external)
+            if pending and not external and (operator or {}).get('source')=='voice':
+                packet['boothControls']={name:booth_primitives.CONTROL_HELP[name] for name in booth_primitives.offered_controls(s)}
             # The cache answers named lookups. The current set and live searches
             # supply recommendations, so arbitrary cached artists cannot steer digging.
             crate=getattr(self.session,'crate',None)
@@ -2173,6 +2185,34 @@ class DJAgent:
                     self.save();return
                 if key!=context_key(observed):
                     self.overtaken(packet,s,key,round_id,curation_token);return
+                if result['boothControl']:
+                    action=result['boothControl']
+                    request=packet.get('operatorRequest') or {}
+                    if (external or curation_token or packet['reason']!='operator message' or request.get('source')!='voice'
+                            or action not in (packet.get('boothControls') or {})):
+                        raise ValueError('This booth control was not offered for this voice request.')
+                    request_id=request['id']
+                    if action not in booth_primitives.offered_controls(observed):
+                        raise ValueError('The booth state changed before the control was ready.')
+                    if action in booth_primitives.BLEND_PREFERENCE_STOPS:
+                        change={'kind':'style','value':{'id':'blend','stop':booth_primitives.BLEND_PREFERENCE_STOPS[action]}}
+                        settings=self.settings_action(request_id,change,self.settings.expected(observed,rev))
+                        control={'id':request_id,'action':action,'status':'confirmed','message':settings['settings']['receipt']['message']}
+                        current=self.session.snapshot()
+                    else:
+                        current=self.copilot_action(action,request_id,copilot_commands.context(s))
+                        control=current['copilot']['command']
+                    result.update(reply=control['message'],direction=packet.get('direction',''))
+                    self.planner.finish(round_id,result,s,receipt,supplied_ids)
+                    self.planner.reply(round_id,request_id+'-reply',control['message'],request_id)
+                    self.state['messages'].append({'id':request_id+'-reply','role':'assistant','source':'engine',
+                        'text':control['message'],'at':self.clock()})
+                    self.state['messages']=self.state['messages'][-24:]
+                    self.state.update(status='ready',message=control['message'],copilotControl=copy.deepcopy(control),
+                                      lastEvaluation=receipt)
+                    self.seen_context=context_key(current)
+                    self.save()
+                    return
                 if packet['reason']=='operator message' and not any(result.get(k) for k in ('search','trackIds','performance','handoff','tempoTargets','sessionPlan')):
                     latest=next((m['text'] for m in reversed(packet.get('messages',[])) if m.get('role')=='user'),'')
                     facts=music_facts.answer(latest,observed,self.clock())

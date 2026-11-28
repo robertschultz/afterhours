@@ -21,7 +21,7 @@ from afterhours.track_metadata import musical_key
 from afterhours.vdj_catalog import (folder_state, selection, identity, load_selected, search_literal, count_value,
                          paused_load_target, load_exact_recording)
 from afterhours.native_recording import RECORDINGS
-from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, transition_recipe
+from afterhours.vdj_mixing import NativeHandoff, TransitionMixer, MixerControlChanged, measured_bridge_loop, measured_recipe, transition_recipe
 from afterhours.native_analysis import NativeAnalysisUnsettled, track_analysis
 from afterhours.audio_analysis import exceeds_scan_duration, scan_track
 from afterhours.waveform_analysis import scan_waveform, verified_waveform
@@ -2842,7 +2842,7 @@ class DJSession:
                         self.tempo_ramp.arm(track,active,tempo_row,planned['selections'][index]['entryBeat'])
                 if not final:
                     expected = order[index+1]
-                    recipe = copy.deepcopy(planned['transitions'][index]) if planned else transition_recipe(track,expected,snapshot['mixStyle'],snapshot['secondsPerTrack'],target,
+                    recipe = measured_recipe(planned,index) if planned else transition_recipe(track,expected,snapshot['mixStyle'],snapshot['secondsPerTrack'],target,
                         quick_blend_seconds=snapshot.get('quickBlendSeconds'))
                     if t['decks'][incoming-1].get('id') != expected['id'] or t['decks'][incoming-1]['playing']:
                         raise BridgeError('Incoming deck changed. No transition was sent.')
@@ -2932,7 +2932,7 @@ class DJSession:
                         if 'plan' in change:
                             order, planned, t = change['order'], change['plan'], change['telemetry']
                             expected = order[index+1]
-                            recipe = copy.deepcopy(planned['transitions'][index])
+                            recipe = measured_recipe(planned,index)
                             entries[incoming] = round(t['decks'][incoming-1]['beatPosition'])
                             if self.mixer:
                                 self.mixer.arm(client,active,incoming,recipe)
@@ -3092,6 +3092,9 @@ class DJSession:
                 handoff_options = {'decks': self.decks} if len(self.decks)>2 else {}
                 if loop_handoffs:
                     handoff_options['loop_recording'] = track['engine']['selection_id']
+                elif rolling and (loop_beats := measured_bridge_loop(planned,index,recipe,window)):
+                    handoff_options.update(loop_recording=track['engine']['selection_id'],loop_beats=loop_beats)
+                    self.event(f'Using a verified {loop_beats}-beat rhythm window under the incoming track.', 'technique')
                 self.handoff.dispatch(client,active,incoming,fade_beats,**handoff_options)
                 if self.mixer:
                     self.mixer.begin(client)

@@ -10,6 +10,7 @@ from afterhours import cue_planner
 from afterhours.dj_agent import DJAgent
 from afterhours.dj_bridge import BridgeError
 from test_cue_planner import fixture
+from test_dj_agent import decision, settled
 from afterhours.vdj_session import DJSession, Cancelled
 
 
@@ -115,6 +116,20 @@ class CopilotControlTests(unittest.TestCase):
         self.assertEqual(result['copilot']['command']['status'], 'confirmed')
         self.assertTrue(result['telemetry']['decks'][0]['playing'])
         send.assert_not_called(); factory.assert_not_called()
+
+    def test_semantic_spoken_request_uses_the_same_native_hold_primitive(self):
+        session=running()
+        def model(packet):
+            self.assertIn('hold',packet['boothControls'])
+            return {**decision(),'boothControl':'hold'},{}
+        self.assertIsNone(cc.intent('Let this one breathe a little longer'))
+        agent=DJAgent(session,evaluator=model)
+        agent.enable(True,seconds=120,requests=6)
+        agent.message('Let this one breathe a little longer',source='voice',message_id='voice-hold')
+        state=settled(agent)
+        self.assertEqual(state['copilotControl']['status'],'confirmed')
+        self.assertEqual(state['copilotControl']['id'],'voice-hold')
+        self.assertTrue(session.snapshot()['copilot']['held'])
 
     def test_engine_error_is_reported_instead_of_another_start_confirmation(self):
         s=running();s.update(active=False,phase='error',lastError='Incoming cue moved.',message='Catalog refreshed.')

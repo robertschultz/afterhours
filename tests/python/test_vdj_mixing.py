@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import Mock
 from afterhours.dj_bridge import BridgeError
-from afterhours.vdj_mixing import CONTROLS, LEAD_CONTROLS, TransitionMixer, transition_recipe
+from afterhours.vdj_mixing import CONTROLS, LEAD_CONTROLS, TransitionMixer, measured_bridge_loop, measured_recipe, transition_recipe
 
 
 def track(genre='Drum & Bass',key='2A'):
@@ -102,6 +102,30 @@ class MixerTests(unittest.TestCase):
         self.assertTrue(any('afterhours_in_low' in s for s in sent))
         count=len(sent);m.tick(None,25)
         self.assertEqual(len(sent),count)
+
+    def test_measured_bright_pair_arms_silent_treble_cut_and_restores_it(self):
+        mixer, values, sent=self.mixer()
+        bright={'rmsDb':-12,'highDb':-25}
+        plan={'transitions':[transition_recipe(track(),track())],
+              'selections':[{'replayVerified':True,'exit':bright},{'replayVerified':True,'entry':bright}]}
+        recipe=measured_recipe(plan,0)
+        self.assertNotIn('incomingHighEq',plan['transitions'][0])
+        mixer.arm(None,1,2,recipe)
+        self.assertEqual(values[2]['eq_high_freq'],.32)
+        self.assertEqual(values[1]['eq_high_freq'],.5)
+        mixer.begin(None)
+        self.assertTrue(any("afterhours_in_high' 0.320000 0.500000 48bt" in script for script in sent))
+
+    def test_measured_bridge_is_bound_to_the_verified_exit_and_room_for_a_wrap(self):
+        outgoing={'exitBeat':128,'loopBridgeBeats':8,'replayVerified':True}
+        plan={'selections':[outgoing]}
+        recipe={'genreFamily':'house'}
+        self.assertEqual(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':16}),8)
+        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':132,'fadeBeats':16}))
+        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':8}))
+        self.assertIsNone(measured_bridge_loop(plan,0,{'genreFamily':'short'},{'mixAtBeat':128,'fadeBeats':16}))
+        outgoing['replayVerified']=False
+        self.assertIsNone(measured_bridge_loop(plan,0,recipe,{'mixAtBeat':128,'fadeBeats':16}))
 
     def test_late_step_stops_without_bursting_missed_mutations(self):
         m,v,sent=self.mixer();m.arm(None,1,2,transition_recipe(track(),track()));m.begin(None)

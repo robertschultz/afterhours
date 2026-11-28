@@ -8,6 +8,7 @@ from afterhours import deck_rotation
 import math
 import re
 import time
+from copy import deepcopy
 from afterhours.dj_bridge import BridgeError, as_bool
 from afterhours.vdj_catalog import identity
 
@@ -19,6 +20,45 @@ LEAD_POLICY = 'single-lead-v1'
 
 class MixerControlChanged(BridgeError):
     """An operator changed the owned mixer before a blend was dispatched."""
+
+
+def window_pair_evidence(outgoing, incoming):
+    """Frequency-band and dynamics evidence from two verified cue windows."""
+    if not (outgoing.get('replayVerified') and incoming.get('replayVerified')):
+        return {}
+    exit_window, entry = outgoing.get('exit') or {}, incoming.get('entry') or {}
+    result = {}
+    for field in ('rmsDb', 'bassDb', 'highDb', 'levelVariationDb'):
+        a, b = exit_window.get(field), entry.get(field)
+        if all(type(v) in (float, int) and math.isfinite(v) for v in (a, b)):
+            result[field] = round(b - a, 2)
+    if 'rmsDb' in result and 'highDb' in result:
+        result['sharedBrightHighs'] = min(exit_window['highDb'] - exit_window['rmsDb'],
+                                          entry['highDb'] - entry['rmsDb']) >= -16
+    return result
+
+
+def measured_recipe(plan, index):
+    recipe = deepcopy(plan['transitions'][index])
+    cues = plan.get('selections') or []
+    if len(cues) > index + 1:
+        evidence = window_pair_evidence(cues[index], cues[index + 1])
+        if evidence.get('sharedBrightHighs'):
+            recipe['incomingHighEq'] = .32
+            recipe['reason'] += ' Both phrase windows have strong highs; easing in the incoming percussion.'
+    return recipe
+
+
+def measured_bridge_loop(plan, index, recipe, window):
+    if not plan or recipe.get('genreFamily') not in ('house', 'techno', 'dnb'):
+        return None
+    cue = plan['selections'][index]
+    beats = cue.get('loopBridgeBeats')
+    if (cue.get('replayVerified') is True and beats in (4, 8)
+            and window['fadeBeats'] >= 2 * beats
+            and math.isclose(window['mixAtBeat'], cue['exitBeat'], abs_tol=.15)):
+        return beats
+    return None
 
 
 def transition_recipe(outgoing, incoming, style='phrase', seconds=None, bpm=None, *, quick_blend_seconds=None):
@@ -113,12 +153,14 @@ class NativeHandoff:
         self.dispatched = False
         self.loop = None
 
-    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *, loop_recording=None):
+    def dispatch(self, client, outgoing, incoming, beats, decks=deck_rotation.TWO, *, loop_recording=None, loop_beats=None):
         if self.dispatched:
             raise BridgeError('This transition was already dispatched. No repeat was sent.')
         if (decks not in (deck_rotation.TWO,deck_rotation.FOUR) or not deck_rotation.pair(outgoing,incoming,decks)
                 or type(beats) is not int or not 1 <= beats <= 256):
             raise BridgeError('Invalid addressed transition.')
+        if loop_beats is not None and (loop_recording is None or loop_beats not in (4, 8) or 2 * loop_beats > beats):
+            raise BridgeError('The loop does not fit the verified overlap.')
         start=value(self.q(client,'crossfader'))
         end=deck_rotation.crossfader_end(incoming)
         if abs(start-(1-end))>.02:
@@ -137,7 +179,7 @@ class NativeHandoff:
         if not as_bool(self.q(client,f'deck {outgoing} masterdeck','bool')):
             raise BridgeError('The outgoing sync reference was not confirmed. Playback was not started.')
         if loop_recording is not None:
-            self.engage_loop(client, outgoing, loop_recording, 8 if beats >= 16 else 4)
+            self.engage_loop(client, outgoing, loop_recording, loop_beats or (8 if beats >= 16 else 4))
         self.dispatched=True
         self.send(client,f'deck {incoming} play_sync')
         for attempt in range(4):
@@ -374,7 +416,7 @@ class TransitionMixer:
                                        if self.lead_mode=='stems' else
                                        'High-quality stems not ready; midrange EQ reduces overlap but cannot isolate vocals.'))
         settings={'eq_low_freq':0, 'eq_mid_freq':.5 if self.lead_mode=='stems' else 0,
-                  'eq_high_freq':.5, 'level':self.baselines[incoming]['level']*recipe['entryLevel']}
+                  'eq_high_freq':recipe.get('incomingHighEq', .5), 'level':self.baselines[incoming]['level']*recipe['entryLevel']}
         if self.lead_mode=='stems':settings.update(dict.fromkeys(LEAD_CONTROLS,0))
         actual=self.set_controls(client,incoming,settings)
         self.armed={outgoing:controls,incoming:actual}
@@ -419,6 +461,9 @@ class TransitionMixer:
         level=self.baselines[self.incoming]['level']
         beats=self.recipe['fadeBeats']
         self.ramp(client,'in_level',self.incoming,'level',level*self.recipe['entryLevel'],level,beats//2)
+        initial_high = self.armed[self.incoming]['eq_high_freq']
+        if initial_high < .5:
+            self.ramp(client,'in_high',self.incoming,'eq_high_freq',initial_high,.5,beats*3//4)
 
     def tick(self, client, beats):
         # Never compress missed steps into an uncontrolled burst.

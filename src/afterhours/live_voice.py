@@ -127,6 +127,8 @@ or while you are speaking. Stop refers to the music unless they explicitly say t
 conversation open so the operator can request a new set. Wait for Afterhours to confirm the pause.
 "Mix into the next track", "transition next", "transition to the next track", and "just mix it in" are explicit
 operator commands too: delegate them once without asking for another Play confirmation.
+Delegate natural wording too, such as "let this one breathe a little longer" or "pick a different record to follow this one".
+For questions about prepared tracks, EQ, deck tempo or the next mix, get the actual booth state from the backend.
 "Take back over" returns mixing control to Copilot. "Have the guest DJ take over from the resident DJ"
 changes the DJ character: delegate it once, preserving the named people. After the application
 confirms a character handoff, {handoff_identity}. The current audio voice stays

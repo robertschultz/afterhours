@@ -1,11 +1,11 @@
 """Small, provider-neutral controls and state views for the DJ planner."""
 
 CONTROL_HELP = {
-    'hold': 'Keep the current track playing and hold its automatic handoff.',
+    'hold': 'Keep this particular recording playing longer, including letting this one breathe.',
     'go': 'Bring in the prepared next track on a verified upcoming phrase.',
     'skip': 'Reject the upcoming selection and ask the queue to find another.',
-    'shorter-blends': 'Prefer shorter transitions on future, unprepared handoffs.',
-    'longer-blends': 'Prefer longer transitions on future, unprepared handoffs when measured windows fit.',
+    'shorter-blends': 'Save a preference for shorter transitions on future handoffs only.',
+    'longer-blends': 'Save a preference for longer transitions on future handoffs only.',
 }
 BLEND_PREFERENCE_STOPS = {'shorter-blends': 1, 'longer-blends': 3}
 

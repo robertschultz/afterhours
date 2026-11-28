@@ -504,7 +504,10 @@ def planning_request(packet, lookups=None, transcript=None):
                 ('\nFor one requested addition use trackInsertion with its supplied trackId and leave other actions empty. The engine places it.' if packet.get('canInsertTrack') else '')+
                 ('\nPrefer openers outside recentOpeningIds unless explicitly requested.' if music.get('recentOpeningIds') else '')+
                 ('\nFor a direct request to control the next handoff or set a blend preference, select one boothControl from boothControls. '
-                 'Leave all other action fields empty. Use null for questions, future timing, negation, preferences or ambiguity. '
+                 'Leave all other action fields empty. "Let this one breathe a bit longer" means hold the currently playing track. '
+                 '"Bring the other one in" means go now when offered. "Choose a different one to follow this" means skip. '
+                 'Choose a blend preference only if the operator asks for a standing change across future mixes. '
+                 'Use null for questions, conditional or delayed actions, corrections that only negate an action, or ambiguity. '
                  'The engine returns the actual control receipt.' if controls else '')+
                 (agent_loop.DIGEST_INSTRUCTIONS if packet.get('lookups') else '')+
                 (CUE_INSTRUCTIONS if packet.get('mixWindows') else ''))

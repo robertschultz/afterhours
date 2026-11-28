@@ -514,6 +514,7 @@ def read_observed_run(prefix):
             blends.append((entry, solo_start))
     timing = cadence_metrics(intervals, cadence)
     late_entries = []
+    early_entries = []
     for target in timing:
         misses = dict.fromkeys(('readyAfterTarget', 'readyByTarget', 'readbackMissing'), 0)
         on_target = 0
@@ -550,6 +551,13 @@ def read_observed_run(prefix):
                     'secondsLateAfterDeckReady':round(max(0, error - deck_delay), 3) if deck_delay is not None else None,
                     'timingBasis':row.get('timingBasis'),
                     **({'schedulerReadback':scheduler} if scheduler else {}),
+                })
+            if error < -5 and row.get('verified') is True:
+                early_entries.append({
+                    'outgoing':row.get('outgoing'), 'incoming':row.get('incoming'),
+                    'targetSeconds':int(target), 'secondsEarly':round(-error, 3),
+                    'deckReadyRelativeToTargetSeconds':round(ready, 3) if ready is not None else None,
+                    'timingBasis':row.get('timingBasis'),
                 })
         timing[target].update(within2Seconds=on_target, missesOutside2Seconds=misses)
 
@@ -622,6 +630,7 @@ def read_observed_run(prefix):
         'cadenceSeconds':cadence,
         'timingByTarget':timing,
         'lateEntriesOutside5Seconds':sorted(late_entries, key=lambda row: -row['secondsLate']),
+        'earlyEntriesOutside5Seconds':sorted(early_entries, key=lambda row: -row['secondsEarly']),
         'openEntryInterval':waiting,
         'upNextOverlay':observed_up_next(browser[:trial_end+1], start),
         'queueRunway':observed_queue_runway(Path(f'{prefix}-runway.jsonl'), owner, start + elapsed),

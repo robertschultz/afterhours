@@ -126,6 +126,14 @@ class SetQualityBenchmarkTests(unittest.TestCase):
                 'recordingId':'exact:b', 'title':'Second recording', 'firstQuietAtSetSeconds':96.85,
                 'windowCount':1, 'measuredQuietSeconds':.05,
             }])
+            self.assertEqual(SCORER['read_observed_run'](prefix)['earlyEntriesOutside5Seconds'], [])
+            handoffs[1].update(entryIntervalSeconds=48, deckReadyRelativeToTargetSeconds=-18,
+                               timingBasis='cadence-recovery-measured-exit')
+            log('handoffs', handoffs)
+            self.assertEqual(SCORER['read_observed_run'](prefix)['earlyEntriesOutside5Seconds'], [{
+                'outgoing':'Second recording', 'incoming':None, 'targetSeconds':60, 'secondsEarly':12,
+                'deckReadyRelativeToTargetSeconds':-18, 'timingBasis':'cadence-recovery-measured-exit',
+            }])
             master[0]['owner'] = 'different-run'
             log('master', master)
             with self.assertRaisesRegex(ValueError, 'does not match'):

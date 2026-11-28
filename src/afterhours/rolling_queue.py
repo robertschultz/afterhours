@@ -119,7 +119,7 @@ def song_credit_keys(track):
 def distinct_rolling_prospect(style, order, candidates, excluded, missed_titles, repeated=()):
     """Count recordings that could fill distinct automatic queue slots."""
     matches_style = automatic_style_filter(style, order, candidates)
-    used = {row['id'] for row in order} | excluded
+    used = {row.get('id') for row in order} | excluded
     titles = {song_identity(row)[0] for row in order} | missed_titles
     versions = set().union(*(song_credit_keys(row) for row in order))
 

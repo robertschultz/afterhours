@@ -112,6 +112,34 @@ class CueTests(unittest.TestCase):
                 self.assertEqual(recipe['fadeBeats'],expected)
                 self.assertFalse(recipe['tonalOverlap'])
 
+    def test_timed_rhythm_windows_allow_four_bars_only_with_matching_signal(self):
+        for loops, bright, stem_overlap, bass_gap, expected in (
+            (True, False, 0, 0, 16), (False, False, 0, 0, 8),
+            (True, True, 0, 0, 8), (True, False, .7, 0, 8),
+            (True, False, 0, 8, 8),
+        ):
+            with self.subTest(loops=loops, bright=bright, stem_overlap=stem_overlap, bass_gap=bass_gap):
+                _, report, _ = fixture(2, 60)
+                order = report['tracks']
+                order[0].update(genre='Dance', camelot='2A')
+                order[1].update(genre='Dance', camelot='7B')
+                exits, entry = (track['cueCandidates'][0] for track in order)
+                exits['loopBridgeBeats'] = 8
+                entry['loopBridgeBeats'] = 8 if loops else None
+                entry['entry']['bassDb'] += bass_gap
+                for window in (exits['exit'], entry['entry']):
+                    window['highDb'] = window['rmsDb'] - (8 if bright else 24)
+                snapshot = {'analysis':report, 'mixStyle':'phrase', 'secondsPerTrack':60, 'entryCadence':[60, 30],
+                            'executionPlan':{'orderIds':[], 'targetBpm':155},
+                            'aiReview':{'decision':'propose', 'secondsBetweenEntries':60, 'selections':[], 'transitions':[]}}
+                stems = {'scoreAdjustment':0, 'vocalOverlapFraction':stem_overlap,'lowEndOverlap':0}
+                with patch.object(cp, 'cue_pair', return_value=stems):
+                    result = cp.complete_background_queue(snapshot, order, [], 'Measured fit fixture.', 0)
+                recipe = result['executionPlan']['transitions'][0]
+                self.assertEqual(recipe['fadeBeats'], expected)
+                self.assertFalse(recipe['tonalOverlap'])
+                self.assertEqual('four-bar single-lead blend' in recipe['reason'], expected == 16)
+
     def test_loop_bridge_rejects_a_level_or_bass_jump_at_the_exit(self):
         rows=[{'seconds':.5*i,'duration':.5,'rmsDb':-15,'lowDb':-19,
                'highDb':-26,'crestDb':8} for i in range(16)]

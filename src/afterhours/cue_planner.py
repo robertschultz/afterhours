@@ -11,11 +11,13 @@ import statistics
 from afterhours import tempo_planner
 
 from afterhours.audio_analysis import read_scan
+from afterhours.dj_discovery import style_for
 from afterhours.vdj_mixing import transition_recipe, window_pair_evidence
 from afterhours.stem_profiles import cue_pair
 
 
 VERSION = 'afterhours.cues.v1'
+RHYTHM_STYLES = {'dance', 'electronic', 'disco', 'house', 'deep house', 'tech house', 'techno', 'drum and bass'}
 
 
 class LimitedAudio(ValueError):
@@ -437,7 +439,16 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
         choices = (8, 16, 32) if use_long_blend else (8, 16)
         reason_detail = f' Measured level gap {level_gap:.1f} dB, bass gap {bass_gap:.1f} dB.'
         if snapshot.get('entryCadence'):
-            choices = (8, 16) if gradual else (8,)
+            # Broad dance catalog tags often lack compatible keys. A stable
+            # measured rhythm on both sides can support four bars while the
+            # mixer continues to hand over bass and lead independently.
+            rhythm_blend = (
+                style_for(a.get('genre')) in RHYTHM_STYLES and style_for(b.get('genre')) in RHYTHM_STYLES
+                and cues[i].get('loopBridgeBeats') == cues[i+1].get('loopBridgeBeats') == 8
+                and level_gap <= 2.5 and bass_gap <= 3.5
+                and bands.get('sharedBrightHighs') is False
+            )
+            choices = (8, 16) if (gradual or rhythm_blend) and not bands.get('sharedBrightHighs') else (8,)
         elif not gradual and (level_gap > 6 or bass_gap > 8):
             choices = (8,)
         if bands.get('sharedBrightHighs'):
@@ -451,6 +462,8 @@ def _background_fit(snapshot, order, measured, reason, protected, transitions=No
                 choices = (8,)
         beats=max((n for n in choices if n<=max_beats),default=0)
         if not beats:raise ValueError('Measured cue windows do not support a background handoff.')
+        if snapshot.get('entryCadence') and beats == 16 and rhythm_blend and not gradual:
+            reason_detail += ' Stable rhythm and closely matched levels support a four-bar single-lead blend.'
         technique = 'bass-swap' if beats==32 else 'restrained-bass-swap'
         pairs.append({'fromId':a['id'],'toId':b['id'],'blendBeats':beats,'technique':technique,
             'reason':'Local measured transition. '+recipe['reason']+reason_detail})

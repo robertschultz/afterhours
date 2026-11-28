@@ -379,6 +379,19 @@ class QueuePlanningTests(unittest.TestCase):
         self.assertEqual(update['rollingTrackIds'], ['l', 'm'])
         self.assertEqual(update['protectedIds'], ['a', 'b', 'c'])
 
+    def test_timed_house_refill_prefers_house_evidence_while_one_successor_is_protected(self):
+        rows = [{**track('a'), 'genre':'House'}, {**track('b'), 'genre':'House'},
+                {**track('c'), 'genre':'Dance'}, {**track('d'), 'genre':'Deep House'}]
+        self.session.update(candidates=rows)
+        self.session.plan(['a','b'])
+        self.session.update(index=0, active=True, phase='playing', rollingQueue={'status':'ready'},
+                            entryCadence=[30,60], executionPlan={'applied':True,'targetBpm':125})
+        roller = RollingQueue()
+        roller.advisor.enabled = False
+        roller.live_matches.add('c')
+        roller.tick(self.session, 25)
+        self.assertEqual(self.session.snapshot()['queuedUpdate']['rollingTrackIds'], ['d','c'])
+
     def test_long_last_slot_can_stage_two_without_waiting_to_pick_again(self):
         self.session.plan(['a', 'b'])
         self.session.update(index=1, active=True, phase='playing', rollingQueue={'status':'ready'},

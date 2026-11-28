@@ -20,6 +20,7 @@ STYLE_GROUPS = (
     frozenset(('soul', 'funk', 'r&b', 'gospel', 'hip hop')),
     frozenset(('rock', 'pop', 'funk', 'soul')),
 )
+HOUSE_STYLES = frozenset(('house', 'deep house', 'tech house'))
 
 
 def rolling_style(state, order):
@@ -33,6 +34,13 @@ def fits_style(track, style, opening=None):
     actual = style_for(track.get('genre'))
     return (not style or not actual or actual == style
             or any(style in group and actual in group for group in STYLE_GROUPS))
+
+def house_style_priority(track, style):
+    """Prefer a tagged house subgenre to broad dance metadata."""
+    if style not in HOUSE_STYLES:
+        return 0
+    actual = style_for(track.get('genre'))
+    return 0 if actual == style else 1 if actual in HOUSE_STYLES else 2
 
 
 def base_song_title(track):
@@ -194,7 +202,8 @@ class RollingQueue:
                 stem_fit={row['id']:fit for row in candidates
                           if (fit:=candidate_fit(tail['id'],row['id'],tail_cue))}
                 candidates, facts = rank_candidates(candidates, style, order[-5:], order[-5:], lambda track: (
-                    0 if not timed_set or track['id'] in self.live_matches else 1,
+                    (house_style_priority(track, style) if upcoming and slack >= 20 else 0,
+                     0 if not timed_set or track['id'] in self.live_matches else 1),
                     transition_cost(tail, track, {}) + (0 if track.get('engineChecked') else 3)
                     + 8*stem_fit.get(track['id'],{}).get('scoreAdjustment',0)),
                     set_slot=set_slot(str(state.get('agentDirection') or ''),

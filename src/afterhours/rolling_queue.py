@@ -44,6 +44,22 @@ def base_song_title(track):
     return ' '.join(without_article if len(without_article) >= 3 else words)
 
 
+def repeated_artists(order):
+    if len(order) < 2:
+        return set()
+    return credit(order[-2].get('artist')) & credit(order[-1].get('artist'))
+
+
+def brings_new_artist(track, repeated):
+    artists = credit(track.get('artist'))
+    return bool(artists) and not artists.intersection(repeated)
+
+
+def repeats_artist_query(term, repeated):
+    query = f' {normalized(term)} '
+    return any(f' {artist} ' in query for artist in repeated)
+
+
 def failed_rolling_recording(pending, *, pinned=()):
     if pending.get('status') != 'blocked':
         return None
@@ -184,7 +200,9 @@ class RollingQueue:
                 candidates = requested + [t for t in candidates if t['id'] not in {row['id'] for row in requested}]
             advised = receipt = None
             if not deferred and (timed_set or not quick):
-                advised, waiting = self.advisor.advise(state,tail,candidates,facts,slack)
+                repeat = repeated_artists(order)
+                diverse = [row for row in candidates if brings_new_artist(row, repeat)] if repeat else []
+                advised, waiting = self.advisor.advise(state,tail,diverse or candidates,facts,slack)
                 if waiting:
                     return
                 if advised:
@@ -196,9 +214,16 @@ class RollingQueue:
             # rebuilds. The first verified recording is published independently.
             batch_slack = 16 if upcoming >= 2 else 23 if upcoming else 40
             batch = 2 if timed_set and slack >= batch_slack else 1
-            for track in candidates:
+            remaining = list(candidates)
+            while remaining and len(picked) < batch:
                 if session.cancel.is_set():
                     return
+                repeat = repeated_artists(order + picked) if not deferred else set()
+                # Favor a different credited artist when the last two tracks
+                # share one. Keep the ranked repeats in reserve if every
+                # alternative fails the native queue and tempo checks.
+                slot = next((i for i, row in enumerate(remaining) if brings_new_artist(row, repeat)), 0) if repeat else 0
+                track = remaining.pop(slot)
                 try:
                     session.revise_queue(ids + [t['id'] for t in picked] + [track['id']],
                                          reason=f"Continuing the set with {', '.join(t['title'] for t in picked+[track])}.",
@@ -206,8 +231,6 @@ class RollingQueue:
                 except (ValueError, BridgeError):
                     continue
                 picked.append(track)
-                if len(picked) >= batch:
-                    break
             if receipt:
                 description = {
                     'selected': 'GPT-6.2 Sol ranked a shortlisted candidate first.',
@@ -272,6 +295,8 @@ class RollingQueue:
             if not style_for(state.get('agentDirection')):
                 terms += sorted({neighbor for group in STYLE_GROUPS if style in group
                                  for neighbor in group if neighbor!=style})
+        if repeat := repeated_artists(order):
+            terms.sort(key=lambda term: repeats_artist_query(term, repeat))
         for term in terms:
             key = normalized(term)
             if not key or key in self.searched or len(term) > 95 or ';' in term:

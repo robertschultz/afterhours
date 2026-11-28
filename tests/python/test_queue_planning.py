@@ -201,6 +201,25 @@ class QueuePlanningTests(unittest.TestCase):
                     self.assertTrue(roller.search(session, {'agentDirection':direction}, order, 'house', True))
                     self.assertEqual(session.discover_more.call_args.args, (expected,))
 
+    def test_rolling_breaks_a_repeated_artist_run_without_risking_the_next_track(self):
+        for alternate_bpm, selected in [(125,'x'),(190,'c')]:
+            with self.subTest(alternate_bpm=alternate_bpm):
+                seeds=[{**track(identifier),'artist':artist,'genre':'House'} for identifier,artist in
+                       [('a','Resident DJ'),('b','Resident DJ & Guest'),('c','Resident DJ')]]
+                seeds.append({**track('x',bpm=alternate_bpm),'artist':'Related Artist','genre':'House'})
+                self.session.update(active=False,candidates=seeds)
+                self.session.plan(['a','b'])
+                self.session.update(index=1,active=True,phase='playing',rollingQueue={'status':'ready'},
+                                    entryCadence=[60,30],executionPlan={'applied':True,'targetBpm':125})
+                roller=RollingQueue()
+                roller.advisor.advise=Mock(return_value=(None,False))
+                roller.live_matches.add('c')
+                roller.tick(self.session,28)
+                offered=roller.advisor.advise.call_args.args[2]
+                self.assertEqual([row['id'] for row in offered],['x'])
+                queued=self.session.snapshot()['queuedUpdate']
+                self.assertEqual([row['id'] for row in queued['tracks']],['a','b',selected])
+
     def test_rolling_measured_set_uses_existing_background_verification(self):
         self.session.plan(['a','b'])
         self.session.update(index=0,active=True,phase='playing',rollingQueue={'status':'ready'},
@@ -209,6 +228,18 @@ class QueuePlanningTests(unittest.TestCase):
         staged=self.session.snapshot()['queuedUpdate']
         self.assertEqual(staged['protectedIds'],['a','b'])
         self.assertEqual(staged['status'],'needs-analysis')
+
+    def test_rolling_search_tries_related_artists_before_extending_an_artist_streak(self):
+        order=[{**track('a'),'artist':'Resident DJ','genre':'House'},
+               {**track('b'),'artist':'Resident DJ & Guest','genre':'House'}]
+        roller=RollingQueue()
+        session=Mock()
+        with patch('afterhours.rolling_queue.research_hints',return_value=[]), \
+                patch('afterhours.rolling_queue.DISCOVERY') as facts:
+            facts.hints.return_value=[]
+            facts.neighbors.return_value=['Related Artist']
+            self.assertTrue(roller.search(session, {}, order, 'house', True))
+        self.assertEqual(session.discover_more.call_args.args, ('Related Artist',))
 
     def test_rolling_search_recovers_from_exhausted_recent_collaboration_queries(self):
         order = [{**track('a'), 'artist':'Earlier Artist'},
